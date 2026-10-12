@@ -1,0 +1,44 @@
+[package]
+name = "rbxoc"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "CLI for the Roblox Open Cloud API, designed for coding agents"
+license = "MIT"
+repository = "https://github.com/eiei114/rbxoc"
+keywords = ["roblox", "open-cloud", "cli", "games"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "rbxoc"
+path = "src/main.rs"
+
+[dependencies]
+# 引数解析。derive でサブコマンドを宣言する。
+clap = { version = "4.5", features = ["derive", "env"] }
+# HTTP クライアント。multipart と timeout を使う。
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "multipart",
+    "rustls-tls",
+] }
+# 非同期ランタイム。Open Cloud は並列呼び出しがあるため tokio を直接持つ。
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time"] }
+# JSON。エージェント向け出力で必須。
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+# 現在のタイムゾーン付き時刻表示。ログ取得で使う。
+time = { version = "0.3", features = ["formatting", "macros"] }
+# エラー。CLI では anyhow で文脈を足し、終了コードは自前で決める。
+anyhow = "1"
+thiserror = "2"
+
+[dev-dependencies]
+# 実 API を叩かずにリクエスト組み立てを検証する。
+# tempfile はテスト用の一時ファイルに使う。
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
