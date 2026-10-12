@@ -1,6 +1,8 @@
 # rbxoc
 
 [![CI](https://github.com/eiei114/rbxoc/actions/workflows/ci.yml/badge.svg)](https://github.com/eiei114/rbxoc/actions/workflows/ci.yml)
+[![Crates.io](https://img.shields.io/crates/v/rbxoc.svg)](https://crates.io/crates/rbxoc)
+[![Crates.io downloads](https://img.shields.io/crates/d/rbxoc.svg)](https://crates.io/crates/rbxoc)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A Rust CLI for the Roblox Open Cloud API, **designed for coding agents**.
@@ -108,18 +110,26 @@ Output always masks the value (`abcd****`).
 
 ## Install
 
-### mise (recommended)
+### From crates.io
 
 ```bash
-mise install            # Rust / Rojo / pesde
-mise run build          # release binary
-mise run install-local  # into ~/.local/bin
+cargo install rbxoc
 ```
 
-### cargo
+This is the quickest path. It builds the released version from source.
+
+### From a checkout
 
 ```bash
 cargo install --path . --locked
+```
+
+### mise (for development)
+
+```bash
+mise install            # Rust toolchain
+mise run build          # release binary
+mise run install-local  # into ~/.local/bin
 ```
 
 ## Usage
@@ -342,11 +352,14 @@ Open Cloud has three auth families. This CLI excludes cookies.
 
 ## Toolchain
 
-`mise.toml` pins Rojo / pesde / Rust.
+`mise.toml` pins the Rust toolchain. That is the only external tool this CLI
+needs; it calls the Open Cloud HTTP API and parses `.rbxm` / `.rbxmx` through
+crates, so no Roblox tooling is pinned.
 
 ```bash
 mise run check         # fmt / clippy / test
 mise run build         # release build
+mise run verify        # check, plus a release build and the coverage check
 mise run demo          # catalog output that needs no credentials
 ```
 
