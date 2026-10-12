@@ -58,10 +58,14 @@ Record commands, working directory, environment, and outputs here as work lands.
 
 ## Final Verification
 
-- Exact monitor-rerunnable command: `cd C:/Users/Keisu/Projects/OSS/rbxoc && mise run check && ./target/release/rbxoc api list --implemented && node scripts/check-coverage.mjs`
+- Exact monitor-rerunnable command: `cd C:/Users/Keisu/Projects/OSS/rbxoc && mise run verify`
 - Working directory: `C:/Users/Keisu/Projects/OSS/rbxoc`
-- Required preserved artifacts: `target/release/rbxoc.exe`, `Cargo.lock`
-- Result: pending
+- Required preserved artifacts: `target/release/rbxoc.exe` (built by `mise run verify`), `Cargo.lock`
+- Result: PASS. fmt --check exit 0; clippy -D warnings exit 0; 59/59 tests;
+  release build succeeded; coverage check passed with 58 catalog entries,
+  54 implemented.
+- Environment: mise 2026.10.8, rust 1.99.0 via mise. No environment variables
+  required; the coverage check needs only Node.js on PATH.
 
 ## Notes
 
@@ -94,7 +98,12 @@ Update with progress, decisions, and blockers.
   manifest now only claims what the project uses. Also added scripts/check-coverage.mjs.
   The checker first flagged its own false positive (a source-slicing heuristic);
   fixed by parsing the auth array instead.
-- Reflection: 5 of 8 checklist items done, 54 implemented endpoints (from 29).
+- Iteration 6: README updated with every new command, the refreshed rbxcloud
+  comparison table, and the development section pointing at `mise run verify`.
+  Added a `verify` mise task that runs the whole monitor-rerunnable gate.
+- Reflection: all 8 checklist items done, 54 implemented endpoints (from 29).
+  `mise run verify` is green: fmt, clippy -D warnings, 59/59 tests, release
+  build, coverage check.
   The approach is working: one domain per iteration, catalog plus tests each
   time, `mise run check` as the gate. No blockers.
 - Scope excludes live API calls by explicit instruction.

@@ -14,13 +14,22 @@ The existing [`rbxcloud`](https://github.com/Sleitnick/rbxcloud) (139 stars) is 
 | Thumbnail replacement | ✗ | ✅ |
 | Game server logs | ✗ | ✅ |
 | Analytics queries | ✗ | ✅ |
+| Analytics alerts | ✗ | ✅ |
 | Place version history | ✗ | ✅ |
+| Remote config | ✗ | ✅ |
+| Ordered DataStores (leaderboards) | ✗ | ✅ |
+| Virtual events | ✗ | ✅ |
+| Asset permissions | ✗ | ✅ |
+| Badges | ✗ | ✅ |
+| Asset ID codegen (Luau / TypeScript) | ✗ | ✅ |
+| Monetization (Game Pass / Dev Product) | ✗ | ✅ |
 | Place publishing | ✅ | ✅ |
 | Asset management | ✅ | ✅ |
 | DataStores | ✅ | ✅ |
-| Monetization | ✗ | ✅ |
 
 Most of the "Best ... 2026" repositories that rank highly in GitHub search are empty shells with inflated star counts. Real options are limited.
+
+Full coverage map: [docs/open-cloud-coverage.md](docs/open-cloud-coverage.md).
 
 ## Agent-facing design
 
@@ -249,6 +258,76 @@ rbxoc server list --universe-id 123 --place-id 456 --version 12
 rbxoc server logs --universe-id 123 --place-id 456 --version 12 --job-id <jobId> --limit 200
 ```
 
+### Leaderboards (Ordered DataStores)
+
+```bash
+rbxoc ordered-datastore set --universe-id 123 --store highscore --entry player_42 \
+  --value 9500 --create
+rbxoc ordered-datastore increment --universe-id 123 --store highscore --entry player_42 \
+  --amount 500
+rbxoc ordered-datastore list --universe-id 123 --store highscore --page-size 10
+```
+
+Values are integers, and `--scope` defaults to `global`. Unlike standard
+DataStores, the scope segment is required, so it is always sent.
+
+### Remote config and feature flags
+
+```bash
+rbxoc config get --universe-id 123 --repository game
+rbxoc config patch-draft --universe-id 123 --repository game \
+  --document '{"flags":{"newShop":true}}'
+rbxoc config publish --universe-id 123 --repository game
+rbxoc config revisions --universe-id 123 --repository game
+```
+
+Editing a draft never changes live values. Only `config publish` does, and the
+draft commands say so in their `hints`.
+
+### Analytics
+
+```bash
+rbxoc analytics catalog
+rbxoc analytics metrics --universe-id 123 --query '{"metrics":[{"metric":"DailyActiveUsers"}],"startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z","granularity":"P1D"}'
+rbxoc analytics alerts list --universe-id 123
+rbxoc analytics alerts incidents --universe-id 123 --start-time 2026-10-01T00:00:00Z --end-time 2026-10-08T00:00:00Z
+```
+
+This API needs OAuth2 (`universe.analytics:read`); an API key cannot call it.
+
+### Monetization, badges, and events
+
+```bash
+rbxoc gamepass list --universe-id 123
+rbxoc gamepass create --universe-id 123 --name "VIP" --price 499 --image vip.png
+
+rbxoc badge update --badge-id 456 --description "Reach wave 10"
+
+rbxoc event list --universe-id 123
+rbxoc event create --universe-id 123 --document '{"title":"Winter","startTime":"2026-12-01T00:00:00Z"}'
+```
+
+`badge create` spends Robux, so it requires `--payment-source` and says so in
+its result. Alert and event bodies are provider-defined JSON, passed through
+verbatim rather than re-declared here.
+
+### Asset permissions
+
+```bash
+rbxoc permissions grant --asset-id 111 --asset-id 222 \
+  --subject-type group --subject-id 999 --action use
+```
+
+### Discover everything
+
+```bash
+rbxoc api list --implemented
+rbxoc api mutating
+```
+
+See [docs/open-cloud-coverage.md](docs/open-cloud-coverage.md) for the full
+coverage map and what is deliberately out of scope.
+
 ## Authentication coverage
 
 Open Cloud has three auth families. This CLI excludes cookies.
@@ -291,10 +370,17 @@ mise run update-tools -- --apply # rewrite and run mise install
 ## Development
 
 ```bash
-mise run check   # fmt --check / clippy -D warnings / test
+mise run check    # fmt --check / clippy -D warnings / test
+mise run verify   # check, plus a release build and the coverage check
+node scripts/check-coverage.mjs
 ```
 
-Tests never call the real API. They cover path building, extension inference, response-shape extraction, backoff math, and catalog consistency.
+Tests never call the real API. They cover path building, extension inference,
+response-shape extraction, backoff math, and catalog consistency.
+
+The coverage checker asserts that the catalog and the binary agree: unique
+IDs, a path and summary for every implemented entry, a stated reason for every
+unimplemented one, and no cookie-only endpoint marked implemented.
 
 ## Not verified
 
