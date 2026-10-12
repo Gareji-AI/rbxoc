@@ -72,6 +72,9 @@ pub enum Command {
     /// Analytics queries
     Analytics(AnalyticsArgs),
 
+    /// Virtual events
+    Event(EventArgs),
+
     /// DataStores
     Datastore(DatastoreArgs),
 
@@ -434,6 +437,99 @@ pub enum AnalyticsCommand {
     },
     /// List common metrics
     Catalog,
+    /// Manage metric alert configurations
+    Alerts {
+        #[command(subcommand)]
+        command: AlertCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AlertCommand {
+    /// List alert configurations
+    List {
+        #[arg(long)]
+        universe_id: u64,
+        /// Filter by firing status
+        #[arg(long)]
+        firing_status: Option<String>,
+    },
+    /// Create an alert from a JSON document
+    Create {
+        #[arg(long)]
+        universe_id: u64,
+        /// JSON document; the alert schema is provider-defined
+        #[arg(long)]
+        document: String,
+    },
+    /// Update an alert from a JSON document
+    Update {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        alert_id: String,
+        #[arg(long)]
+        document: String,
+    },
+    /// Delete an alert
+    Delete {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        alert_id: String,
+    },
+    /// List alert incidents in a time window
+    Incidents {
+        #[arg(long)]
+        universe_id: u64,
+        /// RFC3339 start time
+        #[arg(long)]
+        start_time: String,
+        /// RFC3339 end time
+        #[arg(long)]
+        end_time: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct EventArgs {
+    #[command(subcommand)]
+    pub command: EventCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum EventCommand {
+    /// List game events under a universe
+    List {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long, default_value_t = 25)]
+        page_size: u32,
+    },
+    /// Get one game event
+    Get {
+        #[arg(long)]
+        event_id: u64,
+    },
+    /// Create a game event from a JSON document
+    Create {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        document: String,
+    },
+    /// Update a game event from a JSON document
+    Update {
+        #[arg(long)]
+        event_id: u64,
+        #[arg(long)]
+        document: String,
+    },
+    /// Delete a game event
+    Delete {
+        #[arg(long)]
+        event_id: u64,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -1001,6 +1097,77 @@ impl Cli {
                     operation_id,
                 } => cmd::analytics::operation(&ctx, universe_id, &kind, &operation_id).await,
                 AnalyticsCommand::Catalog => cmd::analytics::catalog().await,
+                AnalyticsCommand::Alerts { command } => match command {
+                    AlertCommand::List {
+                        universe_id,
+                        firing_status,
+                    } => {
+                        cmd::alerts::list(
+                            &ctx,
+                            "universe",
+                            &universe_id.to_string(),
+                            firing_status.as_deref(),
+                        )
+                        .await
+                    }
+                    AlertCommand::Create {
+                        universe_id,
+                        document,
+                    } => {
+                        cmd::alerts::create(&ctx, "universe", &universe_id.to_string(), &document)
+                            .await
+                    }
+                    AlertCommand::Update {
+                        universe_id,
+                        alert_id,
+                        document,
+                    } => {
+                        cmd::alerts::update(
+                            &ctx,
+                            "universe",
+                            &universe_id.to_string(),
+                            &alert_id,
+                            &document,
+                        )
+                        .await
+                    }
+                    AlertCommand::Delete {
+                        universe_id,
+                        alert_id,
+                    } => {
+                        cmd::alerts::delete(&ctx, "universe", &universe_id.to_string(), &alert_id)
+                            .await
+                    }
+                    AlertCommand::Incidents {
+                        universe_id,
+                        start_time,
+                        end_time,
+                    } => {
+                        cmd::alerts::incidents(
+                            &ctx,
+                            "universe",
+                            &universe_id.to_string(),
+                            &start_time,
+                            &end_time,
+                        )
+                        .await
+                    }
+                },
+            },
+            Command::Event(args) => match args.command {
+                EventCommand::List {
+                    universe_id,
+                    page_size,
+                } => cmd::event::list(&ctx, universe_id, page_size).await,
+                EventCommand::Get { event_id } => cmd::event::get(&ctx, event_id).await,
+                EventCommand::Create {
+                    universe_id,
+                    document,
+                } => cmd::event::create(&ctx, universe_id, &document).await,
+                EventCommand::Update { event_id, document } => {
+                    cmd::event::update(&ctx, event_id, &document).await
+                }
+                EventCommand::Delete { event_id } => cmd::event::delete(&ctx, event_id).await,
             },
             Command::Datastore(args) => match args.command {
                 DatastoreCommand::Get {

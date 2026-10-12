@@ -79,4 +79,9 @@ Update with progress, decisions, and blockers.
   revisions/restore). 7 catalog entries. 2 new unit tests. 55/55.
   Decision: draft edits always carry a hint that they are not live until
   publish, because that boundary is the main misuse risk.
+- Iteration 4: Analytics alerts (list/create/update/delete/incidents) and
+  virtual events (list/get/create/update/delete) done. 10 catalog entries.
+  4 new unit tests. 59/59. Decision: both take provider-defined JSON bodies,
+  so the CLI forwards --document verbatim instead of pinning a schema.
+  Response envelope keys vary, so counts probe several keys.
 - Scope excludes live API calls by explicit instruction.

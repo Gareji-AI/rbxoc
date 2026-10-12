@@ -1,5 +1,6 @@
 //! Command implementations. Called from `cli.rs`.
 
+pub mod alerts;
 pub mod analytics;
 pub mod asset;
 pub mod assets;
@@ -7,6 +8,7 @@ pub mod badge;
 pub mod codegen;
 pub mod config;
 pub mod datastore;
+pub mod event;
 pub mod model;
 pub mod monetization;
 pub mod ordered_datastore;
