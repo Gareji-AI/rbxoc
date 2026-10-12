@@ -6,8 +6,11 @@ rust-version = "1.99"
 description = "CLI for the Roblox Open Cloud API, designed for coding agents"
 license = "MIT"
 repository = "https://github.com/eiei114/rbxoc"
-keywords = ["roblox", "open-cloud", "cli", "games"]
-categories = ["command-line-utilities"]
+readme = "README.md"
+keywords = ["roblox", "open-cloud", "cli", "assets", "game-development"]
+categories = ["command-line-utilities", "development-tools"]
+# Internal task tracking and local scripts are not part of the crate.
+exclude = [".ralph/", ".pi/"]
 
 [[bin]]
 name = "rbxoc"
