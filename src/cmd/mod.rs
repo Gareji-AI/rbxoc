@@ -7,6 +7,7 @@ pub mod codegen;
 pub mod datastore;
 pub mod model;
 pub mod monetization;
+pub mod ordered_datastore;
 pub mod place;
 pub mod server;
 pub mod thumbnail;

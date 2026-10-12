@@ -75,6 +75,9 @@ pub enum Command {
     /// DataStores
     Datastore(DatastoreArgs),
 
+    /// Ordered DataStores (leaderboards)
+    OrderedDatastore(OrderedDatastoreArgs),
+
     /// Game Passes
     Gamepass(GamepassArgs),
 
@@ -479,6 +482,81 @@ pub enum DatastoreCommand {
 }
 
 #[derive(Debug, Args)]
+pub struct OrderedDatastoreArgs {
+    #[command(subcommand)]
+    pub command: OrderedDatastoreCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum OrderedDatastoreCommand {
+    /// List entries, highest value first by default
+    List {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        store: String,
+        /// Scope segment. Required for ordered DataStores.
+        #[arg(long, default_value = "global")]
+        scope: String,
+        /// Sort ascending instead of descending
+        #[arg(long)]
+        ascending: bool,
+        #[arg(long, default_value_t = 50)]
+        page_size: u32,
+    },
+    Get {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        store: String,
+        #[arg(long, default_value = "global")]
+        scope: String,
+        #[arg(long)]
+        entry: String,
+    },
+    Set {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        store: String,
+        #[arg(long, default_value = "global")]
+        scope: String,
+        #[arg(long)]
+        entry: String,
+        /// Integer value for the entry
+        #[arg(long, allow_hyphen_values = true)]
+        value: i64,
+        /// Allow creating a new entry
+        #[arg(long)]
+        create: bool,
+    },
+    Delete {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        store: String,
+        #[arg(long, default_value = "global")]
+        scope: String,
+        #[arg(long)]
+        entry: String,
+    },
+    /// Add to an entry's value atomically
+    Increment {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        store: String,
+        #[arg(long, default_value = "global")]
+        scope: String,
+        #[arg(long)]
+        entry: String,
+        /// Amount to add. Negative values subtract.
+        #[arg(long, allow_hyphen_values = true)]
+        amount: i64,
+    },
+}
+
+#[derive(Debug, Args)]
 pub struct GamepassArgs {
     #[command(subcommand)]
     pub command: GamepassCommand,
@@ -830,6 +908,75 @@ impl Cli {
                     store,
                     max_page_size,
                 } => cmd::datastore::list(&ctx, universe_id, &store, max_page_size).await,
+            },
+            Command::OrderedDatastore(args) => match args.command {
+                OrderedDatastoreCommand::List {
+                    universe_id,
+                    store,
+                    scope,
+                    ascending,
+                    page_size,
+                } => {
+                    cmd::ordered_datastore::list(
+                        &ctx,
+                        universe_id,
+                        &store,
+                        &scope,
+                        ascending,
+                        page_size,
+                    )
+                    .await
+                }
+                OrderedDatastoreCommand::Get {
+                    universe_id,
+                    store,
+                    scope,
+                    entry,
+                } => cmd::ordered_datastore::get(&ctx, universe_id, &store, &scope, &entry).await,
+                OrderedDatastoreCommand::Set {
+                    universe_id,
+                    store,
+                    scope,
+                    entry,
+                    value,
+                    create,
+                } => {
+                    cmd::ordered_datastore::set(
+                        &ctx,
+                        universe_id,
+                        &store,
+                        &scope,
+                        &entry,
+                        value,
+                        create,
+                    )
+                    .await
+                }
+                OrderedDatastoreCommand::Delete {
+                    universe_id,
+                    store,
+                    scope,
+                    entry,
+                } => {
+                    cmd::ordered_datastore::delete(&ctx, universe_id, &store, &scope, &entry).await
+                }
+                OrderedDatastoreCommand::Increment {
+                    universe_id,
+                    store,
+                    scope,
+                    entry,
+                    amount,
+                } => {
+                    cmd::ordered_datastore::increment(
+                        &ctx,
+                        universe_id,
+                        &store,
+                        &scope,
+                        &entry,
+                        amount,
+                    )
+                    .await
+                }
             },
             Command::Gamepass(args) => match args.command {
                 GamepassCommand::List { universe_id } => {
