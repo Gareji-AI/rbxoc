@@ -5,7 +5,7 @@
 //!
 //! API keys scope permissions per universe.
 
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::ctx::{Ctx, failure};
 use crate::output::{ErrorBody, Output};
@@ -40,16 +40,17 @@ pub async fn gamepass_create(
     price: Option<u64>,
     image: Option<&std::path::PathBuf>,
 ) -> Output {
-    let mut request = json!({ "name": name });
+    // Each property is its own multipart part; there is no `request` JSON field.
+    let mut fields: Vec<(&str, String)> = vec![("name", name.to_string())];
     if let Some(d) = description {
-        request["description"] = json!(d);
+        fields.push(("description", d.to_string()));
     }
     if let Some(p) = price {
-        request["price"] = json!(p);
-        request["isForSale"] = json!(true);
+        fields.push(("price", p.to_string()));
+        fields.push(("isForSale", "true".to_string()));
     }
     let path = format!("/game-passes/v1/universes/{universe_id}/game-passes");
-    submit_with_optional_image(ctx, "gamepass create", &path, "POST", request, image).await
+    submit_multipart(ctx, "gamepass create", &path, "POST", fields, image).await
 }
 
 /// Update a Game Pass.
@@ -63,19 +64,30 @@ pub async fn gamepass_update(
     price: Option<u64>,
     image: Option<&std::path::PathBuf>,
 ) -> Output {
-    let mut request = json!({ "gamePassId": game_pass_id.to_string() });
+    let mut fields: Vec<(&str, String)> = Vec::new();
     if let Some(n) = name {
-        request["name"] = json!(n);
+        fields.push(("name", n.to_string()));
     }
     if let Some(d) = description {
-        request["description"] = json!(d);
+        fields.push(("description", d.to_string()));
     }
     if let Some(p) = price {
-        request["price"] = json!(p);
-        request["isForSale"] = json!(true);
+        fields.push(("price", p.to_string()));
+        fields.push(("isForSale", "true".to_string()));
+    }
+    if fields.is_empty() && image.is_none() {
+        return failure(
+            "gamepass update",
+            ErrorBody {
+                code: "nothing_to_update",
+                message: "no fields to update".into(),
+                status: None,
+                detail: Some("Pass --name, --description, --price, or --image".into()),
+            },
+        );
     }
     let path = format!("/game-passes/v1/universes/{universe_id}/game-passes/{game_pass_id}");
-    submit_with_optional_image(ctx, "gamepass update", &path, "PATCH", request, image).await
+    submit_multipart(ctx, "gamepass update", &path, "PATCH", fields, image).await
 }
 
 /// List Developer Products.
@@ -107,28 +119,34 @@ pub async fn devproduct_create(
     price: Option<u64>,
     image: Option<&std::path::PathBuf>,
 ) -> Output {
-    let mut request = json!({ "name": name });
+    let mut fields: Vec<(&str, String)> = vec![("name", name.to_string())];
     if let Some(d) = description {
-        request["description"] = json!(d);
+        fields.push(("description", d.to_string()));
     }
     if let Some(p) = price {
-        request["price"] = json!(p);
-        request["isForSale"] = json!(true);
+        fields.push(("price", p.to_string()));
+        fields.push(("isForSale", "true".to_string()));
     }
     let path = format!("/developer-products/v2/universes/{universe_id}/developer-products");
-    submit_with_optional_image(ctx, "devproduct create", &path, "POST", request, image).await
+    submit_multipart(ctx, "devproduct create", &path, "POST", fields, image).await
 }
 
 /// Build and send the multipart body. The image is optional.
-async fn submit_with_optional_image(
+async fn submit_multipart(
     ctx: &Ctx,
     command: &str,
     path: &str,
     method: &str,
-    request: Value,
+    fields: Vec<(&str, String)>,
     image: Option<&std::path::PathBuf>,
 ) -> Output {
-    let mut form = reqwest::multipart::Form::new().text("request", request.to_string());
+    // Update responses carry no body, so remember a caller-known id for the
+    // message. Create responses do carry one, which takes precedence below.
+    let known_id = known_id_from_path(path);
+    let mut form = reqwest::multipart::Form::new();
+    for (k, v) in fields {
+        form = form.text(k.to_string(), v);
+    }
     if let Some(img) = image {
         let bytes = match tokio::fs::read(img).await {
             Ok(b) => b,
@@ -189,12 +207,18 @@ async fn submit_with_optional_image(
                 return failure(command, err);
             }
             let data: Value = resp.json().await.unwrap_or(Value::Null);
-            let id = data
-                .get("gamePassId")
-                .or_else(|| data.get("developerProductId"))
-                .or_else(|| data.get("id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("(unknown)");
+            // The id comes back as a number for monetization resources, but
+            // some endpoints return a string. Accept either, then fall back to
+            // the id in the URL when the body is empty (PATCH).
+            let id = ["gamePassId", "productId", "developerProductId", "id"]
+                .iter()
+                .find_map(|k| data.get(*k))
+                .map(|v| match v {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .or_else(|| known_id.clone())
+                .unwrap_or_else(|| "(unknown)".to_string());
             Output::success(
                 command,
                 format!("{command} succeeded (id {id})"),
@@ -203,5 +227,40 @@ async fn submit_with_optional_image(
             .with_hints(vec!["This API is Beta; the schema may change".into()])
         }
         Err(err) => failure(command, err),
+    }
+}
+
+/// Extract a trailing numeric id from a resource path, for update calls whose
+/// response has no body. Returns None when the last segment is not a number.
+fn known_id_from_path(path: &str) -> Option<String> {
+    let last = path.trim_end_matches('/').rsplit('/').next()?;
+    if !last.is_empty() && last.chars().all(|c| c.is_ascii_digit()) {
+        Some(last.to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod path_id_tests {
+    use super::known_id_from_path;
+
+    #[test]
+    fn known_id_from_path_takes_trailing_number() {
+        assert_eq!(
+            known_id_from_path("/game-passes/v1/universes/1/game-passes/2029442313"),
+            Some("2029442313".to_string())
+        );
+        // A trailing slash is tolerated.
+        assert_eq!(known_id_from_path("/a/b/42/"), Some("42".to_string()));
+    }
+
+    #[test]
+    fn known_id_from_path_ignores_non_numeric_tails() {
+        assert_eq!(
+            known_id_from_path("/game-passes/v1/universes/1/game-passes"),
+            None
+        );
+        assert_eq!(known_id_from_path("/a/b/abc"), None);
     }
 }

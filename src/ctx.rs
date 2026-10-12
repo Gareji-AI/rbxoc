@@ -46,13 +46,23 @@ impl Ctx {
         let req = self.apply_auth(req);
         let mut attempt = 0u32;
         loop {
-            // RequestBuilder is cloneable, which retries need.
-            let this = req.try_clone().ok_or_else(|| ErrorBody {
-                code: "request_not_retryable",
-                message: "cannot rebuild the request (streaming body)".into(),
-                status: None,
-                detail: None,
-            })?;
+            // A multipart body is a stream and cannot be cloned, so retrying is
+            // impossible for uploads. Send those exactly once instead of
+            // failing before the request leaves the process.
+            let this = match req.try_clone() {
+                Some(ok) => ok,
+                None => {
+                    return req.send().await.map_err(|err| ErrorBody {
+                        code: "network_error",
+                        message: format!("cannot send the request: {err}"),
+                        status: None,
+                        detail: Some(
+                            "This request streams a body, so it cannot be retried automatically"
+                                .into(),
+                        ),
+                    });
+                }
+            };
             match this.send().await {
                 Ok(resp) => {
                     let status = resp.status().as_u16();

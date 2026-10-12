@@ -30,45 +30,50 @@ pub async fn grant(
             },
         );
     }
-    if !matches!(subject_type, "user" | "group") {
-        return failure(
-            COMMAND,
-            ErrorBody {
-                code: "invalid_subject_type",
-                message: format!("--subject-type must be user or group, got {subject_type}"),
-                status: None,
-                detail: None,
-            },
-        );
-    }
-    if !matches!(action, "use" | "edit") {
-        return failure(
-            COMMAND,
-            ErrorBody {
-                code: "invalid_action",
-                message: format!("--action must be use or edit, got {action}"),
-                status: None,
-                detail: Some(
-                    "Use \"use\" to let the subject load the asset, \"edit\" to modify it".into(),
-                ),
-            },
-        );
-    }
-
-    let subject = match subject_type {
-        "user" => json!({ "userId": subject_id.to_string() }),
-        _ => json!({ "groupId": subject_id.to_string() }),
+    // The API takes PascalCase enum values, and the subject/action fields sit at
+    // the top level next to a plain numeric assetIds array. An earlier version
+    // sent rbxassetid:// URIs inside a requests[] wrapper, which the server
+    // rejected with "Invalid SubjectType".
+    let subject_type_api = match subject_type {
+        "user" => "User",
+        "group" => "Group",
+        "group-roleset" => "GroupRoleset",
+        "universe" => "Universe",
+        "all" => "All",
+        other => {
+            return failure(
+                COMMAND,
+                ErrorBody {
+                    code: "invalid_subject_type",
+                    message: format!("--subject-type {other} is not accepted"),
+                    status: None,
+                    detail: Some("Use user, group, group-roleset, universe, or all".into()),
+                },
+            );
+        }
     };
-    let asset_uris: Vec<String> = asset_ids
-        .iter()
-        .map(|id| format!("rbxassetid://{id}"))
-        .collect();
+    let action_api = match action {
+        "use" => "Use",
+        "edit" => "Edit",
+        "download" => "Download",
+        other => {
+            return failure(
+                COMMAND,
+                ErrorBody {
+                    code: "invalid_action",
+                    message: format!("--action {other} is not accepted"),
+                    status: None,
+                    detail: Some("Use use, edit, or download".into()),
+                },
+            );
+        }
+    };
+
     let body = json!({
-        "requests": [{
-            "assetUris": asset_uris,
-            "subject": subject,
-            "action": action,
-        }]
+        "subjectType": subject_type_api,
+        "subjectId": subject_id.to_string(),
+        "action": action_api,
+        "assetIds": asset_ids,
     });
 
     let req = ctx
@@ -103,11 +108,27 @@ pub async fn grant(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
 
     #[test]
-    fn asset_uris_use_the_rbxassetid_scheme() {
+    fn asset_ids_stay_numeric_in_the_request() {
+        // The endpoint expects a plain integer array, not rbxassetid:// URIs.
         let ids = [1u64, 2];
-        let uris: Vec<String> = ids.iter().map(|id| format!("rbxassetid://{id}")).collect();
-        assert_eq!(uris, vec!["rbxassetid://1", "rbxassetid://2"]);
+        let body = json!({ "assetIds": ids });
+        assert_eq!(body["assetIds"][0], json!(1));
+        assert_eq!(body["assetIds"][1], json!(2));
+    }
+
+    #[test]
+    fn action_values_are_pascal_case() {
+        // "use" must become "Use"; the server rejects lowercase.
+        for (input, expected) in [("use", "Use"), ("edit", "Edit"), ("download", "Download")] {
+            let mapped = match input {
+                "use" => "Use",
+                "edit" => "Edit",
+                _ => "Download",
+            };
+            assert_eq!(mapped, expected);
+        }
     }
 }
