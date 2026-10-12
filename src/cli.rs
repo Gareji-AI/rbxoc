@@ -192,6 +192,9 @@ pub enum AssetCommand {
         /// Set assetType explicitly when the extension is not conclusive
         #[arg(long)]
         asset_type: Option<String>,
+        /// Resolve the asset type and report it without uploading
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Update an asset's content and metadata
     Update {
@@ -210,6 +213,9 @@ pub enum AssetCommand {
         icon: Option<std::path::PathBuf>,
         #[arg(long, value_name = "PATH")]
         preview: Option<std::path::PathBuf>,
+        /// Resolve the asset type and report it without uploading
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Fetch asset metadata
     Get {
@@ -585,6 +591,54 @@ impl Cli {
             return run_auth(self.api_key.as_deref(), self.api_key_file.as_ref(), command).await;
         }
 
+        // `asset create --dry-run` only inspects a local file, so it must work
+        // without credentials. Report inference and stop.
+        if let Command::Asset(AssetArgs { command }) = &self.command {
+            match command {
+                AssetCommand::Create {
+                    file,
+                    display_name,
+                    description,
+                    user_id,
+                    group_id,
+                    asset_type,
+                    dry_run: true,
+                } => {
+                    return cmd::asset::preview_create(
+                        file,
+                        display_name,
+                        description,
+                        *user_id,
+                        *group_id,
+                        asset_type.as_deref(),
+                    )
+                    .await;
+                }
+                AssetCommand::Update {
+                    asset_id,
+                    file,
+                    asset_type,
+                    display_name,
+                    description,
+                    icon,
+                    preview,
+                    dry_run: true,
+                } => {
+                    return cmd::asset::preview_update(
+                        file,
+                        *asset_id,
+                        asset_type.as_deref(),
+                        display_name.as_deref(),
+                        description.as_deref(),
+                        icon.as_deref(),
+                        preview.as_deref(),
+                    )
+                    .await;
+                }
+                _ => {}
+            }
+        }
+
         let auth = match auth::resolve(self.api_key.as_deref(), self.api_key_file.as_ref()) {
             Ok(a) => a,
             Err(e) => {
@@ -633,6 +687,7 @@ impl Cli {
                     user_id,
                     group_id,
                     asset_type,
+                    dry_run: _,
                 } => {
                     cmd::asset::create(
                         &ctx,
@@ -653,6 +708,7 @@ impl Cli {
                     description,
                     icon,
                     preview,
+                    dry_run: _,
                 } => {
                     cmd::asset::update(
                         &ctx,

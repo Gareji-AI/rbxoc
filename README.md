@@ -141,6 +141,43 @@ rbxoc asset rollback --asset-id 2205400862 --version 1
 
 Supported formats (20 MB per request): `.fbx` `.gltf` `.glb` `.rbxm` `.rbxmx` (Model), `.png` `.jpeg` `.bmp` `.tga` (Image), `.mp3` `.ogg` `.wav` `.flac`, `.mp4` `.mov`.
 
+### 3D models and animations
+
+`.rbxm` and `.rbxmx` map to two different asset types that share the same
+extension and the same `model/x-rbxm` content type:
+
+| Asset type | Root class | Note |
+| --- | --- | --- |
+| `Animation` | `KeyframeSequence` or `CurveAnimation` | content is not updatable |
+| `Model` | anything else | content is updatable |
+
+The extension cannot tell them apart, so `rbxoc` parses the file with the same
+DOM readers Rojo uses and reports what it found.
+
+```bash
+rbxoc asset create --file walk.rbxmx --display-name "Walk" --user-id 789 --dry-run
+```
+
+```json
+{
+  "assetType": "Animation",
+  "contentType": "model/x-rbxm",
+  "resolutionNote": "walk.rbxmx has class KeyframeSequence, so it uploads as Animation"
+}
+```
+
+`--dry-run` resolves the type without uploading and needs no credentials, so
+the classification can be checked before spending an upload. Pass
+`--asset-type` to override the inspection.
+
+A malformed model file fails with `model_parse_failed` instead of guessing, so
+a broken export does not silently land as the wrong asset type.
+
+For 3D models, `.fbx` / `.gltf` / `.glb` upload as `Model` containing
+MeshParts. Roblox does not expose importer settings through Open Cloud, so
+[Studio's 3D Importer](https://create.roblox.com/docs/art/modeling/3d-importer)
+remains the practical route when those settings matter.
+
 ### Asset ID registry and code generation
 
 Keep asset IDs out of game code. `rbxoc assets` maintains a manifest and a

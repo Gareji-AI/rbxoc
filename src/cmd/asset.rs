@@ -23,6 +23,9 @@ const CMD_UPDATE: &str = "asset update";
 
 /// Decide assetType and content-type from the extension. Returns `None` when
 /// the guess is unsafe, so the caller can ask for an explicit type.
+///
+/// `.rbxm` / `.rbxmx` need the file body to distinguish Animation from Model,
+/// so `infer_asset_from_file` handles those. This version assumes Model.
 pub fn infer_asset(file: &std::path::Path) -> Option<(&'static str, &'static str)> {
     let ext = file.extension()?.to_str()?.to_ascii_lowercase();
     Some(match ext.as_str() {
@@ -45,6 +48,57 @@ pub fn infer_asset(file: &std::path::Path) -> Option<(&'static str, &'static str
     })
 }
 
+/// Decide assetType and content-type, inspecting the body for Roblox models.
+///
+/// Returns the resolved pair plus a note when the body changed the answer, so
+/// the caller can surface why an `.rbxm` landed as an Animation.
+pub async fn infer_asset_from_file(
+    file: &std::path::Path,
+) -> Result<(&'static str, &'static str, Option<String>), ErrorBody> {
+    use crate::cmd::model::{self, ModelKind};
+
+    let Some(format) = model::format_for(file) else {
+        // Not a Roblox model; the extension decides.
+        return infer_asset(file)
+            .map(|(t, ct)| (t, ct, None))
+            .ok_or_else(|| ErrorBody {
+                code: "file_type_unknown",
+                message: format!("cannot infer assetType from {}", file.display()),
+                status: None,
+                detail: None,
+            });
+    };
+
+    let bytes = tokio::fs::read(file).await.map_err(|e| ErrorBody {
+        code: "file_unreadable",
+        message: format!("cannot read the file: {}", file.display()),
+        status: None,
+        detail: Some(e.to_string()),
+    })?;
+
+    match model::classify(&bytes, format) {
+        Ok(root) => {
+            let kind = root.kind();
+            let note = if kind == ModelKind::Animation {
+                Some(format!(
+                    "{} has class {}, so it uploads as Animation",
+                    file.display(),
+                    root.class
+                ))
+            } else {
+                None
+            };
+            Ok((kind.asset_type(), "model/x-rbxm", note))
+        }
+        Err(e) => Err(ErrorBody {
+            code: "model_parse_failed",
+            message: format!("cannot read {} as a Roblox {format} model", file.display()),
+            status: None,
+            detail: Some(e.to_string()),
+        }),
+    }
+}
+
 /// Asset types whose content body can be replaced on update.
 fn is_updateable_body(asset_type: &str) -> bool {
     asset_type == "Model"
@@ -61,11 +115,11 @@ pub async fn create(
     creator_group_id: Option<u64>,
     asset_type_override: Option<&str>,
 ) -> Output {
-    let (asset_type, content_type) = match resolve_asset_type(file, asset_type_override, CMD_CREATE)
-    {
-        Ok(v) => v,
-        Err(err) => return failure(CMD_CREATE, err),
-    };
+    let (asset_type, content_type, type_note) =
+        match resolve_asset_type(file, asset_type_override, CMD_CREATE).await {
+            Ok((t, ct, note)) => (t, ct, note),
+            Err(err) => return failure(CMD_CREATE, err),
+        };
 
     let creator = match (creator_user_id, creator_group_id) {
         (Some(id), None) => json!({ "userId": id.to_string() }),
@@ -110,7 +164,7 @@ pub async fn create(
         .client
         .post(ctx.url("/assets/v1/assets"))
         .multipart(form);
-    submit_operation(ctx, req, CMD_CREATE, &asset_type).await
+    submit_operation(ctx, req, CMD_CREATE, &asset_type, type_note).await
 }
 
 /// Update an asset.
@@ -125,10 +179,11 @@ pub async fn update(
     icon_file: Option<&std::path::Path>,
     preview_file: Option<&std::path::Path>,
 ) -> Output {
-    let (resolved_type, content_type) = match resolve_asset_type(file, asset_type, CMD_UPDATE) {
-        Ok(v) => v,
-        Err(err) => return failure(CMD_UPDATE, err),
-    };
+    let (resolved_type, content_type, type_note) =
+        match resolve_asset_type(file, asset_type, CMD_UPDATE).await {
+            Ok((t, ct, note)) => (t, ct, note),
+            Err(err) => return failure(CMD_UPDATE, err),
+        };
 
     if !is_updateable_body(&resolved_type) {
         return failure(
@@ -178,18 +233,18 @@ pub async fn update(
     );
     let url = format!("/assets/v1/assets/{asset_id}?updateMask={update_mask}");
     let req = ctx.client.patch(ctx.url(&url)).multipart(form);
-    submit_operation(ctx, req, CMD_UPDATE, &resolved_type).await
+    submit_operation(ctx, req, CMD_UPDATE, &resolved_type, type_note).await
 }
 
 /// Resolve assetType and content-type, or explain why it could not.
-fn resolve_asset_type(
+async fn resolve_asset_type(
     file: &std::path::Path,
     asset_type_override: Option<&str>,
     command: &str,
-) -> Result<(String, &'static str), ErrorBody> {
+) -> Result<(String, &'static str, Option<String>), ErrorBody> {
     match asset_type_override {
         Some(t) => match content_type_for(t, file) {
-            Some(ct) => Ok((t.to_string(), ct)),
+            Some(ct) => Ok((t.to_string(), ct, None)),
             None => Err(ErrorBody {
                 code: "asset_type_unknown",
                 message: format!("cannot map --asset-type {t} to a content-type"),
@@ -200,16 +255,16 @@ fn resolve_asset_type(
                 )),
             }),
         },
-        None => match infer_asset(file) {
-            Some((t, ct)) => Ok((t.to_string(), ct)),
-            None => Err(ErrorBody {
-                code: "file_type_unknown",
-                message: format!("cannot infer assetType from {}", file.display()),
-                status: None,
-                detail: Some(format!(
-                    "{command} needs --asset-type when the extension is not recognized"
-                )),
-            }),
+        None => match infer_asset_from_file(file).await {
+            Ok((t, ct, note)) => Ok((t.to_string(), ct, note)),
+            Err(mut err) => {
+                if err.code == "file_type_unknown" {
+                    err.detail = Some(format!(
+                        "{command} needs --asset-type when the extension is not recognized"
+                    ));
+                }
+                Err(err)
+            }
         },
     }
 }
@@ -327,6 +382,7 @@ async fn submit_operation(
     req: reqwest::RequestBuilder,
     command: &str,
     asset_type: &str,
+    type_note: Option<String>,
 ) -> Output {
     match ctx.send(req).await {
         Ok(resp) => {
@@ -346,12 +402,17 @@ async fn submit_operation(
                         format!("Accepted the {asset_type} operation (operation {op_id})"),
                         Some(json!({ "operationId": op_id, "response": data })),
                     )
-                    .with_hints(vec![
-                        format!(
-                            "Run `rbxoc asset operation --operation-id {op_id}` to check completion"
-                        ),
-                        "Processing is asynchronous; it is not immediate".into(),
-                    ])
+                    .with_hints(
+                        type_note
+                            .into_iter()
+                            .chain([
+                                format!(
+                                    "Run `rbxoc asset operation --operation-id {op_id}` to check completion"
+                                ),
+                                "Processing is asynchronous; it is not immediate".into(),
+                            ])
+                            .collect::<Vec<_>>(),
+                    )
                 }
                 Err(e) => failure(
                     command,
@@ -415,7 +476,7 @@ pub async fn rollback(ctx: &Ctx, asset_id: u64, version: u64) -> Output {
     let path = format!("/assets/v1/assets/{asset_id}/versions:rollback");
     let body = json!({ "assetVersion": version.to_string() });
     let req = ctx.client.post(ctx.url(&path)).json(&body);
-    submit_operation(ctx, req, "asset rollback", "asset").await
+    submit_operation(ctx, req, "asset rollback", "asset", None).await
 }
 
 /// Archive an asset.
@@ -459,6 +520,131 @@ pub async fn operation(ctx: &Ctx, operation_id: &str) -> Output {
         }
         Err(err) => failure("asset operation", err),
     }
+}
+
+/// Report how a file would be classified, without uploading.
+///
+/// This is the credential-free path. It exists so the asset type of a
+/// `.rbxm` / `.rbxmx` can be checked before spending an upload.
+#[allow(clippy::too_many_arguments)]
+pub async fn preview_create(
+    file: &std::path::Path,
+    display_name: &str,
+    description: &str,
+    creator_user_id: Option<u64>,
+    creator_group_id: Option<u64>,
+    asset_type_override: Option<&str>,
+) -> Output {
+    const COMMAND: &str = "asset create (dry-run)";
+    let (asset_type, content_type, type_note) =
+        match resolve_asset_type(file, asset_type_override, COMMAND).await {
+            Ok(v) => v,
+            Err(err) => return failure(COMMAND, err),
+        };
+
+    if creator_user_id.is_none() && creator_group_id.is_none() {
+        return failure(
+            COMMAND,
+            ErrorBody {
+                code: "creator_missing",
+                message: "either userId or groupId is required".into(),
+                status: None,
+                detail: None,
+            },
+        );
+    }
+
+    let size = tokio::fs::metadata(file)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let mut hints = vec![
+        "Drop --dry-run to upload for real".into(),
+        "Set RBXOC_API_KEY before uploading".into(),
+    ];
+    if let Some(note) = &type_note {
+        hints.insert(0, note.clone());
+    }
+
+    Output::success(
+        COMMAND,
+        format!("{asset_type} would be uploaded as {content_type}"),
+        Some(serde_json::json!({
+            "assetType": asset_type,
+            "contentType": content_type,
+            "displayName": display_name,
+            "description": description,
+            "bytes": size,
+            "resolutionNote": type_note,
+        })),
+    )
+    .with_hints(hints)
+}
+
+/// Report how an update would be classified, without uploading.
+#[allow(clippy::too_many_arguments)]
+pub async fn preview_update(
+    file: &std::path::Path,
+    asset_id: u64,
+    asset_type: Option<&str>,
+    display_name: Option<&str>,
+    description: Option<&str>,
+    icon: Option<&std::path::Path>,
+    preview: Option<&std::path::Path>,
+) -> Output {
+    const COMMAND: &str = "asset update (dry-run)";
+    let (resolved_type, content_type, type_note) =
+        match resolve_asset_type(file, asset_type, COMMAND).await {
+            Ok(v) => v,
+            Err(err) => return failure(COMMAND, err),
+        };
+
+    // Non-Model bodies cannot be replaced, so report that before uploading.
+    if !is_updateable_body(&resolved_type) {
+        return failure(
+            COMMAND,
+            ErrorBody {
+                code: "asset_update_unsupported",
+                message: format!("{resolved_type} cannot replace its content body; only Model can"),
+                status: None,
+                detail: Some(
+                    "Metadata-only updates omit --file; content updates need a Model".into(),
+                ),
+            },
+        );
+    }
+
+    let size = tokio::fs::metadata(file)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let mask = build_update_mask(
+        display_name.is_some(),
+        description.is_some(),
+        icon.is_some(),
+        preview.is_some(),
+    );
+    let mut hints = vec![
+        "Drop --dry-run to update for real".into(),
+        "Set RBXOC_API_KEY before updating".into(),
+    ];
+    if let Some(note) = &type_note {
+        hints.insert(0, note.clone());
+    }
+
+    Output::success(
+        COMMAND,
+        format!("{resolved_type} would be updated as {content_type}"),
+        Some(serde_json::json!({
+            "assetId": asset_id,
+            "assetType": resolved_type,
+            "contentType": content_type,
+            "bytes": size,
+            "updateMask": mask,
+            "resolutionNote": type_note,
+        })),
+    )
+    .with_hints(hints)
 }
 
 #[cfg(test)]

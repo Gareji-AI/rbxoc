@@ -34,6 +34,10 @@ time = { version = "0.3", features = ["formatting", "macros"] }
 toml = "0.9"
 # Deterministic file walking for the asset globs.
 glob = "0.3"
+# Parses .rbxm / .rbxmx to tell Animation from Model. Both asset types share
+# the extension and content type, so the file must be read.
+rbx_binary = "3.0.1"
+rbx_xml = "3.0.1"
 # Errors. anyhow adds context; the exit code is chosen by the CLI itself.
 anyhow = "1"
 thiserror = "2"
