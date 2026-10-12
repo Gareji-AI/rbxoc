@@ -84,4 +84,17 @@ Update with progress, decisions, and blockers.
   4 new unit tests. 59/59. Decision: both take provider-defined JSON bodies,
   so the CLI forwards --document verbatim instead of pinning a schema.
   Response envelope keys vary, so counts probe several keys.
+
+- Iteration 5: Found a real toolchain defect. `mise.toml` pinned Rojo 7.7.1 and
+  pesde, copied from the Roblox template repo, but rbxoc never uses either: it
+  talks HTTP and reads .rbxm via the rbx_binary/rbx_xml crates. Meanwhile
+  `~/.cargo/bin/rojo` (7.5.1) and `~/.rokit/bin/rojo` (7.5.1) both shadowed the
+  pin, so `mise exec -- rojo --version` reported 7.5.1 while mise.toml claimed
+  7.7.1. Removed the unused pins and the matching update-tools entries, so the
+  manifest now only claims what the project uses. Also added scripts/check-coverage.mjs.
+  The checker first flagged its own false positive (a source-slicing heuristic);
+  fixed by parsing the auth array instead.
+- Reflection: 5 of 8 checklist items done, 54 implemented endpoints (from 29).
+  The approach is working: one domain per iteration, catalog plus tests each
+  time, `mise run check` as the gate. No blockers.
 - Scope excludes live API calls by explicit instruction.

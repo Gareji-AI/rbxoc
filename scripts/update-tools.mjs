@@ -17,11 +17,8 @@ const manifestPath = path.join(root, "mise.toml");
 const apply = process.argv.includes("--apply");
 
 // Update targets. These mirror [tools] in mise.toml.
-const TRACKED = [
-	{ key: "rust", label: "rust" },
-	{ key: "github:rojo-rbx/rojo", label: "rojo" },
-	{ key: "github:pesde-pkg/pesde", label: "pesde" },
-];
+// Only Rust. rbxoc shells out to no Roblox tooling, so none is pinned.
+const TRACKED = [{ key: "rust", label: "rust" }];
 
 function mise(args) {
 	const result = spawnSync("mise", args, { cwd: root, encoding: "utf8", shell: false });

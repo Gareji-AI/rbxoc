@@ -1,9 +1,14 @@
 [tools]
-# Used to build the CLI. mise supplies Rust, so the host does not need rustup.
+# Rust is the only external tool this CLI needs. mise supplies it, so the
+# host does not need rustup.
 rust = "1.99.0"
-# Roblox-side tooling.
-"github:rojo-rbx/rojo" = "7.7.1"
-"github:pesde-pkg/pesde" = "0.7.4"
+
+# No Roblox-side tools here.
+#
+# rbxoc talks to the Open Cloud HTTP API and reads .rbxm/.rbxmx through the
+# rbx_binary / rbx_xml crates. It does not shell out to Rojo, pesde, or any
+# other Roblox tooling, so pinning them would only invite a stale PATH copy
+# to shadow the pin. Add one here only when a task in this file needs it.
 
 # Do not add automatic updates here.
 # self_update.auto and tool_update.global_auto are global-only settings, and
@@ -34,4 +39,14 @@ description = "Try the catalog output that needs no credentials"
 run = [
   "cargo run --quiet -- api list --implemented",
   "cargo run --quiet -- api mutating",
+]
+
+[tasks.verify]
+description = "Full monitor-rerunnable verification"
+run = [
+  "cargo fmt --check",
+  "cargo clippy --all-targets -- -D warnings",
+  "cargo test",
+  "cargo build --release",
+  "node scripts/check-coverage.mjs",
 ]
