@@ -5,6 +5,7 @@ pub mod asset;
 pub mod assets;
 pub mod badge;
 pub mod codegen;
+pub mod config;
 pub mod datastore;
 pub mod model;
 pub mod monetization;

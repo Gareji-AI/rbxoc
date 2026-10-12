@@ -87,6 +87,9 @@ pub enum Command {
     /// Asset permissions
     Permissions(PermissionsArgs),
 
+    /// Remote config and feature flags
+    Config(ConfigArgs),
+
     /// Developer Products
     Devproduct(DevproductArgs),
 
@@ -662,6 +665,73 @@ pub enum PermissionsCommand {
 }
 
 #[derive(Debug, Args)]
+pub struct ConfigArgs {
+    #[command(subcommand)]
+    pub command: ConfigCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Read the published config values
+    Get {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        repository: String,
+    },
+    /// Read the current draft
+    Draft {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        repository: String,
+    },
+    /// Patch the draft with a JSON document
+    PatchDraft {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        repository: String,
+        /// JSON document
+        #[arg(long)]
+        document: String,
+    },
+    /// Replace the whole draft with a JSON document
+    Overwrite {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        repository: String,
+        /// JSON document
+        #[arg(long)]
+        document: String,
+    },
+    /// Publish the draft so the game reads it
+    Publish {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        repository: String,
+    },
+    /// List revision history
+    Revisions {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        repository: String,
+    },
+    /// Stage a revert to a previous revision
+    Restore {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        repository: String,
+        #[arg(long)]
+        revision_id: String,
+    },
+}
+
+#[derive(Debug, Args)]
 pub struct DevproductArgs {
     #[command(subcommand)]
     pub command: DevproductCommand,
@@ -1125,6 +1195,39 @@ impl Cli {
                     cmd::permissions::grant(&ctx, &asset_ids, &subject_type, subject_id, &action)
                         .await
                 }
+            },
+            Command::Config(args) => match args.command {
+                ConfigCommand::Get {
+                    universe_id,
+                    repository,
+                } => cmd::config::get(&ctx, universe_id, &repository).await,
+                ConfigCommand::Draft {
+                    universe_id,
+                    repository,
+                } => cmd::config::draft(&ctx, universe_id, &repository).await,
+                ConfigCommand::PatchDraft {
+                    universe_id,
+                    repository,
+                    document,
+                } => cmd::config::patch_draft(&ctx, universe_id, &repository, &document).await,
+                ConfigCommand::Overwrite {
+                    universe_id,
+                    repository,
+                    document,
+                } => cmd::config::overwrite(&ctx, universe_id, &repository, &document).await,
+                ConfigCommand::Publish {
+                    universe_id,
+                    repository,
+                } => cmd::config::publish(&ctx, universe_id, &repository).await,
+                ConfigCommand::Revisions {
+                    universe_id,
+                    repository,
+                } => cmd::config::revisions(&ctx, universe_id, &repository).await,
+                ConfigCommand::Restore {
+                    universe_id,
+                    repository,
+                    revision_id,
+                } => cmd::config::restore(&ctx, universe_id, &repository, &revision_id).await,
             },
             Command::Devproduct(args) => match args.command {
                 DevproductCommand::List { universe_id } => {

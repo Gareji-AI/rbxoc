@@ -75,4 +75,8 @@ Update with progress, decisions, and blockers.
   3 catalog entries. 3 new unit tests. mise run check exit 0, 53/53.
   Decisions: badge create requires --payment-source and returns a Robux-spend
   hint; permissions accepts repeated --asset-id and validates action/subject.
+- Iteration 3: Creator configs done (get/draft/patch-draft/overwrite/publish/
+  revisions/restore). 7 catalog entries. 2 new unit tests. 55/55.
+  Decision: draft edits always carry a hint that they are not live until
+  publish, because that boundary is the main misuse risk.
 - Scope excludes live API calls by explicit instruction.
