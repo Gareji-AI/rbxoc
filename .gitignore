@@ -1,1 +1,5 @@
 /target
+
+# Project-local Open Cloud credentials. A key is scoped to one universe, so it
+# lives beside the project, never in the repository.
+.rbxoc/

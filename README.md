@@ -87,17 +87,33 @@ Failures always carry `hints`. Each HTTP status maps to concrete next actions:
 
 ### 4. Secret handling
 
-Environment variables and files take priority over arguments. `--api-key` lands in shell history, so agents should avoid it.
+An Open Cloud API key is scoped to one universe, so a single global key is the
+wrong model: it makes it easy to run one game's commands against another
+game's key. Credentials are resolved from the current project first.
 
 Lookup order:
 
-1. `--api-key` (discouraged)
+1. `--api-key` (discouraged; it lands in shell history)
 2. `RBXOC_API_KEY` environment variable
 3. `--api-key-file <path>`
-4. `~/.rbxoc/api-key`
-5. `RBXOC_OAUTH_TOKEN` / `~/.rbxoc/oauth-token`
+4. `.rbxoc/api-key`, walking up from the working directory and stopping at the
+   first `.rbxoc` found
 
-Output always masks the value (`abcd****`).
+Place the key beside the project:
+
+```bash
+echo "your-api-key" > .rbxoc/api-key
+```
+
+Add `.rbxoc/` to the project's `.gitignore`. There is no home-directory
+fallback, so a key never leaks from one repository into another, and a nested
+project with its own `.rbxoc` never inherits its parent's key.
+
+OAuth2 comes from `RBXOC_OAUTH_TOKEN` or `.rbxoc/oauth-token` in the same
+project-local directory.
+
+`rbxoc auth check` reports the resolved source path, so a wrong-project key is
+immediate to spot. Output always masks the value (`abcd****`).
 
 ### 5. Exit codes
 
@@ -136,9 +152,30 @@ mise run install-local  # into ~/.local/bin
 
 ### Check credentials
 
+Put the key beside the project, then verify it:
+
 ```bash
-export RBXOC_API_KEY="..."
+mkdir -p .rbxoc
+echo "your-api-key" > .rbxoc/api-key
 rbxoc auth check --universe-id 123456
+```
+
+The check reports which file or variable supplied the key, so a key meant for
+another game is obvious:
+
+```json
+{
+  "ok": true,
+  "summary": "Credentials work (api-key / abcd****)",
+  "data": { "source": "/work/my-game/.rbxoc" }
+}
+```
+
+`RBXOC_API_KEY` also works for one-off runs and CI, where a file may not be
+convenient:
+
+```bash
+RBXOC_API_KEY="..." rbxoc auth check --universe-id 123456
 ```
 
 ### Publish a place

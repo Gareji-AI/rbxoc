@@ -33,8 +33,9 @@ pub struct Cli {
     #[arg(long, value_enum, global = true)]
     pub format: Option<Format>,
 
-    /// API key. Falls back to RBXOC_API_KEY or ~/.rbxoc/api-key.
-    #[arg(long, global = true, env = "RBXOC_API_KEY", hide_env_values = true)]
+    /// API key. Prefer RBXOC_API_KEY or the project's .rbxoc/api-key; passing
+    /// a key here records it in shell history.
+    #[arg(long, global = true, hide_env_values = true)]
     pub api_key: Option<String>,
 
     /// File containing the API key.
@@ -1536,14 +1537,18 @@ async fn run_auth(
         }
     };
 
+    // Report where the credential came from, so a wrong-project key is obvious.
     let source = if api_key.is_some() {
-        "--api-key"
+        "--api-key".to_string()
     } else if std::env::var("RBXOC_API_KEY").is_ok() {
-        "RBXOC_API_KEY"
+        "RBXOC_API_KEY".to_string()
     } else if std::env::var("RBXOC_OAUTH_TOKEN").is_ok() {
-        "RBXOC_OAUTH_TOKEN"
+        "RBXOC_OAUTH_TOKEN".to_string()
     } else {
-        "~/.rbxoc/"
+        match auth::find_credential_dir() {
+            Some(dir) => dir.to_string_lossy().to_string(),
+            None => "(none)".to_string(),
+        }
     };
 
     let ctx = match Ctx::new(auth.clone(), 1) {
