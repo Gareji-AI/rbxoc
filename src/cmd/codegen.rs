@@ -1,0 +1,401 @@
+//! Asset ID code generation.
+//!
+//! Turns a set of `path -> assetId` mappings into Luau or TypeScript source so
+//! game code references assets by name instead of a bare number. This mirrors
+//! the approach popularized by Asphalt and Tarmac: keep the upload out of the
+//! game code, and make the IDs a generated artifact.
+//!
+//! Output is deterministic. The same input always produces byte-identical
+//! source, so committing the generated file stays diff-friendly.
+//!
+//! ```text
+//! ui/button.png -> 123  =>  local Assets = { ui = { button = "rbxassetid://123" } }
+//! ```
+
+use std::collections::BTreeMap;
+
+/// A node in the generated tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Node {
+    Table(BTreeMap<String, Node>),
+    /// A plain `rbxassetid://` string.
+    AssetId(String),
+    /// A `Content.fromUri` wrapper. Used when the caller wants Content values.
+    Content(String),
+}
+
+/// Target language for the generated source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Language {
+    Luau,
+    TypeScript,
+}
+
+/// How paths map to the generated structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Style {
+    /// Index by path string: `Assets["ui/button.png"]`. TypeScript can type it.
+    Flat,
+    /// Nested tables: `Assets.ui.button`. Works the same in Luau.
+    Nested,
+}
+
+/// Code generation options.
+#[derive(Debug, Clone, Copy)]
+pub struct Options {
+    pub language: Language,
+    pub style: Style,
+    /// Drop the file extension from the final key.
+    pub strip_extensions: bool,
+    /// Emit `Content.fromUri(...)` instead of a plain string.
+    pub content: bool,
+}
+
+/// Build the tree from `path -> assetId` pairs.
+pub fn build_tree(pairs: &[(String, u64)], options: &Options) -> Node {
+    let mut root = Node::Table(BTreeMap::new());
+    for (path, id) in pairs {
+        let uri = format!("rbxassetid://{id}");
+        let value = if options.content {
+            Node::Content(uri)
+        } else {
+            Node::AssetId(uri)
+        };
+        match options.style {
+            Style::Nested => {
+                let components = path_components(path, options.strip_extensions);
+                let refs: Vec<&str> = components.iter().map(|s| s.as_str()).collect();
+                insert_nested(&mut root, &refs, value);
+            }
+            Style::Flat => {
+                let key = flat_key(path, options.strip_extensions);
+                insert_flat(&mut root, &key, value);
+            }
+        }
+    }
+    root
+}
+
+/// Split a path into nesting components. Extension stripping applies to the
+/// last component only.
+fn path_components(path: &str, strip_extensions: bool) -> Vec<String> {
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    let mut out = Vec::with_capacity(parts.len());
+    for (i, part) in parts.iter().enumerate() {
+        if i == parts.len() - 1 && strip_extensions {
+            out.push(stem(part).to_string());
+        } else {
+            out.push((*part).to_string());
+        }
+    }
+    out
+}
+
+/// Flat key for a path.
+fn flat_key(path: &str, strip_extensions: bool) -> String {
+    if !strip_extensions {
+        return path.to_string();
+    }
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return path.to_string();
+    }
+    let last = parts.len() - 1;
+    let mut out = parts[..last].join("/");
+    let stemmed = stem(parts[last]);
+    if out.is_empty() {
+        stemmed.to_string()
+    } else {
+        out.push('/');
+        out.push_str(stemmed);
+        out
+    }
+}
+
+/// File name without its extension. A leading dot does not count as the stem
+/// boundary, matching common path semantics.
+fn stem(name: &str) -> &str {
+    match name.rfind('.') {
+        Some(0) | None => name,
+        Some(idx) => &name[..idx],
+    }
+}
+
+fn insert_flat(node: &mut Node, key: &str, value: Node) {
+    if !matches!(node, Node::Table(_)) {
+        *node = Node::Table(BTreeMap::new());
+    }
+    if let Node::Table(map) = node {
+        map.insert(key.to_string(), value);
+    }
+}
+
+fn insert_nested(node: &mut Node, components: &[&str], value: Node) {
+    if !matches!(node, Node::Table(_)) {
+        *node = Node::Table(BTreeMap::new());
+    }
+    let Some((head, rest)) = components.split_first() else {
+        return;
+    };
+    if let Node::Table(map) = node {
+        if rest.is_empty() {
+            map.insert((*head).to_string(), value);
+        } else {
+            let next = map
+                .entry((*head).to_string())
+                .or_insert_with(|| Node::Table(BTreeMap::new()));
+            insert_nested(next, rest, value);
+        }
+    }
+}
+
+/// Render the tree as source.
+pub fn generate(root: &Node, variable: &str, options: &Options) -> String {
+    let banner = match options.language {
+        Language::Luau => {
+            "-- This file is automatically @generated by rbxoc.\n-- It is not intended for manual editing.\n"
+        }
+        Language::TypeScript => {
+            "// This file is automatically @generated by rbxoc.\n// It is not intended for manual editing.\n"
+        }
+    };
+    let body = match options.language {
+        Language::Luau => render_luau(root, 0),
+        Language::TypeScript => render_ts_type(root, 0),
+    };
+    match options.language {
+        Language::Luau => format!("{banner}local {variable} = {body}\n\nreturn {variable}\n"),
+        Language::TypeScript => {
+            format!("{banner}declare const {variable}: {body}\n\nexport = {variable}\n")
+        }
+    }
+}
+
+fn render_luau(node: &Node, indent: usize) -> String {
+    match node {
+        Node::Table(map) => {
+            if map.is_empty() {
+                return "{}".to_string();
+            }
+            let pad = "\t".repeat(indent + 1);
+            let close = "\t".repeat(indent);
+            let mut out = String::from("{\n");
+            for (k, v) in map {
+                out.push_str(&pad);
+                if is_valid_identifier(k) {
+                    out.push_str(k);
+                } else {
+                    out.push_str(&format!("[\"{k}\"]"));
+                }
+                out.push_str(" = ");
+                out.push_str(&render_luau(v, indent + 1));
+                out.push_str(",\n");
+            }
+            out.push_str(&close);
+            out.push('}');
+            out
+        }
+        Node::AssetId(s) => format!("\"{s}\""),
+        Node::Content(s) => format!("Content.fromUri(\"{s}\")"),
+    }
+}
+
+fn render_ts_type(node: &Node, indent: usize) -> String {
+    match node {
+        Node::Table(map) => {
+            if map.is_empty() {
+                return "{}".to_string();
+            }
+            let pad = "\t".repeat(indent + 1);
+            let close = "\t".repeat(indent);
+            let mut out = String::from("{\n");
+            for (k, v) in map {
+                out.push_str(&pad);
+                if is_valid_identifier(k) {
+                    out.push_str(k);
+                } else {
+                    out.push_str(&format!("\"{k}\""));
+                }
+                out.push_str(": ");
+                out.push_str(&render_ts_type(v, indent + 1));
+                out.push('\n');
+            }
+            out.push_str(&close);
+            out.push('}');
+            out
+        }
+        Node::AssetId(_) => "string".to_string(),
+        Node::Content(_) => "Content".to_string(),
+    }
+}
+
+fn is_valid_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return false,
+    }
+    // Lua keywords and common reserved words would break the generated table.
+    if is_reserved(value) {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn is_reserved(value: &str) -> bool {
+    matches!(
+        value,
+        "and"
+            | "break"
+            | "do"
+            | "else"
+            | "elseif"
+            | "end"
+            | "false"
+            | "for"
+            | "function"
+            | "if"
+            | "in"
+            | "local"
+            | "nil"
+            | "not"
+            | "or"
+            | "repeat"
+            | "return"
+            | "then"
+            | "true"
+            | "until"
+            | "while"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opts(language: Language, style: Style) -> Options {
+        Options {
+            language,
+            style,
+            strip_extensions: false,
+            content: false,
+        }
+    }
+
+    #[test]
+    fn luau_nested_output_is_deterministic() {
+        let pairs = vec![
+            ("ui/button.png".to_string(), 123u64),
+            ("ui/panel.png".to_string(), 456u64),
+            ("sfx/hit.ogg".to_string(), 789u64),
+        ];
+        let tree = build_tree(&pairs, &opts(Language::Luau, Style::Nested));
+        let code = generate(&tree, "Assets", &opts(Language::Luau, Style::Nested));
+        // BTreeMap orders keys, so the output is stable.
+        assert!(code.contains("local Assets = {"));
+        assert!(code.contains("return Assets"));
+        // Dotted names are not valid identifiers, so they are bracketed.
+        assert!(code.contains("[\"button.png\"] = \"rbxassetid://123\""));
+        assert!(code.contains("[\"hit.ogg\"] = \"rbxassetid://789\""));
+        // BTreeMap orders keys, so the output is stable. "sfx" sorts before "ui".
+        let sfx = code.find("sfx = {").unwrap();
+        let ui = code.find("ui = {").unwrap();
+        assert!(sfx < ui, "keys must be ordered: sfx before ui");
+    }
+
+    #[test]
+    fn typescript_flat_is_a_type_declaration() {
+        let pairs = vec![("ui/button.png".to_string(), 123u64)];
+        let tree = build_tree(&pairs, &opts(Language::TypeScript, Style::Flat));
+        let code = generate(&tree, "Assets", &opts(Language::TypeScript, Style::Flat));
+        assert!(code.contains("declare const Assets: {"));
+        assert!(code.contains("\"ui/button.png\": string"));
+        assert!(code.contains("export = Assets"));
+    }
+
+    #[test]
+    fn strip_extensions_applies_to_the_last_component_only() {
+        let tree = build_tree(
+            &[("ui/v2/button.png".to_string(), 1u64)],
+            &Options {
+                language: Language::Luau,
+                style: Style::Nested,
+                strip_extensions: true,
+                content: false,
+            },
+        );
+        let code = generate(
+            &tree,
+            "A",
+            &Options {
+                language: Language::Luau,
+                style: Style::Nested,
+                strip_extensions: true,
+                content: false,
+            },
+        );
+        assert!(
+            code.contains("v2 = {"),
+            "intermediate dots must be preserved"
+        );
+        assert!(code.contains("button = "));
+        assert!(!code.contains("button.png"));
+    }
+
+    #[test]
+    fn content_mode_wraps_in_content_from_uri() {
+        let tree = build_tree(
+            &[("a.png".to_string(), 5u64)],
+            &Options {
+                language: Language::Luau,
+                style: Style::Nested,
+                strip_extensions: false,
+                content: true,
+            },
+        );
+        let code = generate(
+            &tree,
+            "A",
+            &Options {
+                language: Language::Luau,
+                style: Style::Nested,
+                strip_extensions: false,
+                content: true,
+            },
+        );
+        assert!(code.contains("Content.fromUri(\"rbxassetid://5\")"));
+    }
+
+    #[test]
+    fn invalid_identifiers_are_bracketed() {
+        assert!(!is_valid_identifier("ui/button.png"));
+        assert!(!is_valid_identifier("1st"));
+        assert!(!is_valid_identifier(""));
+        assert!(is_valid_identifier("button"));
+        assert!(is_valid_identifier("_private"));
+        // Reserved words would break the generated table.
+        assert!(!is_valid_identifier("end"));
+        assert!(!is_valid_identifier("function"));
+    }
+
+    #[test]
+    fn stem_handles_edges() {
+        assert_eq!(stem("a.png"), "a");
+        assert_eq!(stem("a.b.png"), "a.b");
+        assert_eq!(stem("noext"), "noext");
+        assert_eq!(stem(".hidden"), ".hidden");
+    }
+
+    #[test]
+    fn generated_lines_end_with_newline() {
+        let tree = build_tree(
+            &[("x.png".to_string(), 1u64)],
+            &opts(Language::Luau, Style::Nested),
+        );
+        let code = generate(&tree, "A", &opts(Language::Luau, Style::Nested));
+        assert!(
+            code.ends_with('\n'),
+            "generated files must end with a newline"
+        );
+    }
+}

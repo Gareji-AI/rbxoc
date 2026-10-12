@@ -2,6 +2,8 @@
 
 pub mod analytics;
 pub mod asset;
+pub mod assets;
+pub mod codegen;
 pub mod datastore;
 pub mod monetization;
 pub mod place;

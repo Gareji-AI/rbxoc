@@ -161,6 +161,17 @@ pub const ENDPOINTS: &[Endpoint] = &[
         mutating: false,
         note: "create / update are asynchronous. Poll the operationId.",
     },
+    Endpoint {
+        id: "asset.registry",
+        method: "LOCAL",
+        path: "rbxoc.assets.toml",
+        summary: "Generate Luau or TypeScript that references asset IDs by name",
+        implemented: true,
+        auth: &[],
+        scopes: &[],
+        mutating: true,
+        note: "Local files only; no API calls. rbxoc assets init/status/register/codegen.",
+    },
     // ---- thumbnails ----
     Endpoint {
         id: "thumbnail.upload",
@@ -453,7 +464,13 @@ mod tests {
     fn implemented_entries_have_no_placeholder_path() {
         for e in implemented() {
             assert!(!e.path.is_empty(), "{} has an empty path", e.id);
-            assert!(e.path.starts_with('/'), "{} path must start with /", e.id);
+            // Local operations name a file; API entries name an HTTP path.
+            let local = e.method == "LOCAL";
+            assert!(
+                local || e.path.starts_with('/'),
+                "{} path must start with / for an HTTP endpoint",
+                e.id
+            );
         }
     }
 

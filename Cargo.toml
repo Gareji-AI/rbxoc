@@ -30,6 +30,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 # Timestamp formatting for log output.
 time = { version = "0.3", features = ["formatting", "macros"] }
+# Lockfile parsing for the asset ID registry.
+toml = "0.9"
+# Deterministic file walking for the asset globs.
+glob = "0.3"
 # Errors. anyhow adds context; the exit code is chosen by the CLI itself.
 anyhow = "1"
 thiserror = "2"

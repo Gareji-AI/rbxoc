@@ -11,6 +11,7 @@ use clap::{Args, Parser, Subcommand};
 use crate::auth;
 use crate::catalog;
 use crate::cmd;
+use crate::cmd::assets;
 use crate::ctx::{Ctx, failure};
 use crate::output::{Format, Output};
 
@@ -58,6 +59,9 @@ pub enum Command {
 
     /// Work with assets
     Asset(AssetArgs),
+
+    /// Asset ID registry and code generation
+    Assets(AssetsArgs),
 
     /// Replace thumbnails
     Thumbnail(ThumbnailArgs),
@@ -237,6 +241,66 @@ pub enum AssetCommand {
     Operation {
         #[arg(long)]
         operation_id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct AssetsArgs {
+    #[command(subcommand)]
+    pub command: AssetsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AssetsCommand {
+    /// Create a starter manifest in the current directory
+    Init {
+        /// Creator that owns the assets: `user:ID` or `group:ID`
+        #[arg(long)]
+        creator: String,
+        /// Glob for the source files
+        #[arg(long, default_value = "assets/**/*")]
+        path: String,
+        /// Where to write the generated file
+        #[arg(long, default_value = "src/shared/assets")]
+        output_path: std::path::PathBuf,
+        /// `luau` or `typescript`
+        #[arg(long, default_value = "luau")]
+        language: String,
+    },
+    /// Show registry status: registered, missing, and orphaned paths
+    Status {
+        /// Directory holding the manifest. Defaults to the current directory.
+        #[arg(long, default_value = ".")]
+        dir: std::path::PathBuf,
+    },
+    /// Record an uploaded asset ID for a file
+    Register {
+        /// Path as it appears in the manifest glob, using forward slashes
+        #[arg(long)]
+        path: String,
+        /// Roblox asset ID
+        #[arg(long)]
+        id: u64,
+        #[arg(long, default_value = ".")]
+        dir: std::path::PathBuf,
+    },
+    /// Forget the ID for a file
+    Unregister {
+        #[arg(long)]
+        path: String,
+        #[arg(long, default_value = ".")]
+        dir: std::path::PathBuf,
+    },
+    /// Emit Luau or TypeScript that exposes the IDs by name
+    Codegen {
+        #[arg(long, default_value = ".")]
+        dir: std::path::PathBuf,
+        /// Print the source instead of writing the file
+        #[arg(long)]
+        stdout: bool,
+        /// Fail when any manifest path lacks an ID
+        #[arg(long)]
+        check: bool,
     },
 }
 
@@ -512,6 +576,11 @@ impl Cli {
             return run_api(args).await;
         }
 
+        // The asset registry works on local files only. No API calls.
+        if let Command::Assets(args) = &self.command {
+            return run_assets(&args.command).await;
+        }
+
         if let Command::Auth(AuthArgs { command }) = &self.command {
             return run_auth(self.api_key.as_deref(), self.api_key_file.as_ref(), command).await;
         }
@@ -538,7 +607,9 @@ impl Cli {
         };
 
         match self.command {
-            Command::Api(_) | Command::Auth(_) => unreachable!("handled above"),
+            Command::Api(_) | Command::Auth(_) | Command::Assets(_) => {
+                unreachable!("handled above")
+            }
             Command::Place(args) => match args.command {
                 PlaceCommand::Publish {
                     universe_id,
@@ -939,4 +1010,351 @@ async fn run_auth(
             "Add --universe-id to make a real API call and verify connectivity".into(),
         ]),
     }
+}
+
+/// The asset ID registry. Works on local files only, so it needs no credentials.
+async fn run_assets(command: &AssetsCommand) -> Output {
+    match command {
+        AssetsCommand::Init {
+            creator,
+            path,
+            output_path,
+            language,
+        } => init_manifest(creator, path, output_path, language),
+        AssetsCommand::Status { dir } => registry_status(dir),
+        AssetsCommand::Register { path, id, dir } => register_asset(dir, path, *id),
+        AssetsCommand::Unregister { path, dir } => unregister_asset(dir, path),
+        AssetsCommand::Codegen { dir, stdout, check } => run_codegen(dir, *stdout, *check),
+    }
+}
+
+/// Parse `user:123` or `group:456`.
+fn parse_creator(spec: &str) -> Result<assets::Creator, String> {
+    let (kind, id) = spec
+        .split_once(':')
+        .ok_or_else(|| format!("--creator needs the form user:ID or group:ID, got {spec}"))?;
+    if !matches!(kind, "user" | "group") {
+        return Err(format!("--creator type must be user or group, got {kind}"));
+    }
+    let id: u64 = id
+        .trim()
+        .parse()
+        .map_err(|_| format!("--creator id must be a number, got {id}"))?;
+    Ok(assets::Creator {
+        kind: kind.to_string(),
+        id,
+    })
+}
+
+fn init_manifest(
+    creator: &str,
+    glob_path: &str,
+    output_path: &std::path::Path,
+    language: &str,
+) -> Output {
+    const COMMAND: &str = "assets init";
+    let creator = match parse_creator(creator) {
+        Ok(c) => c,
+        Err(msg) => {
+            return failure(
+                COMMAND,
+                crate::output::ErrorBody {
+                    code: "invalid_creator",
+                    message: msg,
+                    status: None,
+                    detail: None,
+                },
+            );
+        }
+    };
+    if !matches!(language, "luau" | "typescript") {
+        return failure(
+            COMMAND,
+            crate::output::ErrorBody {
+                code: "invalid_language",
+                message: format!("--language must be luau or typescript, got {language}"),
+                status: None,
+                detail: None,
+            },
+        );
+    }
+
+    let dir = std::path::Path::new(".");
+    let target = dir.join(assets::MANIFEST_NAME);
+    if target.exists() {
+        return failure(
+            COMMAND,
+            crate::output::ErrorBody {
+                code: "manifest_exists",
+                message: format!("{} already exists", assets::MANIFEST_NAME),
+                status: None,
+                detail: Some("Edit it directly instead of re-initializing".into()),
+            },
+        );
+    }
+
+    let manifest = assets::Manifest {
+        creator,
+        codegen: assets::CodegenConfig {
+            language: language.to_string(),
+            style: "nested".into(),
+            output_path: output_path.to_path_buf(),
+            variable: "Assets".into(),
+            strip_extensions: false,
+            content: false,
+        },
+        inputs: [(
+            "assets".to_string(),
+            assets::Inputs {
+                path: glob_path.to_string(),
+            },
+        )]
+        .into_iter()
+        .collect(),
+    };
+
+    let body = match toml::to_string_pretty(&manifest) {
+        Ok(b) => b,
+        Err(e) => {
+            return failure(
+                COMMAND,
+                crate::output::ErrorBody {
+                    code: "serialize_failed",
+                    message: format!("cannot serialize the manifest: {e}"),
+                    status: None,
+                    detail: None,
+                },
+            );
+        }
+    };
+    let header = "# Asset ID registry for rbxoc.\n\
+                  # Commit this file. The lockfile holds the uploaded IDs.\n\n";
+    if let Err(e) = std::fs::write(&target, format!("{header}{body}")) {
+        return failure(
+            COMMAND,
+            crate::output::ErrorBody {
+                code: "write_failed",
+                message: format!("cannot write {}: {e}", target.display()),
+                status: None,
+                detail: None,
+            },
+        );
+    }
+
+    Output::success(
+        COMMAND,
+        format!("Created {}", assets::MANIFEST_NAME),
+        Some(serde_json::json!({
+            "manifest": assets::MANIFEST_NAME,
+            "inputPath": glob_path,
+            "outputPath": output_path,
+            "language": language,
+        })),
+    )
+    .with_hints(vec![
+        "Upload each file with `rbxoc asset create`, then record the ID with `rbxoc assets register`".into(),
+        "Run `rbxoc assets codegen` to emit the reference table".into(),
+    ])
+}
+
+/// Shared load of manifest and lockfile, returning a failure on error.
+/// The error is boxed because `Output` is large and this path is cold.
+fn load_registry(
+    dir: &std::path::Path,
+    command: &str,
+) -> Result<(assets::Manifest, assets::Lockfile), Box<Output>> {
+    let manifest =
+        assets::load_manifest(dir).map_err(|e| Box::new(registry_failure(command, e)))?;
+    let lock = assets::load_lockfile(dir).map_err(|e| Box::new(registry_failure(command, e)))?;
+    Ok((manifest, lock))
+}
+
+fn registry_failure(command: &str, err: anyhow::Error) -> Output {
+    failure(
+        command,
+        crate::output::ErrorBody {
+            code: "registry_error",
+            message: format!("{err:#}"),
+            status: None,
+            detail: None,
+        },
+    )
+}
+
+fn registry_status(dir: &std::path::Path) -> Output {
+    const COMMAND: &str = "assets status";
+    let (manifest, lock) = match load_registry(dir, COMMAND) {
+        Ok(v) => v,
+        Err(out) => return *out,
+    };
+    let paths = match assets::collect_paths(dir, &manifest) {
+        Ok(p) => p,
+        Err(e) => return registry_failure(COMMAND, e),
+    };
+    let missing = assets::missing_ids(&paths, &lock);
+    let orphaned = assets::orphaned_ids(&paths, &lock);
+    let registered = paths.len() - missing.len();
+
+    let mut out = Output::success(
+        COMMAND,
+        format!(
+            "{registered}/{} files registered, {} missing, {} orphaned",
+            paths.len(),
+            missing.len(),
+            orphaned.len()
+        ),
+        Some(serde_json::json!({
+            "total": paths.len(),
+            "registered": registered,
+            "missing": missing,
+            "orphaned": orphaned,
+        })),
+    );
+    if !missing.is_empty() {
+        out = out.with_hints(vec![
+            "Upload the missing files with `rbxoc asset create`, then `rbxoc assets register`"
+                .into(),
+        ]);
+    }
+    if !orphaned.is_empty() {
+        out = out.with_hints(vec![
+            "Orphaned IDs no longer match the manifest. Remove them with `rbxoc assets unregister`"
+                .into(),
+        ]);
+    }
+    out
+}
+
+fn register_asset(dir: &std::path::Path, path: &str, id: u64) -> Output {
+    const COMMAND: &str = "assets register";
+    let (_, mut lock) = match load_registry(dir, COMMAND) {
+        Ok(v) => v,
+        Err(out) => return *out,
+    };
+    let key = path.replace('\\', "/");
+    let previous = lock.assets.insert(key.clone(), id);
+    match assets::save_lockfile(dir, &lock) {
+        Ok(_) => {
+            let summary = match previous {
+                Some(old) if old != id => format!("Updated {key}: {old} -> {id}"),
+                Some(_) => format!("{key} already mapped to {id}"),
+                None => format!("Registered {key} -> {id}"),
+            };
+            Output::success(
+                COMMAND,
+                summary,
+                Some(serde_json::json!({ "path": key, "assetId": id, "previous": previous })),
+            )
+        }
+        Err(e) => registry_failure(COMMAND, e),
+    }
+}
+
+fn unregister_asset(dir: &std::path::Path, path: &str) -> Output {
+    const COMMAND: &str = "assets unregister";
+    let (_, mut lock) = match load_registry(dir, COMMAND) {
+        Ok(v) => v,
+        Err(out) => return *out,
+    };
+    let key = path.replace('\\', "/");
+    match lock.assets.remove(&key) {
+        Some(removed) => match assets::save_lockfile(dir, &lock) {
+            Ok(_) => Output::success(
+                COMMAND,
+                format!("Removed {key}"),
+                Some(serde_json::json!({ "path": key, "removedId": removed })),
+            ),
+            Err(e) => registry_failure(COMMAND, e),
+        },
+        None => failure(
+            COMMAND,
+            crate::output::ErrorBody {
+                code: "not_registered",
+                message: format!("{key} is not in the lockfile"),
+                status: None,
+                detail: None,
+            },
+        ),
+    }
+}
+
+fn run_codegen(dir: &std::path::Path, to_stdout: bool, check: bool) -> Output {
+    const COMMAND: &str = "assets codegen";
+    let (manifest, lock) = match load_registry(dir, COMMAND) {
+        Ok(v) => v,
+        Err(out) => return *out,
+    };
+    let paths = match assets::collect_paths(dir, &manifest) {
+        Ok(p) => p,
+        Err(e) => return registry_failure(COMMAND, e),
+    };
+    let missing = assets::missing_ids(&paths, &lock);
+
+    if check && !missing.is_empty() {
+        let mut out = failure(
+            COMMAND,
+            crate::output::ErrorBody {
+                code: "missing_ids",
+                message: format!("{} files have no asset ID yet", missing.len()),
+                status: None,
+                detail: Some(missing.join(", ")),
+            },
+        );
+        out.hints
+            .push("Upload and register them, then run this command again".into());
+        return out;
+    }
+
+    let source = assets::render(&manifest, &lock);
+
+    if to_stdout {
+        return Output::success(
+            COMMAND,
+            format!("Generated source for {} assets", lock.assets.len()),
+            Some(serde_json::json!({ "source": source, "written": null })),
+        );
+    }
+
+    // output_path is a directory. The file name follows the language.
+    let extension = if manifest.codegen.language == "typescript" {
+        "d.ts"
+    } else {
+        "luau"
+    };
+    let file_name = format!("{}.{extension}", manifest.codegen.variable.to_lowercase());
+    let out_dir = dir.join(&manifest.codegen.output_path);
+    if let Err(e) = std::fs::create_dir_all(&out_dir) {
+        return registry_failure(
+            COMMAND,
+            anyhow::anyhow!("cannot create {}: {e}", out_dir.display()),
+        );
+    }
+    let out_file = out_dir.join(&file_name);
+    if let Err(e) = std::fs::write(&out_file, &source) {
+        return registry_failure(
+            COMMAND,
+            anyhow::anyhow!("cannot write {}: {e}", out_file.display()),
+        );
+    }
+
+    let mut out = Output::success(
+        COMMAND,
+        format!(
+            "Wrote {} ({} assets)",
+            out_file.display(),
+            lock.assets.len()
+        ),
+        Some(serde_json::json!({
+            "output": out_file.to_string_lossy(),
+            "assetCount": lock.assets.len(),
+            "missing": missing,
+        })),
+    );
+    if !missing.is_empty() {
+        out = out.with_hints(vec![format!(
+            "{} files still have no ID; the generated table omits them",
+            missing.len()
+        )]);
+    }
+    out
 }
