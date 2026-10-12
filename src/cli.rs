@@ -81,6 +81,12 @@ pub enum Command {
     /// Game Passes
     Gamepass(GamepassArgs),
 
+    /// Badges
+    Badge(BadgeArgs),
+
+    /// Asset permissions
+    Permissions(PermissionsArgs),
+
     /// Developer Products
     Devproduct(DevproductArgs),
 
@@ -598,6 +604,64 @@ pub enum GamepassCommand {
 }
 
 #[derive(Debug, Args)]
+pub struct BadgeArgs {
+    #[command(subcommand)]
+    pub command: BadgeCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BadgeCommand {
+    /// Create a badge. Spends Robux.
+    Create {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        description: String,
+        /// Who pays the creation fee: `user` or `group`
+        #[arg(long)]
+        payment_source: Option<String>,
+    },
+    /// Update a badge
+    Update {
+        #[arg(long)]
+        badge_id: u64,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// Enable or disable the badge
+        #[arg(long)]
+        enabled: Option<bool>,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct PermissionsArgs {
+    #[command(subcommand)]
+    pub command: PermissionsCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum PermissionsCommand {
+    /// Grant a user or group access to assets
+    Grant {
+        /// Asset ID. Repeat for more than one.
+        #[arg(long = "asset-id", required = true)]
+        asset_ids: Vec<u64>,
+        /// `user` or `group`
+        #[arg(long, default_value = "user")]
+        subject_type: String,
+        #[arg(long)]
+        subject_id: u64,
+        /// `use` to load the asset, `edit` to modify it
+        #[arg(long, default_value = "use")]
+        action: String,
+    },
+}
+
+#[derive(Debug, Args)]
 pub struct DevproductArgs {
     #[command(subcommand)]
     pub command: DevproductCommand,
@@ -1017,6 +1081,49 @@ impl Cli {
                         image.as_ref(),
                     )
                     .await
+                }
+            },
+            Command::Badge(args) => match args.command {
+                BadgeCommand::Create {
+                    universe_id,
+                    name,
+                    description,
+                    payment_source,
+                } => {
+                    cmd::badge::create(
+                        &ctx,
+                        universe_id,
+                        &name,
+                        &description,
+                        payment_source.as_deref(),
+                    )
+                    .await
+                }
+                BadgeCommand::Update {
+                    badge_id,
+                    name,
+                    description,
+                    enabled,
+                } => {
+                    cmd::badge::update(
+                        &ctx,
+                        badge_id,
+                        name.as_deref(),
+                        description.as_deref(),
+                        enabled,
+                    )
+                    .await
+                }
+            },
+            Command::Permissions(args) => match args.command {
+                PermissionsCommand::Grant {
+                    asset_ids,
+                    subject_type,
+                    subject_id,
+                    action,
+                } => {
+                    cmd::permissions::grant(&ctx, &asset_ids, &subject_type, subject_id, &action)
+                        .await
                 }
             },
             Command::Devproduct(args) => match args.command {

@@ -443,6 +443,41 @@ pub const ENDPOINTS: &[Endpoint] = &[
         mutating: false,
         note: "Beta.",
     },
+    // ---- badges ----
+    Endpoint {
+        id: "badge.create",
+        method: "POST",
+        path: "/legacy-badges/v1/universes/{universeId}/badges",
+        summary: "Create a badge",
+        implemented: true,
+        auth: &[ApiKey, OAuth],
+        scopes: &["legacy-universe.badge:manage-and-spend-robux"],
+        mutating: true,
+        note: "Spends Robux. The OAuth scope name makes that explicit.",
+    },
+    Endpoint {
+        id: "badge.update",
+        method: "PATCH",
+        path: "/legacy-badges/v1/badges/{badgeId}",
+        summary: "Update a badge's configuration",
+        implemented: true,
+        auth: &[ApiKey, OAuth],
+        scopes: &["legacy-universe.badge:write"],
+        mutating: true,
+        note: "",
+    },
+    // ---- asset permissions ----
+    Endpoint {
+        id: "permissions.grant",
+        method: "PATCH",
+        path: "/asset-permissions-api/v1/assets/permissions",
+        summary: "Grant a user or group access to assets",
+        implemented: true,
+        auth: &[ApiKey, OAuth],
+        scopes: &["asset-permissions:write"],
+        mutating: true,
+        note: "Needed when a group collaborates on assets owned by one account.",
+    },
     // ---- messaging ----
     Endpoint {
         id: "messaging.publish",

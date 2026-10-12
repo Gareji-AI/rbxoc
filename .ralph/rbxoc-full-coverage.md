@@ -71,4 +71,8 @@ Update with progress, decisions, and blockers.
 - Iteration 1: Ordered DataStore done (list/get/set/delete/increment).
   5 catalog entries added. 3 new unit tests. `mise run check` exit 0, 50/50 tests.
   Note: ordered DataStores require a scope segment, unlike DataStore v2.
+- Iteration 2: Badges (create/update) and asset permissions (grant) done.
+  3 catalog entries. 3 new unit tests. mise run check exit 0, 53/53.
+  Decisions: badge create requires --payment-source and returns a Robux-spend
+  hint; permissions accepts repeated --asset-id and validates action/subject.
 - Scope excludes live API calls by explicit instruction.
