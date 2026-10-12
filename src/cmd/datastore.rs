@@ -1,14 +1,14 @@
-//! DataStore 操作。
+//! DataStore operations.
 //!
-//! v2 の data-stores エンドポイントを使う。entry の値は JSON 文字列として
-//! 保存されるため、CLI では入力 JSON をそのまま送る。
+//! Uses the v2 data-stores endpoints. Entry values are stored as JSON strings,
+//! so the CLI forwards the input JSON as-is.
 
 use serde_json::{Value, json};
 
 use crate::ctx::{Ctx, failure};
 use crate::output::{ErrorBody, Output};
 
-/// エントリを取得する。
+/// Read an entry.
 pub async fn get(
     ctx: &Ctx,
     universe_id: u64,
@@ -20,14 +20,14 @@ pub async fn get(
     match ctx.get_json(&path).await {
         Ok(data) => Output::success(
             "datastore get",
-            format!("{store}/{entry} を取得しました"),
+            format!("Fetched {store}/{entry}"),
             Some(data),
         ),
         Err(err) => failure("datastore get", err),
     }
 }
 
-/// エントリを作成・更新する。既存には ETag が要る場合がある。
+/// Create or update an entry. Updating an existing one may need an ETag.
 pub async fn set(
     ctx: &Ctx,
     universe_id: u64,
@@ -44,19 +44,19 @@ pub async fn set(
                 "datastore set",
                 ErrorBody {
                     code: "invalid_value",
-                    message: format!("--value が JSON として解釈できません: {e}"),
+                    message: format!("--value is not valid JSON: {e}"),
                     status: None,
-                    detail: Some("例: --value '{\"coins\":100}'".into()),
+                    detail: Some("Example: --value '{\"coins\":100}'".into()),
                 },
             );
         }
     };
     let path = entry_path(universe_id, store, scope, entry);
-    // value は JSON 文字列として包む必要がある。
+    // The value must be wrapped as a JSON string.
     let body = json!({ "value": parsed.to_string() });
     let mut req = ctx.client.patch(ctx.url(&path)).json(&body);
     if allow_missing {
-        // 新規作成を許可する。既存エントリの上書き時は ETag 一致が必要。
+        // Permit creation. Overwriting an existing entry still needs a matching ETag.
         req = req
             .header("if-none-match", "*")
             .header("roblox-entry-attributes", "create-only");
@@ -70,7 +70,7 @@ pub async fn set(
             let data: Value = resp.json().await.unwrap_or(Value::Null);
             Output::success(
                 "datastore set",
-                format!("{store}/{entry} を書き込みました"),
+                format!("Wrote {store}/{entry}"),
                 Some(data),
             )
         }
@@ -78,7 +78,7 @@ pub async fn set(
     }
 }
 
-/// エントリを削除する。
+/// Delete an entry.
 pub async fn delete(
     ctx: &Ctx,
     universe_id: u64,
@@ -91,14 +91,14 @@ pub async fn delete(
     match ctx.send_empty(req).await {
         Ok(_) => Output::success(
             "datastore delete",
-            format!("{store}/{entry} を削除しました"),
+            format!("Deleted {store}/{entry}"),
             Some(json!({ "store": store, "entry": entry })),
         ),
         Err(err) => failure("datastore delete", err),
     }
 }
 
-/// エントリを一覧する。
+/// List entries.
 pub async fn list(ctx: &Ctx, universe_id: u64, store: &str, max_page_size: u32) -> Output {
     let path = format!(
         "/cloud/v2/universes/{universe_id}/data-stores/{store}/entries?maxPageSize={max_page_size}"
@@ -112,7 +112,7 @@ pub async fn list(ctx: &Ctx, universe_id: u64, store: &str, max_page_size: u32) 
                 .unwrap_or(0);
             Output::success(
                 "datastore list",
-                format!("{store} のエントリ {count} 件を取得しました"),
+                format!("Fetched {count} entries from {store}"),
                 Some(data),
             )
         }

@@ -1,10 +1,10 @@
-//! コマンド定義と実行。
+//! Command definitions and dispatch.
 //!
-//! エージェント向け CLI の原則:
-//! - すべてのコマンドが同じ封筒（`Output`）を返す
-//! - 発見は `rbxoc api list` / `rbxoc api show <id>` の自己記述カタログから
-//! - 失敗には必ず `hints` が付く
-//! - 秘密値は引数より環境変数とファイルを優先する
+//! Agent-facing CLI principles:
+//! - every command returns the same envelope (`Output`)
+//! - discovery comes from the self-describing catalog via `rbxoc api list`
+//! - failures always carry `hints`
+//! - credentials prefer environment variables and files over arguments
 
 use clap::{Args, Parser, Subcommand};
 
@@ -19,65 +19,65 @@ use crate::output::{Format, Output};
     name = "rbxoc",
     version,
     about = "CLI for the Roblox Open Cloud API, designed for coding agents",
-    long_about = "Roblox Open Cloud を操作する CLI。\n\
-                  すべてのコマンドが JSON の封筒を返し、失敗時は hints に\n\
-                  次の行動を含めます。何ができるかは `rbxoc api list` で\n\
-                  決定論的に発見できます。"
+    long_about = "Operate the Roblox Open Cloud API from the command line.\n\
+                  Every command returns a JSON envelope, and failures carry\n\
+                  next actions in `hints`. Discover what is possible with\n\
+                  `rbxoc api list`."
 )]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    /// 出力形式。既定は json。RBXOC_FORMAT でも指定できる。
+    /// Output format. Defaults to json. `RBXOC_FORMAT` also sets it.
     #[arg(long, value_enum, global = true)]
     pub format: Option<Format>,
 
-    /// API key。省略時は RBXOC_API_KEY か ~/.rbxoc/api-key を読む。
+    /// API key. Falls back to RBXOC_API_KEY or ~/.rbxoc/api-key.
     #[arg(long, global = true, env = "RBXOC_API_KEY", hide_env_values = true)]
     pub api_key: Option<String>,
 
-    /// API key を書いたファイル。
+    /// File containing the API key.
     #[arg(long, global = true, value_name = "PATH")]
     pub api_key_file: Option<std::path::PathBuf>,
 
-    /// 429 / 5xx の自動再試行回数。
+    /// Automatic retry count for 429 / 5xx.
     #[arg(long, global = true, default_value_t = 2)]
     pub retry: u32,
 }
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// 認証の状態を確認する
+    /// Inspect the credential state
     Auth(AuthArgs),
 
-    /// API カタログを読む（何ができるかを発見する）
+    /// Read the API catalog (discover what is possible)
     Api(ApiArgs),
 
-    /// place を公開・取得する
+    /// Publish and fetch places
     Place(PlaceArgs),
 
-    /// アセットを扱う
+    /// Work with assets
     Asset(AssetArgs),
 
-    /// サムネイルを差し替える
+    /// Replace thumbnails
     Thumbnail(ThumbnailArgs),
 
-    /// ゲームサーバーとログ
+    /// Game servers and logs
     Server(ServerArgs),
 
-    /// 分析クエリ
+    /// Analytics queries
     Analytics(AnalyticsArgs),
 
-    /// DataStore
+    /// DataStores
     Datastore(DatastoreArgs),
 
-    /// 課金商品
+    /// Game Passes
     Gamepass(GamepassArgs),
 
-    /// Developer Product
+    /// Developer Products
     Devproduct(DevproductArgs),
 
-    /// universe
+    /// Universes
     Universe(UniverseArgs),
 }
 
@@ -89,9 +89,9 @@ pub struct AuthArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum AuthCommand {
-    /// 認証情報の探索結果と疎通を確認する
+    /// Show how credentials resolved, and probe them if a universe is given
     Check {
-        /// 疎通確認に使う universe ID。省略時は存在確認のみ。
+        /// Universe ID to probe. Without it, only resolution is reported.
         #[arg(long)]
         universe_id: Option<u64>,
     },
@@ -105,24 +105,24 @@ pub struct ApiArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ApiCommand {
-    /// 全エンドポイントを一覧する
+    /// List every endpoint
     List {
-        /// 実装済みだけを出す
+        /// Only implemented endpoints
         #[arg(long)]
         implemented: bool,
-        /// 部分一致で絞る
+        /// Substring filter
         #[arg(long)]
         query: Option<String>,
-        /// 認証方式で絞る（api-key / oauth）
+        /// Filter by auth method (api-key / oauth / legacy-cookie)
         #[arg(long)]
         auth: Option<String>,
     },
-    /// 1 つのエンドポイントの詳細を見る
+    /// Show one endpoint in detail
     Show {
-        /// エンドポイント ID（例: place.publish）
+        /// Endpoint ID (for example: place.publish)
         id: String,
     },
-    /// 破壊的操作の一覧。実行前に確認するため。
+    /// List mutating operations. Review them before running.
     Mutating,
 }
 
@@ -134,27 +134,27 @@ pub struct PlaceArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum PlaceCommand {
-    /// RBXL / RBXLX を保存または公開する
+    /// Save or publish a place from an RBXL / RBXLX file
     Publish {
         #[arg(long)]
         universe_id: u64,
         #[arg(long)]
         place_id: u64,
-        /// 送るファイル
+        /// File to send
         #[arg(long, value_name = "PATH")]
         file: std::path::PathBuf,
-        /// 公開まで進める。省略時は保存のみ。
+        /// Also go live. Without it, the place is only saved.
         #[arg(long)]
         published: bool,
     },
-    /// place のメタデータを取得する
+    /// Fetch a place's metadata
     Get {
         #[arg(long)]
         universe_id: u64,
         #[arg(long)]
         place_id: u64,
     },
-    /// place のバージョン履歴を取得する
+    /// Fetch a place's version history
     History {
         #[arg(long)]
         place_id: u64,
@@ -171,7 +171,7 @@ pub struct AssetArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum AssetCommand {
-    /// アセットをアップロードする
+    /// Upload a new asset
     Create {
         #[arg(long, value_name = "PATH")]
         file: std::path::PathBuf,
@@ -179,17 +179,17 @@ pub enum AssetCommand {
         display_name: String,
         #[arg(long, default_value = "")]
         description: String,
-        /// 自分のアカウントへ作る
+        /// Create under your own account
         #[arg(long)]
         user_id: Option<u64>,
-        /// グループ資産として作る
+        /// Create as a group asset
         #[arg(long)]
         group_id: Option<u64>,
-        /// assetType を明示する（拡張子から推測できない場合）
+        /// Set assetType explicitly when the extension is not conclusive
         #[arg(long)]
         asset_type: Option<String>,
     },
-    /// アセットの内容とメタデータを更新する
+    /// Update an asset's content and metadata
     Update {
         #[arg(long)]
         asset_id: u64,
@@ -201,39 +201,39 @@ pub enum AssetCommand {
         display_name: Option<String>,
         #[arg(long)]
         description: Option<String>,
-        /// 正方形の PNG / JPEG
+        /// Square PNG / JPEG
         #[arg(long, value_name = "PATH")]
         icon: Option<std::path::PathBuf>,
         #[arg(long, value_name = "PATH")]
         preview: Option<std::path::PathBuf>,
     },
-    /// アセットのメタデータを取得する
+    /// Fetch asset metadata
     Get {
         #[arg(long)]
         asset_id: u64,
         #[arg(long)]
         read_mask: Option<String>,
     },
-    /// バージョン一覧
+    /// List an asset's versions
     Versions {
         #[arg(long)]
         asset_id: u64,
         #[arg(long, default_value_t = 20)]
         max_page_size: u32,
     },
-    /// 指定バージョンへ巻き戻す
+    /// Roll an asset back to a given version
     Rollback {
         #[arg(long)]
         asset_id: u64,
         #[arg(long)]
         version: u64,
     },
-    /// アーカイブする
+    /// Archive an asset
     Archive {
         #[arg(long)]
         asset_id: u64,
     },
-    /// 非同期処理の状況を確認する
+    /// Check the status of an asynchronous operation
     Operation {
         #[arg(long)]
         operation_id: String,
@@ -248,26 +248,26 @@ pub struct ThumbnailArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ThumbnailCommand {
-    /// ホームページ サムネイルを差し替える
+    /// Replace homepage thumbnails
     Upload {
         #[arg(long)]
         universe_id: u64,
         #[arg(long, value_name = "PATH", required = true)]
         files: Vec<std::path::PathBuf>,
     },
-    /// アップロードの処理状況
+    /// Check upload processing status
     Status {
         #[arg(long)]
         universe_id: u64,
         #[arg(long, value_delimiter = ',', required = true)]
         operation_ids: Vec<String>,
     },
-    /// 登録済みサムネイルの一覧
+    /// List homepage thumbnails
     List {
         #[arg(long)]
         universe_id: u64,
     },
-    /// サムネイルを削除する
+    /// Delete thumbnails
     Delete {
         #[arg(long)]
         universe_id: u64,
@@ -284,7 +284,7 @@ pub struct ServerArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ServerCommand {
-    /// ゲームサーバー一覧
+    /// List game servers
     List {
         #[arg(long)]
         universe_id: u64,
@@ -293,7 +293,7 @@ pub enum ServerCommand {
         #[arg(long)]
         version: u64,
     },
-    /// ゲームサーバーのログ
+    /// Fetch game server logs
     Logs {
         #[arg(long)]
         universe_id: u64,
@@ -303,22 +303,22 @@ pub enum ServerCommand {
         version: u64,
         #[arg(long)]
         job_id: String,
-        /// 表示する件数。0 で全件。
+        /// Entries to show. 0 means all.
         #[arg(long, default_value_t = 100)]
         limit: usize,
-        /// 全件を出す（--limit 0 と同じ）
+        /// Show everything (same as --limit 0)
         #[arg(long)]
         full: bool,
     },
-    /// サーバーを再起動する
+    /// Restart servers
     Restart {
         #[arg(long)]
         universe_id: u64,
-        /// 影響予測だけ行う
+        /// Only forecast the impact
         #[arg(long)]
         dry_run: bool,
     },
-    /// 再起動の影響予測
+    /// Forecast a restart's impact
     RestartForecast {
         #[arg(long)]
         universe_id: u64,
@@ -333,15 +333,15 @@ pub struct AnalyticsArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum AnalyticsCommand {
-    /// 時系列メトリクスを問い合わせる
+    /// Query time-series metrics
     Metrics {
         #[arg(long)]
         universe_id: u64,
-        /// 問い合わせ JSON
+        /// Query JSON
         #[arg(long)]
         query: String,
     },
-    /// 非同期クエリの結果を取得する
+    /// Fetch the result of an asynchronous query
     Operation {
         #[arg(long)]
         universe_id: u64,
@@ -350,7 +350,7 @@ pub enum AnalyticsCommand {
         #[arg(long)]
         operation_id: String,
     },
-    /// 代表的な指標の一覧
+    /// List common metrics
     Catalog,
 }
 
@@ -381,10 +381,10 @@ pub enum DatastoreCommand {
         entry: String,
         #[arg(long)]
         scope: Option<String>,
-        /// JSON 文字列
+        /// JSON string
         #[arg(long)]
         value: String,
-        /// 新規作成を許可する
+        /// Allow creating a new entry
         #[arg(long)]
         create: bool,
     },
@@ -427,7 +427,7 @@ pub enum GamepassCommand {
         name: String,
         #[arg(long)]
         description: Option<String>,
-        /// Robux 整数
+        /// Integer Robux
         #[arg(long)]
         price: Option<u64>,
         #[arg(long, value_name = "PATH")]
@@ -487,27 +487,27 @@ pub enum UniverseCommand {
         #[arg(long)]
         universe_id: u64,
     },
-    /// クロスサーバー メッセージを配信する
+    /// Publish a cross-server message
     PublishMessage {
         #[arg(long)]
         universe_id: u64,
         #[arg(long)]
         topic: String,
-        /// JSON 文字列
+        /// JSON string
         #[arg(long)]
         message: String,
     },
 }
 
 impl Cli {
-    /// 出力形式を決める。引数 > 環境変数 > 既定。
+    /// Resolve the output format. Argument > environment > default.
     pub fn resolve_format(&self) -> Format {
         self.format.unwrap_or_else(Format::from_env_or_json)
     }
 
-    /// 実行する。認証が要らないコマンドはここで早期に返す。
+    /// Run the command. Commands that need no credentials return early.
     pub async fn run(self) -> Output {
-        // カタログは認証不要。エージェントが最初に叩く。
+        // The catalog needs no credentials. It is the first thing an agent calls.
         if let Command::Api(args) = &self.command {
             return run_api(args).await;
         }
@@ -538,7 +538,7 @@ impl Cli {
         };
 
         match self.command {
-            Command::Api(_) | Command::Auth(_) => unreachable!("上で処理済み"),
+            Command::Api(_) | Command::Auth(_) => unreachable!("handled above"),
             Command::Place(args) => match args.command {
                 PlaceCommand::Publish {
                     universe_id,
@@ -779,7 +779,7 @@ impl Cli {
     }
 }
 
-/// API カタログ。認証不要。
+/// The API catalog. No credentials required.
 async fn run_api(args: &ApiArgs) -> Output {
     match &args.command {
         ApiCommand::List {
@@ -792,7 +792,7 @@ async fn run_api(args: &ApiArgs) -> Output {
                 None if *implemented => catalog::implemented(),
                 None => catalog::ENDPOINTS.iter().collect(),
             };
-            // query 併用時はここで実装済みに絞る。
+            // With a query, narrow to implemented here.
             if *implemented && query.is_some() {
                 hits.retain(|e| e.implemented);
             }
@@ -800,17 +800,15 @@ async fn run_api(args: &ApiArgs) -> Output {
                 let want = match want.as_str() {
                     "api-key" => catalog::AuthKind::ApiKey,
                     "oauth" => catalog::AuthKind::OAuth,
-                    "cookie" => catalog::AuthKind::LegacyCookie,
+                    "legacy-cookie" => catalog::AuthKind::LegacyCookie,
                     other => {
                         return failure(
                             "api list",
                             crate::output::ErrorBody {
                                 code: "unknown_auth",
-                                message: format!("--auth に {other} は使えません"),
+                                message: format!("--auth does not accept {other}"),
                                 status: None,
-                                detail: Some(
-                                    "api-key / oauth / cookie のいずれかを指定してください".into(),
-                                ),
+                                detail: Some("Use one of: api-key, oauth, legacy-cookie".into()),
                             },
                         );
                     }
@@ -820,21 +818,18 @@ async fn run_api(args: &ApiArgs) -> Output {
             let impl_count = hits.iter().filter(|e| e.implemented).count();
             Output::success(
                 "api list",
-                format!(
-                    "エンドポイント {} 件（うち実装済み {impl_count} 件）",
-                    hits.len()
-                ),
+                format!("{} endpoints ({impl_count} implemented)", hits.len()),
                 Some(serde_json::to_value(&hits).unwrap_or(serde_json::Value::Null)),
             )
             .with_hints(vec![
-                "`rbxoc api show <id>` で詳細を確認できます".into(),
-                "`rbxoc api mutating` で破壊的操作だけを確認できます".into(),
+                "Run `rbxoc api show <id>` for details".into(),
+                "Run `rbxoc api mutating` to see mutating operations only".into(),
             ])
         }
         ApiCommand::Show { id } => match catalog::find(id) {
             Some(ep) => Output::success(
                 "api show",
-                format!("{} {} — {}", ep.method, ep.path, ep.summary),
+                format!("{} {} - {}", ep.method, ep.path, ep.summary),
                 serde_json::to_value(ep).ok(),
             ),
             None => {
@@ -843,19 +838,19 @@ async fn run_api(args: &ApiArgs) -> Output {
                     "api show",
                     crate::output::ErrorBody {
                         code: "unknown_endpoint",
-                        message: format!("エンドポイント {id} は未登録です"),
+                        message: format!("endpoint {id} is not in the catalog"),
                         status: None,
                         detail: None,
                     },
                 );
                 if !similar.is_empty() {
                     out.hints.push(format!(
-                        "近い ID: {}",
+                        "Close IDs: {}",
                         similar.iter().map(|e| e.id).collect::<Vec<_>>().join(", ")
                     ));
                 }
                 out.hints
-                    .push("`rbxoc api list` で全一覧を確認できます".into());
+                    .push("Run `rbxoc api list` for the full catalog".into());
                 out
             }
         },
@@ -866,17 +861,17 @@ async fn run_api(args: &ApiArgs) -> Output {
                 .collect();
             Output::success(
                 "api mutating",
-                format!("破壊的操作 {} 件", hits.len()),
+                format!("{} mutating operations", hits.len()),
                 serde_json::to_value(&hits).ok(),
             )
             .with_hints(vec![
-                "これらはデータを変更します。実行前に対象 ID を確認してください".into(),
+                "These change data. Confirm the target IDs before running".into(),
             ])
         }
     }
 }
 
-/// 認証の状態確認。疎通まで見る。
+/// Credential inspection, with an optional live probe.
 async fn run_auth(
     api_key: Option<&str>,
     api_key_file: Option<&std::path::PathBuf>,
@@ -921,11 +916,11 @@ async fn run_auth(
             match ctx.get_json(&path).await {
                 Ok(_) => Output::success(
                     "auth check",
-                    format!("認証は有効です（{} / {}）", auth.kind(), auth.masked()),
+                    format!("Credentials work ({} / {})", auth.kind(), auth.masked()),
                     Some(serde_json::json!({
                         "authKind": auth.kind(),
                         "source": source,
-                        "probe": format!("universe {id} を読めました"),
+                        "probe": format!("read universe {id}"),
                     })),
                 ),
                 Err(err) => failure("auth check", err),
@@ -933,11 +928,7 @@ async fn run_auth(
         }
         None => Output::success(
             "auth check",
-            format!(
-                "認証情報を解決しました（{} / {}）",
-                auth.kind(),
-                auth.masked()
-            ),
+            format!("Resolved credentials ({} / {})", auth.kind(), auth.masked()),
             Some(serde_json::json!({
                 "authKind": auth.kind(),
                 "source": source,
@@ -945,7 +936,7 @@ async fn run_auth(
             })),
         )
         .with_hints(vec![
-            "--universe-id を付けると実際に API を呼んで疎通まで確認できます".into(),
+            "Add --universe-id to make a real API call and verify connectivity".into(),
         ]),
     }
 }

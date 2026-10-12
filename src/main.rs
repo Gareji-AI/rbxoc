@@ -1,10 +1,11 @@
-//! rbxoc — Roblox Open Cloud CLI for coding agents.
+//! rbxoc - Roblox Open Cloud CLI for coding agents.
 //!
-//! 設計の柱:
-//! 1. 決定論的発見 — `rbxoc api list` / `api show <id>` が自己記述カタログを返す
-//! 2. 機械可読出力 — すべてのコマンドが同じ JSON 封筒を返す
-//! 3. troubleshooting guidance — 失敗には必ず `hints` が付く
-//! 4. 秘密値の扱い — 引数より環境変数とファイルを優先する
+//! Design pillars:
+//! 1. Deterministic discovery - `rbxoc api list` / `api show <id>` return a
+//!    self-describing catalog
+//! 2. Machine-readable output - every command returns the same JSON envelope
+//! 3. Troubleshooting guidance - failures always carry `hints`
+//! 4. Secret handling - environment variables and files take priority over args
 
 mod auth;
 mod catalog;
@@ -25,12 +26,12 @@ async fn main() -> ExitCode {
     let format = cli.resolve_format();
     let out = cli.run().await;
 
-    // JSON は安定した機械可読出力。text は人間向け。
+    // JSON is the stable machine-readable surface. text is for humans.
     match format {
         Format::Json => match serde_json::to_string_pretty(&out) {
             Ok(s) => println!("{s}"),
             Err(e) => {
-                eprintln!("出力のエンコードに失敗しました: {e}");
+                eprintln!("failed to encode output: {e}");
                 return ExitCode::from(70);
             }
         },
@@ -40,7 +41,7 @@ async fn main() -> ExitCode {
     if out.ok {
         ExitCode::SUCCESS
     } else {
-        // 認証欠落を呼び出し側が区別できるようにする。
+        // Let callers distinguish missing credentials from other failures.
         let code = match out.error.as_ref().map(|e| e.code) {
             Some("auth_missing") => 2,
             Some("unknown_endpoint") | Some("unknown_auth") | Some("unknown_kind") => 64,

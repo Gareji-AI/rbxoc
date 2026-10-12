@@ -1,9 +1,11 @@
-//! サムネイル差し替え。
+//! Thumbnail replacement.
 //!
-//! `thumbnail-personalization-api` は experimental。スキーマが予告なく変わる
-//! 前提で扱う。API key か OAuth（`universe.thumbnail:write`）が必要。
+//! `thumbnail-personalization-api` is experimental. Expect the schema to
+//! change without notice. Needs an API key or OAuth
+//! (`universe.thumbnail:write`).
 //!
-//! アップロードは非同期。応答の operationIds を `thumbnail status` へ渡す。
+//! Uploads are asynchronous. Pass the returned operationIds to
+//! `thumbnail status`.
 
 use serde_json::{Value, json};
 
@@ -12,14 +14,14 @@ use crate::output::{ErrorBody, Output};
 
 const COMMAND: &str = "thumbnail upload";
 
-/// ホームページ サムネイルを差し替える。
+/// Replace homepage thumbnails.
 pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -> Output {
     if files.is_empty() {
         return failure(
             COMMAND,
             ErrorBody {
                 code: "no_files",
-                message: "アップロードする画像がありません".into(),
+                message: "no images to upload".into(),
                 status: None,
                 detail: None,
             },
@@ -35,7 +37,7 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
                     COMMAND,
                     ErrorBody {
                         code: "file_unreadable",
-                        message: format!("画像を読めません: {}", file.display()),
+                        message: format!("cannot read the image: {}", file.display()),
                         status: None,
                         detail: Some(e.to_string()),
                     },
@@ -63,13 +65,14 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
                     COMMAND,
                     ErrorBody {
                         code: "mime_invalid",
-                        message: format!("content-type が不正です: {e}"),
+                        message: format!("invalid content-type: {e}"),
                         status: None,
                         detail: None,
                     },
                 );
             }
         };
+        // Form has no push API; take it and rebuild.
         let taken = std::mem::replace(&mut form, reqwest::multipart::Form::new());
         form = taken.part("files", part);
     }
@@ -89,7 +92,7 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
             let mut out = Output::success(
                 COMMAND,
                 format!(
-                    "サムネイル {} 件を受け付けました（operation {} 件）",
+                    "Accepted {} thumbnails ({} operations)",
                     files.len(),
                     ops.len()
                 ),
@@ -98,10 +101,10 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
             if let Some(first) = ops.first() {
                 out = out.with_hints(vec![
                     format!(
-                        "`rbxoc thumbnail status --universe-id {universe_id} --operation-ids {first}` で処理状況を確認できます"
+                        "Run `rbxoc thumbnail status --universe-id {universe_id} --operation-ids {first}` to check progress"
                     ),
-                    "処理は非同期です。反映まで時間がかかります".into(),
-                    "この API は experimental です。スキーマが変わる可能性があります".into(),
+                    "Processing is asynchronous; it takes time to appear".into(),
+                    "This API is experimental; the schema may change".into(),
                 ]);
             }
             out
@@ -110,7 +113,8 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
     }
 }
 
-/// 応答から operation ID を拾う。形状が experimental なので複数の置き場所を見る。
+/// Pull operation IDs out of the response. The shape is experimental, so
+/// several locations are checked.
 fn extract_operation_ids(data: &Value) -> Vec<String> {
     let mut ids = Vec::new();
     for key in ["operationIds", "operations", "paths"] {
@@ -129,14 +133,14 @@ fn extract_operation_ids(data: &Value) -> Vec<String> {
     ids
 }
 
-/// アップロードの処理状況を確認する。
+/// Check upload processing status.
 pub async fn status(ctx: &Ctx, universe_id: u64, operation_ids: &[String]) -> Output {
     if operation_ids.is_empty() {
         return failure(
             "thumbnail status",
             ErrorBody {
                 code: "no_operation_ids",
-                message: "operationIds が必要です".into(),
+                message: "operationIds are required".into(),
                 status: None,
                 detail: None,
             },
@@ -149,27 +153,27 @@ pub async fn status(ctx: &Ctx, universe_id: u64, operation_ids: &[String]) -> Ou
     match ctx.get_json(&path).await {
         Ok(data) => Output::success(
             "thumbnail status",
-            format!("operation {} 件の状況を取得しました", operation_ids.len()),
+            format!("Fetched status for {} operations", operation_ids.len()),
             Some(data),
         ),
         Err(err) => failure("thumbnail status", err),
     }
 }
 
-/// 登録済みサムネイルを一覧する。
+/// List homepage thumbnails.
 pub async fn list(ctx: &Ctx, universe_id: u64) -> Output {
     let path = format!("/thumbnail-personalization-api/v1/universes/{universe_id}/thumbnails");
     match ctx.get_json(&path).await {
         Ok(data) => Output::success(
             "thumbnail list",
-            format!("universe {universe_id} のサムネイルを取得しました"),
+            format!("Fetched thumbnails for universe {universe_id}"),
             Some(data),
         ),
         Err(err) => failure("thumbnail list", err),
     }
 }
 
-/// サムネイルを削除する。
+/// Delete thumbnails.
 pub async fn delete(ctx: &Ctx, universe_id: u64, thumbnail_ids: &[String]) -> Output {
     let path = format!("/thumbnail-personalization-api/v1/universes/{universe_id}/thumbnails");
     let req = ctx
@@ -179,7 +183,7 @@ pub async fn delete(ctx: &Ctx, universe_id: u64, thumbnail_ids: &[String]) -> Ou
     match ctx.send_empty(req).await {
         Ok(_) => Output::success(
             "thumbnail delete",
-            format!("サムネイル {} 件を削除しました", thumbnail_ids.len()),
+            format!("Deleted {} thumbnails", thumbnail_ids.len()),
             Some(json!({ "universeId": universe_id, "removed": thumbnail_ids.len() })),
         ),
         Err(err) => failure("thumbnail delete", err),

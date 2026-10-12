@@ -2,7 +2,7 @@
 name = "rbxoc"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.99"
 description = "CLI for the Roblox Open Cloud API, designed for coding agents"
 license = "MIT"
 repository = "https://github.com/eiei114/rbxoc"
@@ -14,28 +14,28 @@ name = "rbxoc"
 path = "src/main.rs"
 
 [dependencies]
-# 引数解析。derive でサブコマンドを宣言する。
+# Argument parsing. derive declares the subcommands.
 clap = { version = "4.5", features = ["derive", "env"] }
-# HTTP クライアント。multipart と timeout を使う。
+# HTTP client. Needs multipart and timeouts.
 reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "multipart",
     "rustls-tls",
 ] }
-# 非同期ランタイム。Open Cloud は並列呼び出しがあるため tokio を直接持つ。
+# Async runtime. Some commands issue concurrent calls, so tokio is direct.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time"] }
-# JSON。エージェント向け出力で必須。
+# JSON. Required for the agent-facing output.
 serde = { version = "1", features = ["derive"] }
+# preserve_order keeps envelope key order stable for agents reading the surface.
 serde_json = { version = "1", features = ["preserve_order"] }
-# 現在のタイムゾーン付き時刻表示。ログ取得で使う。
+# Timestamp formatting for log output.
 time = { version = "0.3", features = ["formatting", "macros"] }
-# エラー。CLI では anyhow で文脈を足し、終了コードは自前で決める。
+# Errors. anyhow adds context; the exit code is chosen by the CLI itself.
 anyhow = "1"
 thiserror = "2"
 
 [dev-dependencies]
-# 実 API を叩かずにリクエスト組み立てを検証する。
-# tempfile はテスト用の一時ファイルに使う。
+# Verify request building without hitting the real API.
 tempfile = "3"
 
 [profile.release]

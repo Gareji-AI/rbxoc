@@ -1,25 +1,28 @@
-//! アセット操作。
+//! Asset operations.
 //!
-//! create / update は `multipart/form-data` で `request`（JSON）と
-//! `fileContent`（バイナリ）を同一リクエストに載せる。応答は Operation ID を
-//! 返す非同期処理なので、`asset operation` で poll する。
+//! create / update send `multipart/form-data` carrying `request` (JSON) and
+//! `fileContent` (binary) in one request. The response is an Operation ID for
+//! an asynchronous job, so poll it with `asset operation`.
 //!
-//! 対応形式（20MB / リクエスト）:
+//! Supported formats (20 MB per request):
 //! - Model: .fbx .gltf .glb .rbxm .rbxmx
 //! - Image / Decal: .png .jpeg .bmp .tga
 //! - Audio: .mp3 .ogg .wav .flac
 //! - Video: .mp4 .mov
 //!
-//! Update で content body を差し替えられるのは Model のみ。icon と preview は
-//! Image アセットである必要がある。
+//! Only Models can replace the content body on update. Icons and previews must
+//! be Image assets.
 
 use serde_json::{Value, json};
 
 use crate::ctx::{Ctx, failure};
 use crate::output::{ErrorBody, Output};
 
-/// 拡張子から assetType と content-type を決める。
-/// 推測できない場合は `None` を返し、呼び出し側が明示指定を促す。
+const CMD_CREATE: &str = "asset create";
+const CMD_UPDATE: &str = "asset update";
+
+/// Decide assetType and content-type from the extension. Returns `None` when
+/// the guess is unsafe, so the caller can ask for an explicit type.
 pub fn infer_asset(file: &std::path::Path) -> Option<(&'static str, &'static str)> {
     let ext = file.extension()?.to_str()?.to_ascii_lowercase();
     Some(match ext.as_str() {
@@ -42,12 +45,13 @@ pub fn infer_asset(file: &std::path::Path) -> Option<(&'static str, &'static str
     })
 }
 
-/// 更新できない種別。create は可、update の content body 差し替えは不可。
+/// Asset types whose content body can be replaced on update.
 fn is_updateable_body(asset_type: &str) -> bool {
     asset_type == "Model"
 }
 
-/// アセットを作成する。
+/// Upload a new asset.
+#[allow(clippy::too_many_arguments)]
 pub async fn create(
     ctx: &Ctx,
     file: &std::path::Path,
@@ -57,38 +61,10 @@ pub async fn create(
     creator_group_id: Option<u64>,
     asset_type_override: Option<&str>,
 ) -> Output {
-    let (asset_type, content_type) = match asset_type_override {
-        Some(t) => match content_type_for(t, file) {
-            Some(ct) => (t.to_string(), ct),
-            None => {
-                return failure(
-                    "asset create",
-                    ErrorBody {
-                        code: "asset_type_unknown",
-                        message: format!("--asset-type {t} の content-type を決められません"),
-                        status: None,
-                        detail: None,
-                    },
-                );
-            }
-        },
-        None => match infer_asset(file) {
-            Some((t, ct)) => (t.to_string(), ct),
-            None => {
-                return failure(
-                    "asset create",
-                    ErrorBody {
-                        code: "file_type_unknown",
-                        message: format!(
-                            "拡張子から assetType を推測できません: {}",
-                            file.display()
-                        ),
-                        status: None,
-                        detail: None,
-                    },
-                );
-            }
-        },
+    let (asset_type, content_type) = match resolve_asset_type(file, asset_type_override, CMD_CREATE)
+    {
+        Ok(v) => v,
+        Err(err) => return failure(CMD_CREATE, err),
     };
 
     let creator = match (creator_user_id, creator_group_id) {
@@ -96,10 +72,10 @@ pub async fn create(
         (None, Some(id)) => json!({ "groupId": id.to_string() }),
         (Some(_), Some(_)) => {
             return failure(
-                "asset create",
+                CMD_CREATE,
                 ErrorBody {
                     code: "creator_ambiguous",
-                    message: "userId と groupId は同時に指定できません".into(),
+                    message: "userId and groupId cannot be set together".into(),
                     status: None,
                     detail: None,
                 },
@@ -107,10 +83,10 @@ pub async fn create(
         }
         (None, None) => {
             return failure(
-                "asset create",
+                CMD_CREATE,
                 ErrorBody {
                     code: "creator_missing",
-                    message: "userId か groupId が必要です".into(),
+                    message: "either userId or groupId is required".into(),
                     status: None,
                     detail: None,
                 },
@@ -125,20 +101,19 @@ pub async fn create(
         "creationContext": { "creator": creator },
     });
 
-    let form = build_multipart(&request, file, content_type).await;
-    let form = match form {
+    let form = match build_multipart(&request, file, content_type, CMD_CREATE).await {
         Ok(f) => f,
-        Err(err) => return failure("asset create", err),
+        Err(err) => return failure(CMD_CREATE, err),
     };
 
     let req = ctx
         .client
         .post(ctx.url("/assets/v1/assets"))
         .multipart(form);
-    submit_operation(ctx, req, "asset create", &asset_type).await
+    submit_operation(ctx, req, CMD_CREATE, &asset_type).await
 }
 
-/// アセットを更新する。
+/// Update an asset.
 #[allow(clippy::too_many_arguments)]
 pub async fn update(
     ctx: &Ctx,
@@ -150,51 +125,20 @@ pub async fn update(
     icon_file: Option<&std::path::Path>,
     preview_file: Option<&std::path::Path>,
 ) -> Output {
-    let (resolved_type, content_type) = match asset_type {
-        Some(t) => match content_type_for(t, file) {
-            Some(ct) => (t.to_string(), ct),
-            None => {
-                return failure(
-                    "asset update",
-                    ErrorBody {
-                        code: "asset_type_unknown",
-                        message: format!("--asset-type {t} の content-type を決められません"),
-                        status: None,
-                        detail: None,
-                    },
-                );
-            }
-        },
-        None => match infer_asset(file) {
-            Some((t, ct)) => (t.to_string(), ct),
-            None => {
-                return failure(
-                    "asset update",
-                    ErrorBody {
-                        code: "file_type_unknown",
-                        message: format!(
-                            "拡張子から assetType を推測できません: {}",
-                            file.display()
-                        ),
-                        status: None,
-                        detail: None,
-                    },
-                );
-            }
-        },
+    let (resolved_type, content_type) = match resolve_asset_type(file, asset_type, CMD_UPDATE) {
+        Ok(v) => v,
+        Err(err) => return failure(CMD_UPDATE, err),
     };
 
     if !is_updateable_body(&resolved_type) {
         return failure(
-            "asset update",
+            CMD_UPDATE,
             ErrorBody {
                 code: "asset_update_unsupported",
-                message: format!(
-                    "{resolved_type} は content body を更新できません。更新できるのは Model のみです"
-                ),
+                message: format!("{resolved_type} cannot replace its content body; only Model can"),
                 status: None,
                 detail: Some(
-                    "メタデータのみ更新する場合は --display-name / --description を使い、--file を省略してください"
+                    "To change metadata only, pass --display-name / --description and omit --file"
                         .into(),
                 ),
             },
@@ -209,24 +153,21 @@ pub async fn update(
         request["description"] = json!(d);
     }
 
-    let form = build_multipart(&request, file, content_type).await;
-    let mut form = match form {
+    let mut form = match build_multipart(&request, file, content_type, CMD_UPDATE).await {
         Ok(f) => f,
-        Err(err) => return failure("asset update", err),
+        Err(err) => return failure(CMD_UPDATE, err),
     };
 
-    // icon と preview は Image アセットとして同一リクエストへ載せる。
-    if let Some(icon) = icon_file {
-        match add_image_part(&mut form, icon, "icon").await {
-            Ok(()) => {}
-            Err(err) => return failure("asset update", err),
-        }
+    // Icons and previews ride in the same request as Image assets.
+    if let Some(icon) = icon_file
+        && let Err(err) = add_image_part(&mut form, icon, "icon", CMD_UPDATE).await
+    {
+        return failure(CMD_UPDATE, err);
     }
-    if let Some(preview) = preview_file {
-        match add_image_part(&mut form, preview, "preview").await {
-            Ok(()) => {}
-            Err(err) => return failure("asset update", err),
-        }
+    if let Some(preview) = preview_file
+        && let Err(err) = add_image_part(&mut form, preview, "preview", CMD_UPDATE).await
+    {
+        return failure(CMD_UPDATE, err);
     }
 
     let update_mask = build_update_mask(
@@ -237,7 +178,40 @@ pub async fn update(
     );
     let url = format!("/assets/v1/assets/{asset_id}?updateMask={update_mask}");
     let req = ctx.client.patch(ctx.url(&url)).multipart(form);
-    submit_operation(ctx, req, "asset update", &resolved_type).await
+    submit_operation(ctx, req, CMD_UPDATE, &resolved_type).await
+}
+
+/// Resolve assetType and content-type, or explain why it could not.
+fn resolve_asset_type(
+    file: &std::path::Path,
+    asset_type_override: Option<&str>,
+    command: &str,
+) -> Result<(String, &'static str), ErrorBody> {
+    match asset_type_override {
+        Some(t) => match content_type_for(t, file) {
+            Some(ct) => Ok((t.to_string(), ct)),
+            None => Err(ErrorBody {
+                code: "asset_type_unknown",
+                message: format!("cannot map --asset-type {t} to a content-type"),
+                status: None,
+                detail: Some(format!(
+                    "the extension of {} is not known for {t}",
+                    file.display()
+                )),
+            }),
+        },
+        None => match infer_asset(file) {
+            Some((t, ct)) => Ok((t.to_string(), ct)),
+            None => Err(ErrorBody {
+                code: "file_type_unknown",
+                message: format!("cannot infer assetType from {}", file.display()),
+                status: None,
+                detail: Some(format!(
+                    "{command} needs --asset-type when the extension is not recognized"
+                )),
+            }),
+        },
+    }
 }
 
 fn build_update_mask(name: bool, desc: bool, icon: bool, preview: bool) -> String {
@@ -282,10 +256,11 @@ async fn build_multipart(
     request: &Value,
     file: &std::path::Path,
     content_type: &'static str,
+    command: &str,
 ) -> Result<reqwest::multipart::Form, ErrorBody> {
     let bytes = tokio::fs::read(file).await.map_err(|e| ErrorBody {
         code: "file_unreadable",
-        message: format!("ファイルを読めません: {}", file.display()),
+        message: format!("cannot read the file: {}", file.display()),
         status: None,
         detail: Some(e.to_string()),
     })?;
@@ -299,9 +274,9 @@ async fn build_multipart(
         .mime_str(content_type)
         .map_err(|e| ErrorBody {
             code: "mime_invalid",
-            message: format!("content-type が不正です: {e}"),
+            message: format!("invalid content-type: {e}"),
             status: None,
-            detail: None,
+            detail: Some(format!("{command} could not build the multipart body")),
         })?;
     Ok(reqwest::multipart::Form::new()
         .text("request", request.to_string())
@@ -312,10 +287,11 @@ async fn add_image_part(
     form: &mut reqwest::multipart::Form,
     file: &std::path::Path,
     field: &str,
+    command: &str,
 ) -> Result<(), ErrorBody> {
     let bytes = tokio::fs::read(file).await.map_err(|e| ErrorBody {
         code: "file_unreadable",
-        message: format!("画像を読めません: {}", file.display()),
+        message: format!("cannot read the image: {}", file.display()),
         status: None,
         detail: Some(e.to_string()),
     })?;
@@ -324,9 +300,8 @@ async fn add_image_part(
         .and_then(|n| n.to_str())
         .unwrap_or("image.png")
         .to_string();
-    let ct = if name.to_ascii_lowercase().ends_with(".jpg")
-        || name.to_ascii_lowercase().ends_with(".jpeg")
-    {
+    let lower = name.to_ascii_lowercase();
+    let ct = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
         "image/jpeg"
     } else {
         "image/png"
@@ -336,17 +311,17 @@ async fn add_image_part(
         .mime_str(ct)
         .map_err(|e| ErrorBody {
             code: "mime_invalid",
-            message: format!("content-type が不正です: {e}"),
+            message: format!("invalid content-type: {e}"),
             status: None,
-            detail: None,
+            detail: Some(format!("{command} could not build the image part")),
         })?;
-    // 既存の Form は take して再構築する。
+    // Form has no push API; take it and rebuild.
     let taken = std::mem::replace(form, reqwest::multipart::Form::new());
     *form = taken.part(field.to_string(), part);
     Ok(())
 }
 
-/// operation を返すエンドポイントの共通処理。
+/// Shared handling for endpoints that return an Operation.
 async fn submit_operation(
     ctx: &Ctx,
     req: reqwest::RequestBuilder,
@@ -368,21 +343,21 @@ async fn submit_operation(
                     let op_id = op.strip_prefix("operations/").unwrap_or(op);
                     Output::success(
                         command,
-                        format!("{asset_type} の処理を受け付けました（operation {op_id}）"),
+                        format!("Accepted the {asset_type} operation (operation {op_id})"),
                         Some(json!({ "operationId": op_id, "response": data })),
                     )
                     .with_hints(vec![
                         format!(
-                            "`rbxoc asset operation --operation-id {op_id}` で完了を確認できます"
+                            "Run `rbxoc asset operation --operation-id {op_id}` to check completion"
                         ),
-                        "処理は非同期です。すぐには反映されません".into(),
+                        "Processing is asynchronous; it is not immediate".into(),
                     ])
                 }
                 Err(e) => failure(
                     command,
                     ErrorBody {
                         code: "invalid_json",
-                        message: format!("応答を解釈できません: {e}"),
+                        message: format!("cannot parse the response: {e}"),
                         status: None,
                         detail: None,
                     },
@@ -393,7 +368,7 @@ async fn submit_operation(
     }
 }
 
-/// アセットのメタデータを取得する。
+/// Fetch asset metadata.
 pub async fn get(ctx: &Ctx, asset_id: u64, read_mask: Option<&str>) -> Output {
     let mut path = format!("/assets/v1/assets/{asset_id}");
     if let Some(mask) = read_mask {
@@ -404,10 +379,10 @@ pub async fn get(ctx: &Ctx, asset_id: u64, read_mask: Option<&str>) -> Output {
             let name = data
                 .get("displayName")
                 .and_then(|v| v.as_str())
-                .unwrap_or("(名称なし)");
+                .unwrap_or("(unnamed)");
             Output::success(
                 "asset get",
-                format!("アセット {asset_id} を取得しました: {name}"),
+                format!("Fetched asset {asset_id}: {name}"),
                 Some(data),
             )
         }
@@ -415,7 +390,7 @@ pub async fn get(ctx: &Ctx, asset_id: u64, read_mask: Option<&str>) -> Output {
     }
 }
 
-/// アセットのバージョン一覧。
+/// List an asset's versions.
 pub async fn versions(ctx: &Ctx, asset_id: u64, max_page_size: u32) -> Output {
     let path = format!("/assets/v1/assets/{asset_id}/versions?maxPageSize={max_page_size}");
     match ctx.get_json(&path).await {
@@ -427,7 +402,7 @@ pub async fn versions(ctx: &Ctx, asset_id: u64, max_page_size: u32) -> Output {
                 .unwrap_or(0);
             Output::success(
                 "asset versions",
-                format!("アセット {asset_id} のバージョン {count} 件を取得しました"),
+                format!("Fetched {count} versions for asset {asset_id}"),
                 Some(data),
             )
         }
@@ -435,7 +410,7 @@ pub async fn versions(ctx: &Ctx, asset_id: u64, max_page_size: u32) -> Output {
     }
 }
 
-/// 指定バージョンへ巻き戻す。
+/// Roll an asset back to a given version.
 pub async fn rollback(ctx: &Ctx, asset_id: u64, version: u64) -> Output {
     let path = format!("/assets/v1/assets/{asset_id}/versions:rollback");
     let body = json!({ "assetVersion": version.to_string() });
@@ -443,7 +418,7 @@ pub async fn rollback(ctx: &Ctx, asset_id: u64, version: u64) -> Output {
     submit_operation(ctx, req, "asset rollback", "asset").await
 }
 
-/// アセットをアーカイブする。
+/// Archive an asset.
 pub async fn archive(ctx: &Ctx, asset_id: u64) -> Output {
     let path = format!("/assets/v1/assets/{asset_id}:archive");
     let req = ctx.client.post(ctx.url(&path)).json(&json!({}));
@@ -455,7 +430,7 @@ pub async fn archive(ctx: &Ctx, asset_id: u64) -> Output {
             }
             Output::success(
                 "asset archive",
-                format!("アセット {asset_id} をアーカイブしました"),
+                format!("Archived asset {asset_id}"),
                 Some(json!({ "assetId": asset_id })),
             )
         }
@@ -463,24 +438,22 @@ pub async fn archive(ctx: &Ctx, asset_id: u64) -> Output {
     }
 }
 
-/// operation の状態を確認する。
+/// Check an operation's status.
 pub async fn operation(ctx: &Ctx, operation_id: &str) -> Output {
     let path = format!("/assets/v1/operations/{operation_id}");
     match ctx.get_json(&path).await {
         Ok(data) => {
             let done = data.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
-            let summary = if done {
-                "処理が完了しました".to_string()
-            } else {
-                "処理はまだ実行中です".to_string()
-            };
+            let state = if done { "completed" } else { "still running" };
             let mut out = Output::success(
                 "asset operation",
-                format!("{summary}（operation {operation_id}）"),
+                format!("Operation {operation_id} is {state}"),
                 Some(data),
             );
             if !done {
-                out = out.with_hints(vec!["数秒待って同じコマンドを再実行してください".into()]);
+                out = out.with_hints(vec![
+                    "Wait a few seconds and run the same command again".into(),
+                ]);
             }
             out
         }

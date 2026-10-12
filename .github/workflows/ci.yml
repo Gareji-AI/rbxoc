@@ -34,7 +34,7 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
-      # CLI の契約を CI でも確認する。認証不要の経路だけを使う。
+      # Verify the CLI contract in CI too. Only credential-free paths here.
       - name: Catalog contract
         run: |
           set -euo pipefail

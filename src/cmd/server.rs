@@ -1,19 +1,19 @@
-//! ゲームサーバーとログ。
+//! Server and log operations.
 //!
-//! `server-management` は API key 専用。rbxcloud 未対応の領域。
+//! `server-management` is API-key only. Not covered by rbxcloud.
 //!
-//! ログ取得の流れ:
-//! 1. `server list` で place バージョンのゲームサーバー一覧を取り jobId を得る
-//! 2. `server logs` に jobId を渡す
+//! Log retrieval flow:
+//! 1. `server list` gives the game servers for a place version, including jobIds
+//! 2. pass a jobId to `server logs`
 //!
-//! ログ本文は巨大になり得るため、既定で件数を絞り、全文は `--full` で取る。
+//! Log bodies can be large, so the default caps the count. Use `--full` for all.
 
 use serde_json::{Value, json};
 
 use crate::ctx::{Ctx, failure};
 use crate::output::Output;
 
-/// ゲームサーバー一覧を取得する。
+/// List game servers for a place version.
 pub async fn list(ctx: &Ctx, universe_id: u64, place_id: u64, version_number: u64) -> Output {
     let path = format!(
         "/server-management/v1/universes/{universe_id}/places/{place_id}/versions/{version_number}/game-servers"
@@ -29,12 +29,12 @@ pub async fn list(ctx: &Ctx, universe_id: u64, place_id: u64, version_number: u6
             let job_ids = extract_job_ids(&data);
             let mut out = Output::success(
                 "server list",
-                format!("ゲームサーバー {count} 件を取得しました"),
+                format!("Fetched {count} game servers"),
                 Some(json!({ "count": count, "jobIds": job_ids, "response": data })),
             );
             if let Some(first) = job_ids.first() {
                 out = out.with_hints(vec![format!(
-                    "`rbxoc server logs --universe-id {universe_id} --place-id {place_id} --version {version_number} --job-id {first}` でログを取得できます"
+                    "Run `rbxoc server logs --universe-id {universe_id} --place-id {place_id} --version {version_number} --job-id {first}` to fetch logs"
                 )]);
             }
             out
@@ -43,7 +43,7 @@ pub async fn list(ctx: &Ctx, universe_id: u64, place_id: u64, version_number: u6
     }
 }
 
-/// 応答から jobId を拾う。キー名が揺れるので複数見る。
+/// Pull jobIds out of the response. Key names vary, so check several.
 fn extract_job_ids(data: &Value) -> Vec<String> {
     let arr = ["gameServers", "servers", "items"]
         .iter()
@@ -63,7 +63,8 @@ fn extract_job_ids(data: &Value) -> Vec<String> {
     ids
 }
 
-/// ゲームサーバーのログを取得する。
+/// Fetch logs for a game server.
+#[allow(clippy::too_many_arguments)]
 pub async fn logs(
     ctx: &Ctx,
     universe_id: u64,
@@ -87,10 +88,7 @@ pub async fn logs(
             };
             let mut out = Output::success(
                 "server logs",
-                format!(
-                    "ログ {total} 件を取得しました（表示 {shown_len} 件）",
-                    shown_len = shown.len()
-                ),
+                format!("Fetched {total} log entries (showing {})", shown.len()),
                 Some(json!({
                     "jobId": job_id,
                     "total": total,
@@ -100,7 +98,7 @@ pub async fn logs(
             );
             if total > shown.len() {
                 out = out.with_hints(vec![format!(
-                    "残り {} 件は --limit 0 または --full で取得できます",
+                    "The remaining {} entries need --limit 0 or --full",
                     total - shown.len()
                 )]);
             }
@@ -110,7 +108,7 @@ pub async fn logs(
     }
 }
 
-/// ログ項目を拾う。応答形状が一定でないため配列を探す。
+/// Pull log entries out. The response shape is not fixed, so find the array.
 fn extract_log_entries(data: &Value) -> Vec<Value> {
     for key in ["logs", "entries", "messages", "items", "data"] {
         if let Some(arr) = data.get(key).and_then(|v| v.as_array()) {
@@ -123,7 +121,7 @@ fn extract_log_entries(data: &Value) -> Vec<Value> {
     Vec::new()
 }
 
-/// universe のサーバー再起動を投げる。
+/// Trigger a universe server restart.
 pub async fn restart(ctx: &Ctx, universe_id: u64, dry_run: bool) -> Output {
     let path = format!("/cloud/v2/universes/{universe_id}:restartServers");
     let body = json!({ "dryRun": dry_run });
@@ -135,31 +133,31 @@ pub async fn restart(ctx: &Ctx, universe_id: u64, dry_run: bool) -> Output {
                 return failure("server restart", err);
             }
             let data: Value = resp.json().await.unwrap_or(Value::Null);
-            let label = if dry_run { "影響予測" } else { "再起動" };
-            let mut out = Output::success(
-                "server restart",
-                format!("サーバー{label}を実行しました"),
-                Some(data),
-            );
             if dry_run {
-                out = out.with_hints(vec![
-                    "実際に再起動するには --dry-run を外してください".into(),
-                    "影響が大きい操作です。事前に対象を確認してください".into(),
-                ]);
+                Output::success(
+                    "server restart",
+                    "Ran a restart impact forecast",
+                    Some(data),
+                )
+                .with_hints(vec![
+                    "Drop --dry-run to restart for real".into(),
+                    "This is a high-impact operation. Confirm the target first".into(),
+                ])
+            } else {
+                Output::success("server restart", "Requested a server restart", Some(data))
             }
-            out
         }
         Err(err) => failure("server restart", err),
     }
 }
 
-/// 再起動の影響予測。
+/// Forecast the impact of a restart.
 pub async fn restart_forecast(ctx: &Ctx, universe_id: u64) -> Output {
     let path = format!("/server-management/v1/universes/{universe_id}/restarts:forecast");
     match ctx.get_json(&path).await {
         Ok(data) => Output::success(
             "server restart-forecast",
-            "再起動の影響予測を取得しました",
+            "Fetched the restart impact forecast",
             Some(data),
         ),
         Err(err) => failure("server restart-forecast", err),

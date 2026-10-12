@@ -1,116 +1,116 @@
-//! API カタログ。
+//! API catalog.
 //!
-//! エージェントが「何ができるか」を決定論的に発見するための自己記述層。
-//! `rbxoc api list` / `rbxoc api show <id>` がこれを読む。
+//! The self-describing layer that lets agents discover what is possible
+//! deterministically. `rbxoc api list` / `rbxoc api show <id>` read this.
 //!
-//! 各エントリは Open Cloud の実エンドポイントに 1:1 で対応する。カタログを
-//! 実装の正本にしているので、追加時はここを先に書く。`implemented` が false の
-//! エントリは「API としては存在するが本 CLI は未対応」を表す。エージェントが
-//! 未対応機能を呼ぼうとして無駄な試行をしないようにする。
+//! Every entry maps 1:1 to a real Open Cloud endpoint. The catalog is the
+//! source of truth for the implementation, so add to it first. Entries with
+//! `implemented: false` mean "the API exists but this CLI does not cover it
+//! yet". That keeps agents from burning attempts on unsupported features.
 //!
-//! 出典: https://create.roblox.com/docs/cloud/openapi.json （2026-10-12 取得）
+//! Source: https://create.roblox.com/docs/cloud/openapi.json (fetched 2026-10-12)
 
 use serde::Serialize;
 
-/// 認証方式。Open Cloud は 3 系統を併記する。
+/// Authentication family. Open Cloud lists three.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum AuthKind {
-    /// `x-api-key`。自動化の第一候補。
+    /// `x-api-key`. The first choice for automation.
     #[serde(rename = "api-key")]
     ApiKey,
-    /// `Authorization: Bearer`。スコープが必要な領域。
+    /// `Authorization: Bearer`. Areas that need scopes.
     #[serde(rename = "oauth")]
     OAuth,
-    /// ブラウザのセッション cookie。本 CLI は対象外。
+    /// Browser session cookie. Out of scope for this CLI.
     #[serde(rename = "legacy-cookie")]
     LegacyCookie,
 }
 
-/// 1 つのエンドポイント。
+/// One endpoint.
 #[derive(Debug, Clone, Serialize)]
 pub struct Endpoint {
-    /// `resource.action` 形式の安定した ID。CLI のサブコマンド名と対応する。
+    /// Stable `resource.action` ID. Matches the CLI subcommand name.
     pub id: &'static str,
     pub method: &'static str,
     pub path: &'static str,
     pub summary: &'static str,
-    /// 本 CLI が実装済みか。未実装なら理由を `note` に書く。
+    /// Whether this CLI implements it. Reasons for `false` live in `note`.
     pub implemented: bool,
     pub auth: &'static [AuthKind],
-    /// OAuth2 スコープ。API key 運用では不要。
+    /// OAuth2 scopes. Unused when operating with an API key.
     pub scopes: &'static [&'static str],
-    /// 破壊的操作か。エージェントに確認を促す材料。
+    /// Whether the call mutates data. Lets agents ask before acting.
     pub mutating: bool,
     pub note: &'static str,
 }
 
 use AuthKind::{ApiKey, LegacyCookie, OAuth};
 
-/// カタログ本体。実装と同時に更新する。
+/// The catalog itself. Updated alongside the implementation.
 pub const ENDPOINTS: &[Endpoint] = &[
-    // ---- 認証 ----
+    // ---- auth ----
     Endpoint {
         id: "auth.check",
         method: "GET",
         path: "/cloud/v2/universes/{universe_id}",
-        summary: "認証情報で universe を読めるか確認する",
+        summary: "Verify that the credentials can read a universe",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe:read"],
         mutating: false,
-        note: "認証の疎通確認に使う最小の読み取り。",
+        note: "The smallest read, used as a connectivity probe.",
     },
-    // ---- Place 公開 ----
+    // ---- place publishing ----
     Endpoint {
         id: "place.publish",
         method: "POST",
         path: "/universes/v1/{universeId}/places/{placeId}/versions",
-        summary: "RBXL / RBXLX を送って place を保存または公開する",
+        summary: "Save or publish a place from an RBXL / RBXLX file",
         implemented: true,
         auth: &[ApiKey],
         scopes: &["universe-places:write"],
         mutating: true,
-        note: "versionType=Saved なら保存のみ、Published なら公開まで進む。",
+        note: "versionType=Saved only saves; Published also goes live.",
     },
     Endpoint {
         id: "place.get",
         method: "GET",
         path: "/cloud/v2/universes/{universe_id}/places/{place_id}",
-        summary: "place のメタデータを取得する",
+        summary: "Fetch a place's metadata",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe:read"],
         mutating: false,
         note: "",
     },
-    // ---- アセット ----
+    // ---- assets ----
     Endpoint {
         id: "asset.create",
         method: "POST",
         path: "/assets/v1/assets",
-        summary: "アセットを新規アップロードする",
+        summary: "Upload a new asset",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["asset:write"],
         mutating: true,
-        note: "1 リクエスト 20MB まで。Model は fbx / gltf / glb / rbxm / rbxmx。",
+        note: "Up to 20 MB per request. Models accept fbx / gltf / glb / rbxm / rbxmx.",
     },
     Endpoint {
         id: "asset.update",
         method: "PATCH",
         path: "/assets/v1/assets/{assetId}",
-        summary: "アセットの内容とメタデータを更新する",
+        summary: "Update an asset's content and metadata",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["asset:write"],
         mutating: true,
-        note: "content body を更新できるのは Model のみ。icon と preview は Image アセットである必要がある。",
+        note: "Only Models can replace the content body. Icons and previews must be Image assets.",
     },
     Endpoint {
         id: "asset.get",
         method: "GET",
         path: "/assets/v1/assets/{assetId}",
-        summary: "アセットのメタデータを取得する",
+        summary: "Fetch asset metadata",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["asset:read"],
@@ -121,7 +121,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         id: "asset.versions",
         method: "GET",
         path: "/assets/v1/assets/{assetId}/versions",
-        summary: "アセットのバージョン一覧を取得する",
+        summary: "List an asset's versions",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["asset:read"],
@@ -132,7 +132,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         id: "asset.rollback",
         method: "POST",
         path: "/assets/v1/assets/{assetId}/versions:rollback",
-        summary: "アセットを指定バージョンへ巻き戻す",
+        summary: "Roll an asset back to a given version",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["asset:write"],
@@ -143,7 +143,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         id: "asset.archive",
         method: "POST",
         path: "/assets/v1/assets/{assetId}:archive",
-        summary: "アセットをアーカイブする",
+        summary: "Archive an asset",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["asset:write"],
@@ -154,144 +154,144 @@ pub const ENDPOINTS: &[Endpoint] = &[
         id: "asset.operation",
         method: "GET",
         path: "/assets/v1/operations/{operationId}",
-        summary: "アップロード・更新の処理状況を確認する",
+        summary: "Check the status of an upload or update",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["asset:read"],
         mutating: false,
-        note: "create / update は非同期。operationId を poll する。",
+        note: "create / update are asynchronous. Poll the operationId.",
     },
-    // ---- サムネイル ----
+    // ---- thumbnails ----
     Endpoint {
         id: "thumbnail.upload",
         method: "POST",
         path: "/thumbnail-personalization-api/v1/universes/{universeId}/thumbnails/uploads",
-        summary: "体験のホームページ サムネイルを差し替える",
+        summary: "Replace a universe's homepage thumbnails",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe.thumbnail:write"],
         mutating: true,
-        note: "experimental。スキーマが予告なく変わる前提で扱う。",
+        note: "Experimental. Expect the schema to change without notice.",
     },
     Endpoint {
         id: "thumbnail.status",
         method: "GET",
         path: "/thumbnail-personalization-api/v1/universes/{universeId}/thumbnails/uploads/status",
-        summary: "サムネイル アップロードの処理状況を確認する",
+        summary: "Check thumbnail upload processing status",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe.thumbnail:read"],
         mutating: false,
-        note: "experimental。",
+        note: "Experimental.",
     },
     Endpoint {
         id: "thumbnail.list",
         method: "GET",
         path: "/thumbnail-personalization-api/v1/universes/{universeId}/thumbnails",
-        summary: "登録済みホームページ サムネイルを一覧する",
+        summary: "List homepage thumbnails",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe.thumbnail:read"],
         mutating: false,
-        note: "experimental。",
+        note: "Experimental.",
     },
     Endpoint {
         id: "thumbnail.delete",
         method: "DELETE",
         path: "/thumbnail-personalization-api/v1/universes/{universeId}/thumbnails",
-        summary: "ホームページ サムネイルを削除する",
+        summary: "Delete homepage thumbnails",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe.thumbnail:write"],
         mutating: true,
-        note: "experimental。",
+        note: "Experimental.",
     },
-    // ---- サーバー / ログ ----
+    // ---- servers and logs ----
     Endpoint {
         id: "server.logs",
         method: "GET",
         path: "/server-management/v1/universes/{universeId}/places/{placeId}/versions/{versionNumber}/game-servers/{jobId}/logs",
-        summary: "ゲームサーバー ジョブのログを取得する",
+        summary: "Fetch logs for a game server job",
         implemented: true,
         auth: &[ApiKey],
         scopes: &[],
         mutating: false,
-        note: "rbxcloud 未対応。本 CLI の差別化領域。",
+        note: "Not covered by rbxcloud. A differentiator for this CLI.",
     },
     Endpoint {
         id: "server.list",
         method: "GET",
         path: "/server-management/v1/universes/{universeId}/places/{placeId}/versions/{versionNumber}/game-servers",
-        summary: "place バージョンのゲームサーバー一覧を取得する",
+        summary: "List game servers for a place version",
         implemented: true,
         auth: &[ApiKey],
         scopes: &[],
         mutating: false,
-        note: "jobId をここで得て server.logs へ渡す。",
+        note: "Take a jobId from here and pass it to server.logs.",
     },
     Endpoint {
         id: "server.restart",
         method: "POST",
         path: "/cloud/v2/universes/{universe_id}:restartServers",
-        summary: "universe のゲームサーバーを再起動する",
+        summary: "Restart a universe's game servers",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe:write"],
         mutating: true,
-        note: "forecast で影響を先に確認できる。",
+        note: "Use forecast first to check the impact.",
     },
-    // ---- 分析 ----
+    // ---- analytics ----
     Endpoint {
         id: "analytics.metrics",
         method: "POST",
         path: "/analytics-query-api/v1/universes/{universeId}/metrics",
-        summary: "時系列メトリクスを問い合わせる",
+        summary: "Query time-series metrics",
         implemented: true,
         auth: &[OAuth],
         scopes: &["universe.analytics:read"],
         mutating: false,
-        note: "rbxcloud 未対応。API key では不可。",
+        note: "Not covered by rbxcloud. Requires OAuth2, not an API key.",
     },
     Endpoint {
         id: "analytics.dimensions",
         method: "POST",
         path: "/analytics-query-api/v1/universes/{universeId}/dimension-values",
-        summary: "ディメンション値を問い合わせる",
+        summary: "Query dimension values",
         implemented: false,
         auth: &[OAuth],
         scopes: &["universe.analytics:read"],
         mutating: false,
-        note: "未実装。metrics と同型のため後続で追加。",
+        note: "Not implemented. Shaped like metrics; add later.",
     },
-    // ---- Place バージョン履歴 ----
+    // ---- place version history ----
     Endpoint {
         id: "place.history",
         method: "GET",
         path: "/place-version-history-api/v1/{placeId}/history",
-        summary: "place のバージョン履歴を取得する",
+        summary: "Fetch a place's version history",
         implemented: true,
         auth: &[ApiKey],
         scopes: &[],
         mutating: false,
-        note: "rbxcloud 未対応。",
+        note: "Not covered by rbxcloud.",
     },
     Endpoint {
         id: "place.history.notes",
         method: "POST",
         path: "/place-version-history-api/v1/{placeId}/version/{version}/notes",
-        summary: "place バージョンにノートを付ける",
+        summary: "Attach a note to a place version",
         implemented: false,
         auth: &[ApiKey],
         scopes: &[],
         mutating: true,
-        note: "未実装。",
+        note: "Not implemented.",
     },
-    // ---- データストア ----
+    // ---- datastores ----
     Endpoint {
         id: "datastore.get",
         method: "GET",
         path: "/cloud/v2/universes/{universe_id}/data-stores/{data_store_id}/entries/{entry_id}",
-        summary: "DataStore エントリを取得する",
+        summary: "Read a DataStore entry",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe-datastores.control:read"],
@@ -302,7 +302,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         id: "datastore.set",
         method: "PATCH",
         path: "/cloud/v2/universes/{universe_id}/data-stores/{data_store_id}/entries/{entry_id}",
-        summary: "DataStore エントリを作成・更新する",
+        summary: "Create or update a DataStore entry",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe-datastores.control:write"],
@@ -313,7 +313,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         id: "datastore.delete",
         method: "DELETE",
         path: "/cloud/v2/universes/{universe_id}/data-stores/{data_store_id}/entries/{entry_id}",
-        summary: "DataStore エントリを削除する",
+        summary: "Delete a DataStore entry",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe-datastores.control:write"],
@@ -324,19 +324,19 @@ pub const ENDPOINTS: &[Endpoint] = &[
         id: "datastore.list",
         method: "GET",
         path: "/cloud/v2/universes/{universe_id}/data-stores/{data_store_id}/entries",
-        summary: "DataStore エントリを一覧する",
+        summary: "List DataStore entries",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe-datastores.control:read"],
         mutating: false,
         note: "",
     },
-    // ---- 課金 ----
+    // ---- monetization ----
     Endpoint {
         id: "gamepass.list",
         method: "GET",
         path: "/game-passes/v1/universes/{universeId}/game-passes/creator",
-        summary: "Game Pass を一覧する",
+        summary: "List Game Passes",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["game-pass:read"],
@@ -347,78 +347,78 @@ pub const ENDPOINTS: &[Endpoint] = &[
         id: "gamepass.create",
         method: "POST",
         path: "/game-passes/v1/universes/{universeId}/game-passes",
-        summary: "Game Pass を作成する",
+        summary: "Create a Game Pass",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["game-pass:write"],
         mutating: true,
-        note: "multipart。imageFile を同一リクエストに載せられる。Beta。",
+        note: "Multipart. imageFile can ride in the same request. Beta.",
     },
     Endpoint {
         id: "gamepass.update",
         method: "PATCH",
         path: "/game-passes/v1/universes/{universeId}/game-passes/{gamePassId}",
-        summary: "Game Pass を更新する",
+        summary: "Update a Game Pass",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["game-pass:write"],
         mutating: true,
-        note: "Beta。",
+        note: "Beta.",
     },
     Endpoint {
         id: "devproduct.list",
         method: "GET",
         path: "/developer-products/v2/universes/{universeId}/developer-products/creator",
-        summary: "Developer Product を一覧する",
+        summary: "List Developer Products",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["developer-product:read"],
         mutating: false,
-        note: "Beta。",
+        note: "Beta.",
     },
-    // ---- メッセージング ----
+    // ---- messaging ----
     Endpoint {
         id: "messaging.publish",
         method: "POST",
         path: "/messaging-service/v1/universes/{universeId}/topics/{topic}",
-        summary: "universe へクロスサーバー メッセージを配信する",
+        summary: "Publish a cross-server message to a universe",
         implemented: true,
         auth: &[ApiKey],
         scopes: &[],
         mutating: true,
         note: "",
     },
-    // ---- 未実装（存在はする） ----
+    // ---- exists but unimplemented ----
     Endpoint {
         id: "media.get",
         method: "GET",
         path: "/v2/games/{universeId}/media",
-        summary: "体験のメディア情報を取得する",
+        summary: "Fetch experience media data",
         implemented: false,
         auth: &[LegacyCookie],
         scopes: &[],
         mutating: false,
-        note: "未実装。cookie 専用で自動化に向かないため対象外。",
+        note: "Not implemented. Cookie-only, so it does not suit automation.",
     },
     Endpoint {
         id: "creatorstore.get",
         method: "GET",
         path: "/toolbox-service/v2/assets/{id}",
-        summary: "Creator Store のアセットを取得する",
+        summary: "Fetch a Creator Store asset",
         implemented: false,
         auth: &[ApiKey, OAuth],
         scopes: &["creator-store-product:read"],
         mutating: false,
-        note: "未実装。",
+        note: "Not implemented.",
     },
 ];
 
-/// ID で引く。
+/// Look up by ID.
 pub fn find(id: &str) -> Option<&'static Endpoint> {
     ENDPOINTS.iter().find(|e| e.id == id)
 }
 
-/// 部分一致で探す。エージェントの探索を助ける。
+/// Substring search. Helps agents explore.
 pub fn search(query: &str) -> Vec<&'static Endpoint> {
     let q = query.to_lowercase();
     ENDPOINTS
@@ -431,7 +431,7 @@ pub fn search(query: &str) -> Vec<&'static Endpoint> {
         .collect()
 }
 
-/// 実装済みだけ。`api list --implemented` とテストが使う。
+/// Implemented entries only. Used by `api list --implemented` and tests.
 pub fn implemented() -> Vec<&'static Endpoint> {
     ENDPOINTS.iter().filter(|e| e.implemented).collect()
 }
@@ -446,25 +446,21 @@ mod tests {
         ids.sort_unstable();
         let before = ids.len();
         ids.dedup();
-        assert_eq!(before, ids.len(), "エンドポイント ID が重複しています");
+        assert_eq!(before, ids.len(), "duplicate endpoint IDs");
     }
 
     #[test]
     fn implemented_entries_have_no_placeholder_path() {
         for e in implemented() {
-            assert!(!e.path.is_empty(), "{} の path が空です", e.id);
-            assert!(
-                e.path.starts_with('/'),
-                "{} の path が / で始まりません",
-                e.id
-            );
+            assert!(!e.path.is_empty(), "{} has an empty path", e.id);
+            assert!(e.path.starts_with('/'), "{} path must start with /", e.id);
         }
     }
 
     #[test]
     fn unimplemented_entries_explain_themselves() {
         for e in ENDPOINTS.iter().filter(|e| !e.implemented) {
-            assert!(!e.note.is_empty(), "未実装 {} に理由がありません", e.id);
+            assert!(!e.note.is_empty(), "unimplemented {} has no reason", e.id);
         }
     }
 
@@ -472,11 +468,7 @@ mod tests {
     fn legacy_cookie_endpoints_are_not_implemented() {
         for e in ENDPOINTS {
             if e.auth == [LegacyCookie] {
-                assert!(
-                    !e.implemented,
-                    "{} は cookie 専用なので実装対象外です",
-                    e.id
-                );
+                assert!(!e.implemented, "{} is cookie-only and out of scope", e.id);
             }
         }
     }
@@ -486,6 +478,12 @@ mod tests {
         assert!(find("place.publish").is_some());
         assert!(find("nope.nope").is_none());
         let hits = search("thumbnail");
-        assert!(hits.len() >= 4, "thumbnail の検索結果が少なすぎます");
+        assert!(hits.len() >= 4, "too few thumbnail results");
+    }
+
+    #[test]
+    fn auth_kinds_serialize_to_stable_names() {
+        let json = serde_json::to_string(&[ApiKey, OAuth, LegacyCookie]).unwrap();
+        assert_eq!(json, r#"["api-key","oauth","legacy-cookie"]"#);
     }
 }

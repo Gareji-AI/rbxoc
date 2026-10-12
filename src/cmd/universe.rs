@@ -1,11 +1,11 @@
-//! universe 操作とメッセージング。
+//! Universe operations and messaging.
 
 use serde_json::{Value, json};
 
 use crate::ctx::{Ctx, failure};
 use crate::output::{ErrorBody, Output};
 
-/// universe の情報を取得する。認証の疎通確認にも使う。
+/// Fetch a universe. Also doubles as a connectivity probe.
 pub async fn get(ctx: &Ctx, universe_id: u64) -> Output {
     let path = format!("/cloud/v2/universes/{universe_id}");
     match ctx.get_json(&path).await {
@@ -13,10 +13,10 @@ pub async fn get(ctx: &Ctx, universe_id: u64) -> Output {
             let name = data
                 .get("displayName")
                 .and_then(|v| v.as_str())
-                .unwrap_or("(名称なし)");
+                .unwrap_or("(unnamed)");
             Output::success(
                 "universe get",
-                format!("universe {universe_id} を取得しました: {name}"),
+                format!("Fetched universe {universe_id}: {name}"),
                 Some(data),
             )
         }
@@ -24,7 +24,7 @@ pub async fn get(ctx: &Ctx, universe_id: u64) -> Output {
     }
 }
 
-/// クロスサーバー メッセージを配信する。
+/// Publish a cross-server message.
 pub async fn publish_message(ctx: &Ctx, universe_id: u64, topic: &str, message: &str) -> Output {
     let parsed: Value = match serde_json::from_str(message) {
         Ok(v) => v,
@@ -33,9 +33,9 @@ pub async fn publish_message(ctx: &Ctx, universe_id: u64, topic: &str, message: 
                 "universe publish-message",
                 ErrorBody {
                     code: "invalid_message",
-                    message: format!("--message が JSON として解釈できません: {e}"),
+                    message: format!("--message is not valid JSON: {e}"),
                     status: None,
-                    detail: Some("例: --message '{\"event\":\"restart\"}'".into()),
+                    detail: Some("Example: --message '{\"event\":\"restart\"}'".into()),
                 },
             );
         }
@@ -51,7 +51,7 @@ pub async fn publish_message(ctx: &Ctx, universe_id: u64, topic: &str, message: 
             }
             Output::success(
                 "universe publish-message",
-                format!("topic {topic} へ配信しました"),
+                format!("Published to topic {topic}"),
                 Some(json!({ "universeId": universe_id, "topic": topic })),
             )
         }

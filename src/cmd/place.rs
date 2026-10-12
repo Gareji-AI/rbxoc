@@ -1,10 +1,10 @@
-//! Place 公開・取得。
+//! Place publishing and retrieval.
 //!
-//! `POST /universes/v1/{universeId}/places/{placeId}/versions` は RBXL /
-//! RBXLX を `data-binary` として送る。`versionType` が `Saved` なら保存のみ、
-//! `Published` なら公開まで進む。
+//! `POST /universes/v1/{universeId}/places/{placeId}/versions` sends an RBXL /
+//! RBXLX file as `data-binary`. `versionType` of `Saved` only saves;
+//! `Published` also goes live.
 //!
-//! 応答は place のバージョン番号を返す。壊れたファイルは HTTP 400 になる。
+//! The response is the new place version number. A malformed file yields HTTP 400.
 
 use serde_json::json;
 
@@ -13,7 +13,7 @@ use crate::output::Output;
 
 const COMMAND: &str = "place publish";
 
-/// place を保存または公開する。
+/// Save or publish a place.
 pub async fn publish(
     ctx: &Ctx,
     universe_id: u64,
@@ -28,7 +28,7 @@ pub async fn publish(
                 COMMAND,
                 crate::output::ErrorBody {
                     code: "file_unreadable",
-                    message: format!("ファイルを読めません: {}", file.display()),
+                    message: format!("cannot read the file: {}", file.display()),
                     status: None,
                     detail: Some(e.to_string()),
                 },
@@ -44,23 +44,22 @@ pub async fn publish(
 
     match ctx.send(req).await {
         Ok(resp) => {
-            let status = resp.status().as_u16();
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
                 return failure(COMMAND, err);
             }
             let body = resp.text().await.unwrap_or_default();
-            // 応答はバージョン番号そのもの（JSON ではない）。
+            // The response is the version number itself, not JSON.
             let version: Option<u64> = body.trim().parse().ok();
-            let action = if published { "公開" } else { "保存" };
+            let action = if published { "published" } else { "saved" };
             let summary = match version {
-                Some(v) => format!("place を{action}しました（バージョン {v}）"),
-                None => format!("place を{action}しました"),
+                Some(v) => format!("Place {action} (version {v})"),
+                None => format!("Place {action}"),
             };
             let mut hints =
-                vec!["`rbxoc place history --place-id <id>` で履歴を確認できます".into()];
+                vec!["Run `rbxoc place history --place-id <id>` to inspect the history".into()];
             if !published {
-                hints.push("公開まで進めるには --published を付けてください".into());
+                hints.push("Add --published to go live".into());
             }
             Output::success(
                 COMMAND,
@@ -70,7 +69,6 @@ pub async fn publish(
                     "placeId": place_id,
                     "version": version,
                     "versionType": version_type,
-                    "bytes": status,
                     "action": action,
                 })),
             )
@@ -80,7 +78,7 @@ pub async fn publish(
     }
 }
 
-/// place のメタデータを取得する。
+/// Fetch a place's metadata.
 pub async fn get(ctx: &Ctx, universe_id: u64, place_id: u64) -> Output {
     let path = format!("/cloud/v2/universes/{universe_id}/places/{place_id}");
     match ctx.get_json(&path).await {
@@ -88,18 +86,14 @@ pub async fn get(ctx: &Ctx, universe_id: u64, place_id: u64) -> Output {
             let name = data
                 .get("displayName")
                 .and_then(|v| v.as_str())
-                .unwrap_or("(名称なし)");
-            Output::success(
-                "place get",
-                format!("place を取得しました: {name}"),
-                Some(data),
-            )
+                .unwrap_or("(unnamed)");
+            Output::success("place get", format!("Fetched place: {name}"), Some(data))
         }
         Err(err) => failure("place get", err),
     }
 }
 
-/// place のバージョン履歴を取得する。
+/// Fetch a place's version history.
 pub async fn history(ctx: &Ctx, place_id: u64, limit: u32) -> Output {
     let path = format!("/place-version-history-api/v1/{place_id}/history?limit={limit}");
     match ctx.get_json(&path).await {
@@ -111,7 +105,7 @@ pub async fn history(ctx: &Ctx, place_id: u64, limit: u32) -> Output {
                 .unwrap_or(0);
             Output::success(
                 "place history",
-                format!("place {place_id} のバージョン {count} 件を取得しました"),
+                format!("Fetched {count} versions for place {place_id}"),
                 Some(data),
             )
         }

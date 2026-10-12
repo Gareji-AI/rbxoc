@@ -3,108 +3,108 @@
 [![CI](https://github.com/eiei114/rbxoc/actions/workflows/ci.yml/badge.svg)](https://github.com/eiei114/rbxoc/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Roblox Open Cloud を操作する Rust 製 CLI。**コーディングエージェントが使うことを前提**に設計しています。
+A Rust CLI for the Roblox Open Cloud API, **designed for coding agents**.
 
-## なぜ作ったか
+## Why this exists
 
-既存の [`rbxcloud`](https://github.com/Sleitnick/rbxcloud)（139★）は優れた CLI ですが、最終更新が 2025-03-23 で止まっており、その後に追加された API 群に対応していません。
+The existing [`rbxcloud`](https://github.com/Sleitnick/rbxcloud) (139 stars) is a solid CLI, but its last commit was 2025-03-23 and it does not cover the APIs added since.
 
-| 領域 | rbxcloud | rbxoc |
+| Area | rbxcloud | rbxoc |
 | --- | --- | --- |
-| サムネイル差し替え | ✗ | ✅ |
-| ゲームサーバーログ | ✗ | ✅ |
-| Analytics クエリ | ✗ | ✅ |
-| Place バージョン履歴 | ✗ | ✅ |
-| Place 公開 | ✅ | ✅ |
-| アセット管理 | ✅ | ✅ |
-| DataStore | ✅ | ✅ |
-| 課金商品 | ✗ | ✅ |
+| Thumbnail replacement | ✗ | ✅ |
+| Game server logs | ✗ | ✅ |
+| Analytics queries | ✗ | ✅ |
+| Place version history | ✗ | ✅ |
+| Place publishing | ✅ | ✅ |
+| Asset management | ✅ | ✅ |
+| DataStores | ✅ | ✅ |
+| Monetization | ✗ | ✅ |
 
-さらに、GitHub 検索の上位に並ぶ「Best 〜 2026」系リポジトリの多くは star 数だけの空リポジトリです。実体のある選択肢は限られています。
+Most of the "Best ... 2026" repositories that rank highly in GitHub search are empty shells with inflated star counts. Real options are limited.
 
-## エージェント向け設計
+## Agent-facing design
 
-### 1. 決定論的発見
+### 1. Deterministic discovery
 
-`rbxoc api list` が自己記述カタログを返します。エージェントは実装を探し回らずに、何ができるかを知れます。
+`rbxoc api list` returns a self-describing catalog. An agent learns what is possible without hunting through source.
 
 ```bash
 rbxoc api list --implemented
 rbxoc api list --query thumbnail
 rbxoc api show place.publish
-rbxoc api mutating          # 破壊的操作だけ。実行前の確認に使う
+rbxoc api mutating          # mutating operations only, for pre-flight review
 ```
 
-カタログは `src/catalog.rs` が正本で、実装と 1:1 に対応します。未実装のエントリも `implemented: false` と理由つきで載せてあるため、存在しない機能を呼ぼうとする無駄な試行が発生しません。
+`src/catalog.rs` is the source of truth and maps 1:1 to the implementation. Unimplemented entries still appear with `implemented: false` and a reason, so agents do not waste attempts on features that do not exist.
 
-### 2. 機械可読出力
+### 2. Machine-readable output
 
-すべてのコマンドが同じ封筒を返します。`--format json` が既定です。
+Every command returns the same envelope. `--format json` is the default.
 
 ```json
 {
   "ok": true,
   "command": "place publish",
-  "summary": "place を公開しました（バージョン 12）",
+  "summary": "Place published (version 12)",
   "data": { "universeId": 1, "placeId": 2, "version": 12 },
-  "hints": ["`rbxoc place history --place-id <id>` で履歴を確認できます"]
+  "hints": ["Run `rbxoc place history --place-id <id>` to inspect the history"]
 }
 ```
 
-失敗時:
+On failure:
 
 ```json
 {
   "ok": false,
   "command": "auth",
-  "summary": "認証情報が見つかりません…",
-  "hints": ["RBXOC_API_KEY を設定してください", "`rbxoc auth check` で状態を確認できます"],
-  "error": { "code": "auth_missing", "message": "…" }
+  "summary": "no credentials found. Set RBXOC_API_KEY, or put an API key in ~/.rbxoc/api-key",
+  "hints": ["Set RBXOC_API_KEY", "Run `rbxoc auth check` to inspect the credential state"],
+  "error": { "code": "auth_missing", "message": "..." }
 }
 ```
 
-`error.code` は安定した識別子です。HTTP エラーは `http_401` / `http_403` / `http_5xx` のように写します。エージェントは文字列ではなくコードで分岐できます。
+`error.code` is a stable identifier. HTTP failures map to `http_401`, `http_403`, `http_5xx`, and so on. Agents branch on codes, not on prose.
 
-### 3. troubleshooting guidance
+### 3. Troubleshooting guidance
 
-失敗には必ず `hints` が付きます。HTTP ステータスごとに次の行動を返します。
+Failures always carry `hints`. Each HTTP status maps to concrete next actions:
 
-- `401` → API key の再発行、`auth check` の案内
-- `403` → 権限とスコープの確認、OAuth が必要な領域の指摘
-- `429` → 指数バックオフと `--retry` の案内
-- `5xx` → 一時障害として再試行
+- `401` — reissue the API key, run `auth check`
+- `403` — check permissions and scopes, note when OAuth2 is required
+- `429` — exponential backoff, mention `--retry`
+- `5xx` — transient failure, retry later
 
-### 4. 秘密値の扱い
+### 4. Secret handling
 
-引数より環境変数とファイルを優先します。`--api-key` は履歴に残るため、エージェントには推奨しません。
+Environment variables and files take priority over arguments. `--api-key` lands in shell history, so agents should avoid it.
 
-探索順:
+Lookup order:
 
-1. `--api-key`（非推奨）
-2. `RBXOC_API_KEY` 環境変数
+1. `--api-key` (discouraged)
+2. `RBXOC_API_KEY` environment variable
 3. `--api-key-file <path>`
 4. `~/.rbxoc/api-key`
 5. `RBXOC_OAUTH_TOKEN` / `~/.rbxoc/oauth-token`
 
-出力では常にマスクします（`abcd****`）。
+Output always masks the value (`abcd****`).
 
-### 5. 終了コード
+### 5. Exit codes
 
-| code | 意味 |
+| code | meaning |
 | --- | --- |
-| 0 | 成功 |
-| 1 | 実行時エラー（HTTP 失敗など） |
-| 2 | 認証情報が見つからない |
-| 64 | 引数の誤り（不明なエンドポイント ID など） |
+| 0 | success |
+| 1 | runtime error (HTTP failure and similar) |
+| 2 | no credentials found |
+| 64 | bad arguments (unknown endpoint ID and similar) |
 
-## インストール
+## Install
 
-### mise（推奨）
+### mise (recommended)
 
 ```bash
-mise install          # Rust / Rojo / pesde を導入
-mise run build        # release バイナリをビルド
-mise run install-local  # ~/.local/bin へ
+mise install            # Rust / Rojo / pesde
+mise run build          # release binary
+mise run install-local  # into ~/.local/bin
 ```
 
 ### cargo
@@ -113,16 +113,16 @@ mise run install-local  # ~/.local/bin へ
 cargo install --path . --locked
 ```
 
-## 使い方
+## Usage
 
-### 認証の確認
+### Check credentials
 
 ```bash
 export RBXOC_API_KEY="..."
 rbxoc auth check --universe-id 123456
 ```
 
-### Place 公開
+### Publish a place
 
 ```bash
 rbxoc place publish --universe-id 123 --place-id 456 --file build/game.rbxlx
@@ -130,7 +130,7 @@ rbxoc place publish --universe-id 123 --place-id 456 --file build/game.rbxlx --p
 rbxoc place history --place-id 456
 ```
 
-### アセット
+### Assets
 
 ```bash
 rbxoc asset create --file model.fbx --display-name "My Model" --user-id 789
@@ -139,9 +139,9 @@ rbxoc asset update --asset-id 2205400862 --file v2.fbx
 rbxoc asset rollback --asset-id 2205400862 --version 1
 ```
 
-対応形式（20MB / リクエスト）: `.fbx` `.gltf` `.glb` `.rbxm` `.rbxmx`（Model）、`.png` `.jpeg` `.bmp` `.tga`（Image）、`.mp3` `.ogg` `.wav` `.flac`、`.mp4` `.mov`。
+Supported formats (20 MB per request): `.fbx` `.gltf` `.glb` `.rbxm` `.rbxmx` (Model), `.png` `.jpeg` `.bmp` `.tga` (Image), `.mp3` `.ogg` `.wav` `.flac`, `.mp4` `.mov`.
 
-### サムネイル
+### Thumbnails
 
 ```bash
 rbxoc thumbnail upload --universe-id 123 --files a.png b.png
@@ -149,72 +149,72 @@ rbxoc thumbnail status --universe-id 123 --operation-ids ABC123
 rbxoc thumbnail list --universe-id 123
 ```
 
-### サーバーログ
+### Server logs
 
 ```bash
 rbxoc server list --universe-id 123 --place-id 456 --version 12
 rbxoc server logs --universe-id 123 --place-id 456 --version 12 --job-id <jobId> --limit 200
 ```
 
-## 認証方式の対応
+## Authentication coverage
 
-Open Cloud は 3 系統の認証を持ちます。本 CLI は cookie を対象外にしています。
+Open Cloud has three auth families. This CLI excludes cookies.
 
-| 方式 | 対応 | 用途 |
+| Method | Supported | Use |
 | --- | --- | --- |
-| `x-api-key` | ✅ | 大半のエンドポイント |
-| OAuth2 Bearer | ✅ | Analytics、アラートなど |
-| legacy cookie | ✗ | ブラウザセッション由来。自動化に不向き |
+| `x-api-key` | ✅ | most endpoints |
+| OAuth2 bearer | ✅ | Analytics, alerts, and similar |
+| legacy cookie | ✗ | browser-session derived, unsuited to automation |
 
-**注意**: 一部の領域は OAuth2 専用です。Analytics クエリは `universe.analytics:read` が必要で、API key では呼べません。`rbxoc api show <id>` の `auth` フィールドで確認できます。
+**Note**: some areas are OAuth2-only. Analytics queries need `universe.analytics:read` and cannot be called with an API key. Check the `auth` field of `rbxoc api show <id>`.
 
-## ツールチェーン
+## Toolchain
 
-`mise.toml` が Rojo / pesde / Rust を固定します。
+`mise.toml` pins Rojo / pesde / Rust.
 
 ```bash
 mise run check         # fmt / clippy / test
-mise run build         # release ビルド
-mise run demo          # 認証不要のカタログ出力
+mise run build         # release build
+mise run demo          # catalog output that needs no credentials
 ```
 
-### 自動更新について
+### About automatic updates
 
-mise の `self_update.auto` と `tool_update.global_auto` は **global-only の設定**で、プロジェクトの `mise.toml` からは有効化できません。mise がセキュリティ理由で拒否します。
+mise's `self_update.auto` and `tool_update.global_auto` are **global-only settings**. A project `mise.toml` cannot enable them; mise rejects them for security reasons.
 
 ```text
 mise WARN  self_update.auto in non-global config .../mise.toml is ignored for security reasons
 ```
 
-そのため更新はプロジェクト内で完結させています。
+Tool updates therefore stay inside the project:
 
 ```bash
-mise run update-tools            # 最新版を確認
-mise run update-tools -- --apply # 書き換えて mise install
+mise run update-tools            # check for newer versions
+mise run update-tools -- --apply # rewrite and run mise install
 ```
 
-`mise latest <tool>` で安定版を解決します（`ls-remote` は nightly / beta / stable の別名も返すため単独では使えません）。
+`mise latest <tool>` resolves the stable version. (`ls-remote` also returns aliases like nightly / beta / stable, so it cannot be used alone.)
 
-## 開発
+## Development
 
 ```bash
 mise run check   # fmt --check / clippy -D warnings / test
 ```
 
-テストは実 API を呼びません。パス組み立て、拡張子推論、応答形状の抽出、バックオフ計算、カタログ整合性を検証します。
+Tests never call the real API. They cover path building, extension inference, response-shape extraction, backoff math, and catalog consistency.
 
-## 未実施の確認
+## Not verified
 
-このリポジトリは **API key を使った実呼び出しを検証していません**。実装とコンパイル、および実 API を呼ばない単体テストのみです。各エンドポイントの実応答は未確認です。
+This repository **has not been exercised against the live API with a real key**. Only the implementation, compilation, and unit tests that avoid the network exist. Actual responses per endpoint are unverified.
 
-特に以下は未確認です。
+Specifically unverified:
 
-- Place 公開の実ファイル送信
-- アセットアップロードの実処理
-- サムネイル API（experimental のため形状が変わる可能性）
-- Analytics（OAuth2 が必要）
-- 実ゲームサーバーのログ取得
+- Place publishing with a real file
+- Asset upload processing
+- The thumbnail API (experimental, so the shape may change)
+- Analytics (requires OAuth2)
+- Fetching real game server logs
 
-## ライセンス
+## License
 
 MIT

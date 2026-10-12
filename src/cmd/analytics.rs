@@ -1,28 +1,30 @@
-//! 分析クエリ。
+//! Analytics queries.
 //!
-//! `analytics-query-api` は OAuth2 専用（`universe.analytics:read`）。API key
-//! では呼べない点が他と異なる。rbxcloud 未対応の領域。
+//! `analytics-query-api` is OAuth2-only (`universe.analytics:read`). Unlike
+//! most areas, an API key cannot call it. Not covered by rbxcloud.
 //!
-//! 問い合わせは非同期の場合があり、operation を poll する形になる。
+//! Queries may be asynchronous and return an operation to poll.
 
 use serde_json::{Value, json};
 
 use crate::ctx::{Ctx, failure};
 use crate::output::{ErrorBody, Output};
 
-/// 時系列メトリクスを問い合わせる。
+const COMMAND: &str = "analytics metrics";
+
+/// Query time-series metrics.
 pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
     let body: Value = match serde_json::from_str(query) {
         Ok(v) => v,
         Err(e) => {
             return failure(
-                "analytics metrics",
+                COMMAND,
                 ErrorBody {
                     code: "invalid_query",
-                    message: format!("--query が JSON として解釈できません: {e}"),
+                    message: format!("--query is not valid JSON: {e}"),
                     status: None,
                     detail: Some(
-                        "例: --query '{\"metrics\":[{\"metric\":\"DailyActiveUsers\"}],\"startTime\":\"2026-10-01T00:00:00Z\",\"endTime\":\"2026-10-08T00:00:00Z\",\"granularity\":\"P1D\"}'"
+                        "Example: --query '{\"metrics\":[{\"metric\":\"DailyActiveUsers\"}],\"startTime\":\"2026-10-01T00:00:00Z\",\"endTime\":\"2026-10-08T00:00:00Z\",\"granularity\":\"P1D\"}'"
                             .into(),
                     ),
                 },
@@ -36,28 +38,25 @@ pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure("analytics metrics", err);
+                return failure(COMMAND, err);
             }
             let data: Value = resp.json().await.unwrap_or(Value::Null);
-            let mut out = Output::success(
-                "analytics metrics",
-                "メトリクス問い合わせを受け付けました",
-                Some(data.clone()),
-            );
-            // 非同期の場合は operation を返す。
+            let mut out =
+                Output::success(COMMAND, "Accepted the metrics query", Some(data.clone()));
+            // Asynchronous queries return an operation.
             if let Some(op) = data.get("path").and_then(|v| v.as_str()) {
                 out = out.with_hints(vec![format!(
-                    "`rbxoc analytics operation --universe-id {universe_id} --kind metrics --operation-id {}` で結果を取得できます",
+                    "Run `rbxoc analytics operation --universe-id {universe_id} --kind metrics --operation-id {}` to fetch the result",
                     op.strip_prefix("operations/").unwrap_or(op)
                 )]);
             }
             out
         }
-        Err(err) => failure("analytics metrics", err),
+        Err(err) => failure(COMMAND, err),
     }
 }
 
-/// 非同期クエリの結果を取得する。
+/// Fetch the result of an asynchronous query.
 pub async fn operation(ctx: &Ctx, universe_id: u64, kind: &str, operation_id: &str) -> Output {
     let segment = match kind {
         "metrics" => "metrics",
@@ -67,9 +66,9 @@ pub async fn operation(ctx: &Ctx, universe_id: u64, kind: &str, operation_id: &s
                 "analytics operation",
                 ErrorBody {
                     code: "unknown_kind",
-                    message: format!("--kind に {other} は使えません"),
+                    message: format!("--kind does not accept {other}"),
                     status: None,
-                    detail: Some("metrics か dimensions を指定してください".into()),
+                    detail: Some("Use metrics or dimensions".into()),
                 },
             );
         }
@@ -83,14 +82,14 @@ pub async fn operation(ctx: &Ctx, universe_id: u64, kind: &str, operation_id: &s
             let mut out = Output::success(
                 "analytics operation",
                 if done {
-                    "問い合わせが完了しました".to_string()
+                    "Query completed".to_string()
                 } else {
-                    "問い合わせはまだ実行中です".to_string()
+                    "Query is still running".to_string()
                 },
                 Some(data),
             );
             if !done {
-                out = out.with_hints(vec!["数秒待って再実行してください".into()]);
+                out = out.with_hints(vec!["Wait a few seconds and run it again".into()]);
             }
             out
         }
@@ -98,28 +97,28 @@ pub async fn operation(ctx: &Ctx, universe_id: u64, kind: &str, operation_id: &s
     }
 }
 
-/// メトリクスの一覧（自己記述）。エージェントが指標名を間違えないようにする。
+/// Common metric names. Keeps agents from guessing wrong identifiers.
 pub async fn catalog() -> Output {
-    // 公式ドキュメントの代表的な指標。網羅ではなく、よく使うものを先に出す。
+    // Representative metrics from the official docs, not an exhaustive list.
     let metrics = json!([
         { "name": "DailyActiveUsers", "unit": "count", "note": "DAU" },
         { "name": "MonthlyActiveUsers", "unit": "count", "note": "MAU" },
-        { "name": "AverageSessionLength", "unit": "seconds", "note": "平均セッション長" },
-        { "name": "PlaytimePerUser", "unit": "seconds", "note": "1ユーザーあたりプレイ時間" },
-        { "name": "Revenue", "unit": "robux", "note": "収益" },
-        { "name": "PayingUsers", "unit": "count", "note": "課金ユーザー数" },
-        { "name": "NewUsers", "unit": "count", "note": "新規ユーザー" },
-        { "name": "RetentionD1", "unit": "ratio", "note": "翌日継続率" },
-        { "name": "RetentionD7", "unit": "ratio", "note": "7日継続率" },
-        { "name": "RetentionD30", "unit": "ratio", "note": "30日継続率" }
+        { "name": "AverageSessionLength", "unit": "seconds", "note": "average session length" },
+        { "name": "PlaytimePerUser", "unit": "seconds", "note": "playtime per user" },
+        { "name": "Revenue", "unit": "robux", "note": "revenue" },
+        { "name": "PayingUsers", "unit": "count", "note": "paying users" },
+        { "name": "NewUsers", "unit": "count", "note": "new users" },
+        { "name": "RetentionD1", "unit": "ratio", "note": "day-1 retention" },
+        { "name": "RetentionD7", "unit": "ratio", "note": "day-7 retention" },
+        { "name": "RetentionD30", "unit": "ratio", "note": "day-30 retention" }
     ]);
     Output::success(
         "analytics catalog",
-        "代表的な分析指標の一覧です",
+        "Common analytics metrics",
         Some(json!({ "metrics": metrics })),
     )
     .with_hints(vec![
-        "正確な指標名は Creator Dashboard の分析画面で確認してください".into(),
-        "この API は OAuth2 が必要です（universe.analytics:read）".into(),
+        "Confirm exact metric names in the Creator Dashboard analytics view".into(),
+        "This API requires OAuth2 (universe.analytics:read)".into(),
     ])
 }

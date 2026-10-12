@@ -1,4 +1,4 @@
-//! コマンド実装。`cli.rs` から呼ばれる。
+//! Command implementations. Called from `cli.rs`.
 
 pub mod analytics;
 pub mod asset;

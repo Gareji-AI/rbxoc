@@ -1,21 +1,20 @@
 [tools]
-# CLI 本体のビルドに使う。mise が Rust を供給するので、ホスト側の
-# rustup 有無に依存しない。
+# Used to build the CLI. mise supplies Rust, so the host does not need rustup.
 rust = "1.99.0"
-# Roblox 側のツール。place 生成と Luau パッケージ。
+# Roblox-side tooling.
 "github:rojo-rbx/rojo" = "7.7.1"
 "github:pesde-pkg/pesde" = "0.7.4"
 
-# 自動更新はここに書かない。
-# self_update.auto と tool_update.global_auto は global-only の設定で、
-# このファイルでは mise が拒否する。更新は `mise run update-tools` で行う。
+# Do not add automatic updates here.
+# self_update.auto and tool_update.global_auto are global-only settings, and
+# mise rejects them in this file. Update tools with `mise run update-tools`.
 
 [tasks.build]
-description = "release バイナリをビルドする"
+description = "Build the release binary"
 run = "cargo build --release"
 
 [tasks.check]
-description = "fmt / clippy / test をまとめて通す"
+description = "Run fmt, clippy, and tests"
 run = [
   "cargo fmt --check",
   "cargo clippy --all-targets -- -D warnings",
@@ -23,15 +22,15 @@ run = [
 ]
 
 [tasks.install-local]
-description = "ビルドして ~/.local/bin へ入れる"
+description = "Build and install into ~/.local/bin"
 run = "cargo install --path . --locked"
 
 [tasks.update-tools]
-description = "mise.toml のツールを最新版へ更新する（--apply で適用）"
+description = "Update mise.toml tools to the latest versions (--apply to write)"
 run = "node scripts/update-tools.mjs"
 
 [tasks.demo]
-description = "認証不要のカタログ出力を試す"
+description = "Try the catalog output that needs no credentials"
 run = [
   "cargo run --quiet -- api list --implemented",
   "cargo run --quiet -- api mutating",

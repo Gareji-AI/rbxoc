@@ -1,16 +1,17 @@
-//! 認証と HTTP クライアント。
+//! Authentication and HTTP client.
 //!
-//! Open Cloud の認証は 3 系統ある（`roblox-api-key` / `roblox-oauth2` /
-//! `roblox-legacy-cookie`）。本 CLI は API key と OAuth2 の Bearer に対応する。
-//! legacy cookie はブラウザセッション由来で自動化に向かず、対象外とする。
+//! Open Cloud has three auth families (`roblox-api-key` / `roblox-oauth2` /
+//! `roblox-legacy-cookie`). This CLI supports API keys and OAuth2 bearer
+//! tokens. Legacy cookies come from a browser session and do not suit
+//! automation, so they are out of scope.
 //!
-//! API key の探索順:
-//! 1. `--api-key` 引数（エージェントは使わない想定。履歴に残るため）
-//! 2. `RBXOC_API_KEY` 環境変数
-//! 3. `--api-key-file` で指定したファイル
-//! 4. 既定の keyring ファイル `~/.rbxoc/api-key`（パーミッション確認あり）
+//! API key lookup order:
+//! 1. `--api-key` (agents should avoid it; it lands in shell history)
+//! 2. `RBXOC_API_KEY` environment variable
+//! 3. the file given by `--api-key-file`
+//! 4. the default keyring file `~/.rbxoc/api-key` (permissions are checked)
 //!
-//! OAuth2 は `RBXOC_OAUTH_TOKEN` 環境変数、または `~/.rbxoc/oauth-token`。
+//! OAuth2 comes from `RBXOC_OAUTH_TOKEN` or `~/.rbxoc/oauth-token`.
 
 use std::path::PathBuf;
 
@@ -18,20 +19,20 @@ use anyhow::{Context, Result, bail};
 
 use crate::output::ErrorBody;
 
-/// Open Cloud の API ホスト。
+/// Open Cloud API host.
 pub const API_HOST: &str = "https://apis.roblox.com";
 
-/// 認証方式。
+/// Authentication method.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Auth {
-    /// `x-api-key` ヘッダ。大半のエンドポイント。
+    /// `x-api-key` header. Most endpoints.
     ApiKey(String),
-    /// `Authorization: Bearer`。OAuth2 スコープが必要な領域。
+    /// `Authorization: Bearer`. Areas that need OAuth2 scopes.
     OAuth(String),
 }
 
 impl Auth {
-    /// 秘密値をログに出さないための表示名。
+    /// Display name that never leaks the secret.
     pub fn kind(&self) -> &'static str {
         match self {
             Auth::ApiKey(_) => "api-key",
@@ -39,7 +40,7 @@ impl Auth {
         }
     }
 
-    /// マスクした値。先頭 4 文字だけ残す。エラー表示用。
+    /// Masked value. Keeps only the first 4 characters. For error display.
     pub fn masked(&self) -> String {
         let raw = match self {
             Auth::ApiKey(v) | Auth::OAuth(v) => v,
@@ -51,12 +52,12 @@ impl Auth {
     }
 }
 
-/// 認証を解決する。見つからなければ実行可能な hint を返す。
+/// Resolve credentials. Returns an actionable hint when nothing is found.
 pub fn resolve(api_key: Option<&str>, api_key_file: Option<&PathBuf>) -> Result<Auth> {
     if let Some(key) = api_key {
         let key = key.trim();
         if key.is_empty() {
-            bail!("--api-key が空です");
+            bail!("--api-key is empty");
         }
         return Ok(Auth::ApiKey(key.to_string()));
     }
@@ -91,30 +92,30 @@ pub fn resolve(api_key: Option<&str>, api_key_file: Option<&PathBuf>) -> Result<
     }
 
     bail!(
-        "認証情報が見つかりません。RBXOC_API_KEY を設定するか、\
-         ~/.rbxoc/api-key に API key を置いてください"
+        "no credentials found. Set RBXOC_API_KEY, or put an API key in \
+         ~/.rbxoc/api-key"
     )
 }
 
-/// 秘密ファイルを読む。1 行目だけを使い、改行を落とす。
+/// Read a secret file. Uses the first line and strips the newline.
 fn read_secret(path: &PathBuf, wrap: fn(String) -> Auth) -> Result<Auth> {
     let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("秘密ファイルを読めません: {}", path.display()))?;
+        .with_context(|| format!("cannot read secret file: {}", path.display()))?;
     let value = raw.lines().next().unwrap_or("").trim().to_string();
     if value.is_empty() {
-        bail!("秘密ファイルが空です: {}", path.display());
+        bail!("secret file is empty: {}", path.display());
     }
     Ok(wrap(value))
 }
 
-/// ホームディレクトリ。Windows は USERPROFILE、他は HOME。
+/// Home directory. USERPROFILE on Windows, HOME elsewhere.
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .map(PathBuf::from)
 }
 
-/// 認証情報なしのエラー。`code` で分岐できるようにする。
+/// Error for missing credentials. `code` allows downstream branching.
 pub fn missing_auth_error(message: impl Into<String>) -> ErrorBody {
     ErrorBody {
         code: "auth_missing",
@@ -124,21 +125,21 @@ pub fn missing_auth_error(message: impl Into<String>) -> ErrorBody {
     }
 }
 
-/// HTTP クライアントを作る。timeout を明示し、エージェントが待ち続けないようにする。
+/// Build the HTTP client. Timeouts are explicit so an agent never waits forever.
 pub fn http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .user_agent(concat!("rbxoc/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(120))
         .connect_timeout(std::time::Duration::from_secs(15))
         .build()
-        .context("HTTP クライアントの初期化に失敗しました")
+        .context("failed to initialize the HTTP client")
 }
 
-/// API レスポンスのステータスをエラーへ変換する。呼び出し側で成功判定に使う。
+/// Convert an API response status into an error. Callers use it for success checks.
 pub async fn error_from_response(response: reqwest::Response) -> ErrorBody {
     let status = response.status().as_u16();
     let body = response.text().await.unwrap_or_default();
-    // HTML エラーページをそのまま流さない。先頭だけ残す。
+    // Do not forward an HTML error page verbatim. Keep the head only.
     let detail = if body.is_empty() {
         None
     } else {
@@ -146,13 +147,13 @@ pub async fn error_from_response(response: reqwest::Response) -> ErrorBody {
     };
     ErrorBody {
         code: status_code(&status),
-        message: format!("Open Cloud が HTTP {status} を返しました"),
+        message: format!("Open Cloud returned HTTP {status}"),
         status: Some(status),
         detail,
     }
 }
 
-/// HTTP ステータスを安定した `code` へ写す。エージェントはここで分岐する。
+/// Map an HTTP status to a stable `code`. Agents branch on this.
 fn status_code(status: &u16) -> &'static str {
     match status {
         400 => "http_400",
@@ -166,29 +167,28 @@ fn status_code(status: &u16) -> &'static str {
     }
 }
 
-/// ステータスごとの次の行動。エージェント向けの troubleshooting guidance。
+/// Next actions per status. Troubleshooting guidance for agents.
 pub fn hints_for_status(status: u16) -> Vec<String> {
     match status {
         401 => vec![
-            "API key が無効か期限切れです。Creator Dashboard で再発行してください".into(),
-            "`rbxoc auth check` で現在の認証状態を確認できます".into(),
+            "The API key is invalid or expired. Reissue it in the Creator Dashboard".into(),
+            "Run `rbxoc auth check` to inspect the current credential state".into(),
         ],
         403 => vec![
-            "API key に必要な権限がありません。対象の操作権限とスコープを確認してください".into(),
-            "スコープが OAuth2 専用の領域では、`RBXOC_OAUTH_TOKEN` が必要です".into(),
-            "`rbxoc api list --scope <name>` で該当エンドポイントの必要スコープを確認できます"
-                .into(),
+            "The API key lacks the required permission. Check the operation and scopes".into(),
+            "Areas that require OAuth2 need `RBXOC_OAUTH_TOKEN` instead".into(),
+            "Run `rbxoc api show <id>` to see the scopes an endpoint needs".into(),
         ],
         404 => vec![
-            "ID が誤っているか、API key が対象の体験にアクセスできません".into(),
-            "universeId と placeId の取り違えを確認してください".into(),
+            "Either the ID is wrong, or the API key cannot access that experience".into(),
+            "Check for a swap between universeId and placeId".into(),
         ],
-        409 => vec!["競合しています。少し待って再試行してください".into()],
+        409 => vec!["Conflicting state. Wait a moment and retry".into()],
         429 => vec![
-            "レート制限です。指数バックオフで再試行してください".into(),
-            "`--retry 3` を付けると自動で再試行します".into(),
+            "Rate limited. Retry with exponential backoff".into(),
+            "`--retry 3` adds automatic retries".into(),
         ],
-        500..=599 => vec!["Roblox 側の一時障害です。時間を置いて再試行してください".into()],
+        500..=599 => vec!["Temporary Roblox-side failure. Retry later".into()],
         _ => Vec::new(),
     }
 }
@@ -202,7 +202,7 @@ mod tests {
         let key = Auth::ApiKey("abcdefghijkl".into());
         assert_eq!(key.kind(), "api-key");
         assert_eq!(key.masked(), "abcd****");
-        // 短い値は全体を隠す。
+        // Short values are hidden entirely.
         assert_eq!(Auth::ApiKey("short".into()).masked(), "****");
     }
 

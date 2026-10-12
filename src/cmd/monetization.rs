@@ -1,16 +1,16 @@
-//! 課金商品（Game Pass / Developer Product）。
+//! Monetization (Game Passes / Developer Products).
 //!
-//! 2025-12-04 以降 Open Cloud 化された。multipart で画像を同一リクエストに
-//! 載せられる。公式ドキュメント上は現在も Beta。
+//! Open Cloud took these over on 2025-12-04. Images ride in the same multipart
+//! request. Still labeled Beta in the official docs.
 //!
-//! API key は universe 単位で権限を切る。
+//! API keys scope permissions per universe.
 
 use serde_json::{Value, json};
 
 use crate::ctx::{Ctx, failure};
 use crate::output::{ErrorBody, Output};
 
-/// Game Pass 一覧。
+/// List Game Passes.
 pub async fn gamepass_list(ctx: &Ctx, universe_id: u64) -> Output {
     let path = format!("/game-passes/v1/universes/{universe_id}/game-passes/creator");
     match ctx.get_json(&path).await {
@@ -22,7 +22,7 @@ pub async fn gamepass_list(ctx: &Ctx, universe_id: u64) -> Output {
                 .unwrap_or(0);
             Output::success(
                 "gamepass list",
-                format!("Game Pass {count} 件を取得しました"),
+                format!("Fetched {count} Game Passes"),
                 Some(data),
             )
         }
@@ -30,7 +30,7 @@ pub async fn gamepass_list(ctx: &Ctx, universe_id: u64) -> Output {
     }
 }
 
-/// Game Pass 作成。
+/// Create a Game Pass.
 #[allow(clippy::too_many_arguments)]
 pub async fn gamepass_create(
     ctx: &Ctx,
@@ -52,7 +52,7 @@ pub async fn gamepass_create(
     submit_with_optional_image(ctx, "gamepass create", &path, "POST", request, image).await
 }
 
-/// Game Pass 更新。
+/// Update a Game Pass.
 #[allow(clippy::too_many_arguments)]
 pub async fn gamepass_update(
     ctx: &Ctx,
@@ -78,7 +78,7 @@ pub async fn gamepass_update(
     submit_with_optional_image(ctx, "gamepass update", &path, "PATCH", request, image).await
 }
 
-/// Developer Product 一覧。
+/// List Developer Products.
 pub async fn devproduct_list(ctx: &Ctx, universe_id: u64) -> Output {
     let path = format!("/developer-products/v2/universes/{universe_id}/developer-products/creator");
     match ctx.get_json(&path).await {
@@ -90,7 +90,7 @@ pub async fn devproduct_list(ctx: &Ctx, universe_id: u64) -> Output {
                 .unwrap_or(0);
             Output::success(
                 "devproduct list",
-                format!("Developer Product {count} 件を取得しました"),
+                format!("Fetched {count} Developer Products"),
                 Some(data),
             )
         }
@@ -98,7 +98,7 @@ pub async fn devproduct_list(ctx: &Ctx, universe_id: u64) -> Output {
     }
 }
 
-/// Developer Product 作成。
+/// Create a Developer Product.
 pub async fn devproduct_create(
     ctx: &Ctx,
     universe_id: u64,
@@ -119,7 +119,7 @@ pub async fn devproduct_create(
     submit_with_optional_image(ctx, "devproduct create", &path, "POST", request, image).await
 }
 
-/// multipart を組み立てて送る。画像は任意。
+/// Build and send the multipart body. The image is optional.
 async fn submit_with_optional_image(
     ctx: &Ctx,
     command: &str,
@@ -137,7 +137,7 @@ async fn submit_with_optional_image(
                     command,
                     ErrorBody {
                         code: "file_unreadable",
-                        message: format!("画像を読めません: {}", img.display()),
+                        message: format!("cannot read the image: {}", img.display()),
                         status: None,
                         detail: Some(e.to_string()),
                     },
@@ -165,7 +165,7 @@ async fn submit_with_optional_image(
                     command,
                     ErrorBody {
                         code: "mime_invalid",
-                        message: format!("content-type が不正です: {e}"),
+                        message: format!("invalid content-type: {e}"),
                         status: None,
                         detail: None,
                     },
@@ -197,12 +197,10 @@ async fn submit_with_optional_image(
                 .unwrap_or("(unknown)");
             Output::success(
                 command,
-                format!("{command} が成功しました（id {id}）"),
+                format!("{command} succeeded (id {id})"),
                 Some(data),
             )
-            .with_hints(vec![
-                "この API は Beta です。スキーマが変わる可能性があります".into(),
-            ])
+            .with_hints(vec!["This API is Beta; the schema may change".into()])
         }
         Err(err) => failure(command, err),
     }

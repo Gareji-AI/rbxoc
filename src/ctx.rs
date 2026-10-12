@@ -1,7 +1,7 @@
-//! コマンドの共通部品。
+//! Shared command building blocks.
 //!
-//! 各サブコマンドは `Ctx` を受け取り、`Output` を返す。エラーは `Output` の
-//! `error` に載せて返すので、呼び出し側で終了コードを決められる。
+//! Each subcommand takes a `Ctx` and returns an `Output`. Errors ride in the
+//! `error` field of `Output` so the caller can decide the exit code.
 
 use anyhow::Result;
 use serde_json::Value;
@@ -9,11 +9,11 @@ use serde_json::Value;
 use crate::auth::{self, Auth};
 use crate::output::{ErrorBody, Output};
 
-/// 実行コンテキスト。
+/// Execution context.
 pub struct Ctx {
     pub client: reqwest::Client,
     pub auth: Auth,
-    /// 429 / 5xx で自動再試行する回数。
+    /// Automatic retry count for 429 / 5xx.
     pub retry: u32,
     pub api_host: String,
 }
@@ -28,12 +28,12 @@ impl Ctx {
         })
     }
 
-    /// 絶対 URL を組み立てる。`path` は `/` 始まり。
+    /// Build an absolute URL. `path` starts with `/`.
     pub fn url(&self, path: &str) -> String {
         format!("{}{}", self.api_host, path)
     }
 
-    /// 認証ヘッダを付ける。方式は `Auth` が決める。
+    /// Attach the auth header. `Auth` decides the scheme.
     fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.auth {
             Auth::ApiKey(key) => req.header("x-api-key", key),
@@ -41,15 +41,15 @@ impl Ctx {
         }
     }
 
-    /// リクエストを送る。429 / 5xx は指数バックオフで再試行する。
+    /// Send a request. 429 / 5xx retry with exponential backoff.
     pub async fn send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, ErrorBody> {
         let req = self.apply_auth(req);
         let mut attempt = 0u32;
         loop {
-            // RequestBuilder は clone できる。再試行に必要。
+            // RequestBuilder is cloneable, which retries need.
             let this = req.try_clone().ok_or_else(|| ErrorBody {
                 code: "request_not_retryable",
-                message: "リクエストを再構成できません（ストリーム本文）".into(),
+                message: "cannot rebuild the request (streaming body)".into(),
                 status: None,
                 detail: None,
             })?;
@@ -66,7 +66,7 @@ impl Ctx {
                     return Ok(resp);
                 }
                 Err(err) => {
-                    // 接続系の失敗も再試行する。
+                    // Connection failures also retry.
                     if attempt < self.retry {
                         attempt += 1;
                         tokio::time::sleep(std::time::Duration::from_millis(backoff_ms(
@@ -78,7 +78,7 @@ impl Ctx {
                     }
                     return Err(ErrorBody {
                         code: "network_error",
-                        message: format!("リクエストを送れません: {err}"),
+                        message: format!("cannot send the request: {err}"),
                         status: None,
                         detail: None,
                     });
@@ -87,13 +87,13 @@ impl Ctx {
         }
     }
 
-    /// JSON を期待する GET。
+    /// GET that expects JSON.
     pub async fn get_json(&self, path: &str) -> Result<Value, ErrorBody> {
         let resp = self.send(self.client.get(self.url(path))).await?;
         self.json_or_error(resp).await
     }
 
-    /// 本文なしの DELETE など。
+    /// For deletes and other bodyless calls.
     pub async fn send_empty(&self, req: reqwest::RequestBuilder) -> Result<Value, ErrorBody> {
         let resp = self.send(req).await?;
         if !resp.status().is_success() {
@@ -103,14 +103,14 @@ impl Ctx {
         Ok(serde_json::json!({ "status": status }))
     }
 
-    /// 成功なら JSON、失敗なら `ErrorBody`。
+    /// JSON on success, `ErrorBody` on failure.
     pub async fn json_or_error(&self, resp: reqwest::Response) -> Result<Value, ErrorBody> {
         if !resp.status().is_success() {
             return Err(auth::error_from_response(resp).await);
         }
         let text = resp.text().await.map_err(|e| ErrorBody {
             code: "read_error",
-            message: format!("応答を読めません: {e}"),
+            message: format!("cannot read the response: {e}"),
             status: None,
             detail: None,
         })?;
@@ -119,33 +119,33 @@ impl Ctx {
         }
         serde_json::from_str(&text).map_err(|e| ErrorBody {
             code: "invalid_json",
-            message: format!("応答が JSON ではありません: {e}"),
+            message: format!("the response is not JSON: {e}"),
             status: None,
             detail: Some(text.chars().take(400).collect()),
         })
     }
 }
 
-/// 再試行の待ち時間。`Retry-After` を尊重する。
+/// Retry wait. Respects `Retry-After`.
 fn backoff_ms(attempt: u32, headers: &reqwest::header::HeaderMap) -> u64 {
-    if let Some(v) = headers.get("retry-after").and_then(|v| v.to_str().ok()) {
-        if let Ok(secs) = v.trim().parse::<u64>() {
-            return secs.saturating_mul(1000).min(60_000);
-        }
+    if let Some(v) = headers.get("retry-after").and_then(|v| v.to_str().ok())
+        && let Ok(secs) = v.trim().parse::<u64>()
+    {
+        return secs.saturating_mul(1000).min(60_000);
     }
     let base = 500u64;
     (base * 2u64.pow(attempt.min(5))).min(30_000)
 }
 
-/// `ErrorBody` から失敗の `Output` を作る。hint も一緒に載せる。
+/// Build a failure `Output` from an `ErrorBody`, including hints.
 pub fn failure(command: &str, error: ErrorBody) -> Output {
     let mut hints = Vec::new();
     if let Some(status) = error.status {
         hints.extend(auth::hints_for_status(status));
     }
     if error.code == "auth_missing" {
-        hints.push("RBXOC_API_KEY を設定してください".into());
-        hints.push("`rbxoc auth check` で状態を確認できます".into());
+        hints.push("Set RBXOC_API_KEY".into());
+        hints.push("Run `rbxoc auth check` to inspect the credential state".into());
     }
     Output {
         ok: false,
@@ -174,7 +174,7 @@ mod tests {
         let mut h = reqwest::header::HeaderMap::new();
         h.insert("retry-after", "3".parse().unwrap());
         assert_eq!(backoff_ms(0, &h), 3000);
-        // 上限で切る。
+        // Clamped at the ceiling.
         h.insert("retry-after", "9999".parse().unwrap());
         assert_eq!(backoff_ms(0, &h), 60_000);
     }

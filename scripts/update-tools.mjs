@@ -2,23 +2,23 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
-// プロジェクト限定のツール更新。
+// Project-scoped tool updates.
 //
-// mise の self_update.auto と tool_update.global_auto は global-only の設定で、
-// リポジトリの mise.toml からは有効化できない（mise がセキュリティ理由で拒否する）。
-// そのため、このリポジトリのツール更新はこのスクリプトで明示的に行う。
+// mise's self_update.auto and tool_update.global_auto are global-only settings.
+// A repository mise.toml cannot enable them; mise rejects them for security
+// reasons. Tool updates for this repository therefore run explicitly here.
 //
-// 使い方:
-//   node scripts/update-tools.mjs            # 最新版を調べて表示のみ
-//   node scripts/update-tools.mjs --apply    # mise.toml を書き換え、install まで実行
+// Usage:
+//   node scripts/update-tools.mjs            # report the latest versions only
+//   node scripts/update-tools.mjs --apply    # rewrite mise.toml and install
 
 const root = path.resolve(import.meta.dirname, "..");
 const manifestPath = path.join(root, "mise.toml");
 const apply = process.argv.includes("--apply");
 
-// 更新対象。mise.toml の [tools] と対応させる。
+// Update targets. These mirror [tools] in mise.toml.
 const TRACKED = [
-	{ key: "rust", label: "rust", bare: true },
+	{ key: "rust", label: "rust" },
 	{ key: "github:rojo-rbx/rojo", label: "rojo" },
 	{ key: "github:pesde-pkg/pesde", label: "pesde" },
 ];
@@ -26,25 +26,25 @@ const TRACKED = [
 function mise(args) {
 	const result = spawnSync("mise", args, { cwd: root, encoding: "utf8", shell: false });
 	if (result.error) {
-		console.error(`mise を実行できません: ${result.error.message}`);
+		console.error(`cannot run mise: ${result.error.message}`);
 		process.exit(1);
 	}
 	return result;
 }
 
-// [tools] セクションだけを対象にする。他のテーブルの同名キーを拾わない。
+// Parse [tools] only, so a same-named key in another table is not picked up.
 function parseTools(text) {
 	const lines = text.split("\n");
 	const start = lines.findIndex((line) => line.trim() === "[tools]");
 	if (start === -1) {
-		console.error("mise.toml に [tools] セクションがありません。");
+		console.error("mise.toml has no [tools] section.");
 		process.exit(1);
 	}
 	const tools = new Map();
 	for (let i = start + 1; i < lines.length; i++) {
 		const line = lines[i];
 		if (/^\s*\[/.test(line)) break;
-		// 裸の代入 `rust = "1.99"` と引用キー `"github:..." = "x"` の両方。
+		// Accept both a bare assignment (`rust = "1.99.0"`) and a quoted key.
 		const match =
 			line.match(/^\s*"([^"]+)"\s*=\s*"([^"]+)"/) ??
 			line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*"([^"]+)"/);
@@ -53,8 +53,8 @@ function parseTools(text) {
 	return { tools, lines };
 }
 
-// pesde は "+registry.0.2.3" のような build メタデータ付きで配布される。
-// mise.toml には plain な SemVer を書く。
+// pesde ships with build metadata such as "+registry.0.2.3". mise.toml keeps
+// the plain SemVer.
 function normalize(label, version) {
 	if (label === "pesde") return version.split("+")[0];
 	return version;
@@ -66,14 +66,14 @@ const updates = [];
 for (const { key, label } of TRACKED) {
 	const entry = tools.get(key);
 	if (!entry) {
-		console.warn(`未登録: ${key}（mise.toml の [tools] にありません）`);
+		console.warn(`not registered: ${key} (missing from [tools] in mise.toml)`);
 		continue;
 	}
-	// `mise latest` は安定版を解決する。`ls-remote` は nightly / beta /
-	// stable のような別名も返すため、単独では最新版の判定に使えない。
+	// `mise latest` resolves the stable release. `ls-remote` also returns
+	// aliases such as nightly / beta / stable, so it cannot be used alone.
 	const result = mise(["latest", key]);
 	if (result.status !== 0) {
-		console.warn(`取得失敗: ${key}`);
+		console.warn(`lookup failed: ${key}`);
 		continue;
 	}
 	const latest = result.stdout
@@ -82,7 +82,7 @@ for (const { key, label } of TRACKED) {
 		.filter((line) => line && !line.startsWith("mise "))
 		.at(-1);
 	if (!latest) {
-		console.warn(`候補なし: ${key}`);
+		console.warn(`no candidate: ${key}`);
 		continue;
 	}
 	updates.push({
@@ -96,17 +96,19 @@ for (const { key, label } of TRACKED) {
 }
 
 if (updates.length === 0) {
-	console.log("更新対象のツールがありません。");
+	console.log("No tracked tools found.");
 	process.exit(0);
 }
 
 let changed = 0;
 for (const update of updates) {
 	if (update.current === update.target) {
-		console.log(`最新  ${update.label} ${update.current}`);
+		console.log(`current  ${update.label} ${update.current}`);
 		continue;
 	}
-	console.log(`更新  ${update.label} ${update.current} -> ${update.target}（配布版 ${update.latest}）`);
+	console.log(
+		`update   ${update.label} ${update.current} -> ${update.target} (published ${update.latest})`,
+	);
 	changed++;
 	if (apply) {
 		lines[update.line] = lines[update.line].replace(
@@ -117,24 +119,24 @@ for (const update of updates) {
 }
 
 if (changed === 0) {
-	console.log("すべて最新です。");
+	console.log("Everything is current.");
 	process.exit(0);
 }
 
 if (!apply) {
-	console.log("\n適用するには --apply を付けて再実行してください。");
+	console.log("\nRe-run with --apply to write the changes.");
 	process.exit(0);
 }
 
 fs.writeFileSync(manifestPath, lines.join("\n"), "utf8");
-console.log("\nmise.toml を更新しました。mise install を実行します。");
+console.log("\nUpdated mise.toml. Running mise install.");
 
 const install = mise(["install"]);
 process.stdout.write(install.stdout ?? "");
 process.stderr.write(install.stderr ?? "");
 if (install.status !== 0) {
-	console.error("mise install が失敗しました。mise.toml を確認してください。");
+	console.error("mise install failed. Check mise.toml.");
 	process.exit(install.status ?? 1);
 }
 
-console.log("\nmise install 完了。`mise run check` で検証してください。");
+console.log("\nmise install finished. Verify with `mise run check`.");
