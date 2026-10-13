@@ -1,7 +1,10 @@
 [tools]
-# Rust is the only external tool this CLI needs. mise supplies it, so the
-# host does not need rustup.
+# Rust for build/test. mise supplies it so the host does not need rustup.
 rust = "1.99.0"
+
+# Optional dev-only duplicate detection (https://github.com/mizchi/similarity).
+# Not part of CI; run `mise run similarity` after large refactors in src/.
+"cargo:similarity-rs" = "0.5.0"
 
 # No Roblox-side tools here.
 #
@@ -50,3 +53,7 @@ run = [
   "cargo build --release",
   "node scripts/check-coverage.mjs",
 ]
+
+[tasks.similarity]
+description = "Dev-only: find similar Rust functions under src/ (similarity-rs)"
+run = "similarity-rs src --skip-test --threshold 0.85 --min-lines 8"

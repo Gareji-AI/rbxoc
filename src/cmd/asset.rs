@@ -127,35 +127,9 @@ pub async fn create(
             Err(err) => return failure(CMD_CREATE, err),
         };
 
-    let creator = match (creator_user_id, creator_group_id) {
-        (Some(id), None) => json!({ "userId": id.to_string() }),
-        (None, Some(id)) => json!({ "groupId": id.to_string() }),
-        (Some(_), Some(_)) => {
-            return failure(
-                CMD_CREATE,
-                ErrorBody {
-                    code: "creator_ambiguous",
-                    message: "userId and groupId cannot be set together".into(),
-                    status: None,
-                    detail: None,
-
-                    refs: None,
-                },
-            );
-        }
-        (None, None) => {
-            return failure(
-                CMD_CREATE,
-                ErrorBody {
-                    code: "creator_missing",
-                    message: "either userId or groupId is required".into(),
-                    status: None,
-                    detail: None,
-
-                    refs: None,
-                },
-            );
-        }
+    let creator = match creator_json(creator_user_id, creator_group_id) {
+        Ok(creator) => creator,
+        Err(err) => return failure(CMD_CREATE, err),
     };
 
     let request = json!({
@@ -246,6 +220,30 @@ pub async fn update(
     let url = format!("/assets/v1/assets/{asset_id}?updateMask={update_mask}");
     let req = ctx.client.patch(ctx.url(&url)).multipart(form);
     submit_operation(ctx, req, CMD_UPDATE, &resolved_type, type_note).await
+}
+
+/// Creator target for uploads. Exactly one of userId or groupId is required.
+fn creator_json(user_id: Option<u64>, group_id: Option<u64>) -> Result<Value, ErrorBody> {
+    match (user_id, group_id) {
+        (Some(id), None) => Ok(json!({ "userId": id.to_string() })),
+        (None, Some(id)) => Ok(json!({ "groupId": id.to_string() })),
+        (Some(_), Some(_)) => Err(ErrorBody {
+            code: "creator_ambiguous",
+            message: "userId and groupId cannot be set together".into(),
+            status: None,
+            detail: None,
+
+            refs: None,
+        }),
+        (None, None) => Err(ErrorBody {
+            code: "creator_missing",
+            message: "either userId or groupId is required".into(),
+            status: None,
+            detail: None,
+
+            refs: None,
+        }),
+    }
 }
 
 /// Resolve assetType and content-type, or explain why it could not.
@@ -566,18 +564,8 @@ pub async fn preview_create(
             Err(err) => return failure(COMMAND, err),
         };
 
-    if creator_user_id.is_none() && creator_group_id.is_none() {
-        return failure(
-            COMMAND,
-            ErrorBody {
-                code: "creator_missing",
-                message: "either userId or groupId is required".into(),
-                status: None,
-                detail: None,
-
-                refs: None,
-            },
-        );
+    if let Err(err) = creator_json(creator_user_id, creator_group_id) {
+        return failure(COMMAND, err);
     }
 
     let size = tokio::fs::metadata(file)
@@ -719,6 +707,20 @@ mod tests {
         assert!(is_updateable_body("Model"));
         assert!(!is_updateable_body("Decal"));
         assert!(!is_updateable_body("Audio"));
+    }
+
+    #[test]
+    fn creator_json_rejects_ambiguous_and_missing() {
+        assert!(creator_json(Some(1), None).is_ok());
+        assert!(creator_json(None, Some(2)).is_ok());
+        assert_eq!(
+            creator_json(Some(1), Some(2)).unwrap_err().code,
+            "creator_ambiguous"
+        );
+        assert_eq!(
+            creator_json(None, None).unwrap_err().code,
+            "creator_missing"
+        );
     }
 
     #[test]
