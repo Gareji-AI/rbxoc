@@ -66,6 +66,8 @@ pub async fn infer_asset_from_file(
                 message: format!("cannot infer assetType from {}", file.display()),
                 status: None,
                 detail: None,
+
+                refs: None,
             });
     };
 
@@ -74,6 +76,8 @@ pub async fn infer_asset_from_file(
         message: format!("cannot read the file: {}", file.display()),
         status: None,
         detail: Some(e.to_string()),
+
+        refs: None,
     })?;
 
     match model::classify(&bytes, format) {
@@ -95,6 +99,8 @@ pub async fn infer_asset_from_file(
             message: format!("cannot read {} as a Roblox {format} model", file.display()),
             status: None,
             detail: Some(e.to_string()),
+
+            refs: None,
         }),
     }
 }
@@ -132,6 +138,8 @@ pub async fn create(
                     message: "userId and groupId cannot be set together".into(),
                     status: None,
                     detail: None,
+
+                    refs: None,
                 },
             );
         }
@@ -143,6 +151,8 @@ pub async fn create(
                     message: "either userId or groupId is required".into(),
                     status: None,
                     detail: None,
+
+                    refs: None,
                 },
             );
         }
@@ -196,6 +206,8 @@ pub async fn update(
                     "To change metadata only, pass --display-name / --description and omit --file"
                         .into(),
                 ),
+
+                refs: None,
             },
         );
     }
@@ -253,6 +265,8 @@ async fn resolve_asset_type(
                     "the extension of {} is not known for {t}",
                     file.display()
                 )),
+
+                refs: None,
             }),
         },
         None => match infer_asset_from_file(file).await {
@@ -318,6 +332,8 @@ async fn build_multipart(
         message: format!("cannot read the file: {}", file.display()),
         status: None,
         detail: Some(e.to_string()),
+
+        refs: None,
     })?;
     let filename = file
         .file_name()
@@ -332,6 +348,8 @@ async fn build_multipart(
             message: format!("invalid content-type: {e}"),
             status: None,
             detail: Some(format!("{command} could not build the multipart body")),
+
+            refs: None,
         })?;
     Ok(reqwest::multipart::Form::new()
         .text("request", request.to_string())
@@ -349,6 +367,8 @@ async fn add_image_part(
         message: format!("cannot read the image: {}", file.display()),
         status: None,
         detail: Some(e.to_string()),
+
+        refs: None,
     })?;
     let name = file
         .file_name()
@@ -369,6 +389,8 @@ async fn add_image_part(
             message: format!("invalid content-type: {e}"),
             status: None,
             detail: Some(format!("{command} could not build the image part")),
+
+            refs: None,
         })?;
     // Form has no push API; take it and rebuild.
     let taken = std::mem::replace(form, reqwest::multipart::Form::new());
@@ -421,6 +443,8 @@ async fn submit_operation(
                         message: format!("cannot parse the response: {e}"),
                         status: None,
                         detail: None,
+
+                        refs: None,
                     },
                 ),
             }
@@ -550,6 +574,8 @@ pub async fn preview_create(
                 message: "either userId or groupId is required".into(),
                 status: None,
                 detail: None,
+
+                refs: None,
             },
         );
     }
@@ -610,6 +636,8 @@ pub async fn preview_update(
                 detail: Some(
                     "Metadata-only updates omit --file; content updates need a Model".into(),
                 ),
+
+                refs: None,
             },
         );
     }

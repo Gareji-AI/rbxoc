@@ -38,6 +38,8 @@ pub async fn create(
                     detail: Some(
                         "Roblox charges Robux to create a badge. Pass --payment-source user or group.".into(),
                     ),
+
+                    refs: None,
                 },
             );
         }
@@ -86,6 +88,8 @@ pub async fn update(
                 message: "no fields to update".into(),
                 status: None,
                 detail: Some("Pass --name, --description, or --enabled".into()),
+
+                refs: None,
             },
         );
     }

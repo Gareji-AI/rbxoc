@@ -91,6 +91,8 @@ fn invalid_document(e: serde_json::Error) -> Output {
             message: format!("--document is not valid JSON: {e}"),
             status: None,
             detail: Some("The event schema is provider-defined; pass the exact body".into()),
+
+            refs: None,
         },
     )
 }

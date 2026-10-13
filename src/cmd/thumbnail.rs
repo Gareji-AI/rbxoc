@@ -24,6 +24,8 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
                 message: "no images to upload".into(),
                 status: None,
                 detail: None,
+
+                refs: None,
             },
         );
     }
@@ -40,6 +42,8 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
                         message: format!("cannot read the image: {}", file.display()),
                         status: None,
                         detail: Some(e.to_string()),
+
+                        refs: None,
                     },
                 );
             }
@@ -68,6 +72,8 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
                         message: format!("invalid content-type: {e}"),
                         status: None,
                         detail: None,
+
+                        refs: None,
                     },
                 );
             }
@@ -143,6 +149,8 @@ pub async fn status(ctx: &Ctx, universe_id: u64, operation_ids: &[String]) -> Ou
                 message: "operationIds are required".into(),
                 status: None,
                 detail: None,
+
+                refs: None,
             },
         );
     }

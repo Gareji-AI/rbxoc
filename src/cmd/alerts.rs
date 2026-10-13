@@ -10,7 +10,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, failure_for_endpoint};
 use crate::output::{ErrorBody, Output};
 
 fn alerts_path(resource_type: &str, resource_id: &str) -> String {
@@ -38,7 +38,12 @@ pub async fn list(
                 Some(data),
             )
         }
-        Err(err) => failure("analytics alerts list", err),
+        Err(err) => failure_for_endpoint(
+            "analytics alerts list",
+            "analytics.alert.list",
+            err,
+            &ctx.auth,
+        ),
     }
 }
 
@@ -60,8 +65,22 @@ pub async fn create(ctx: &Ctx, resource_type: &str, resource_id: &str, document:
     };
     let path = alerts_path(resource_type, resource_id);
     match ctx.send(ctx.client.post(ctx.url(&path)).json(&body)).await {
-        Ok(resp) => finish(resp, "analytics alerts create", "Created the alert").await,
-        Err(err) => failure("analytics alerts create", err),
+        Ok(resp) => {
+            finish(
+                ctx,
+                resp,
+                "analytics alerts create",
+                "analytics.alert.create",
+                "Created the alert",
+            )
+            .await
+        }
+        Err(err) => failure_for_endpoint(
+            "analytics alerts create",
+            "analytics.alert.create",
+            err,
+            &ctx.auth,
+        ),
     }
 }
 
@@ -79,8 +98,22 @@ pub async fn update(
     };
     let path = format!("{}/{alert_id}", alerts_path(resource_type, resource_id));
     match ctx.send(ctx.client.patch(ctx.url(&path)).json(&body)).await {
-        Ok(resp) => finish(resp, "analytics alerts update", "Updated the alert").await,
-        Err(err) => failure("analytics alerts update", err),
+        Ok(resp) => {
+            finish(
+                ctx,
+                resp,
+                "analytics alerts update",
+                "analytics.alert.update",
+                "Updated the alert",
+            )
+            .await
+        }
+        Err(err) => failure_for_endpoint(
+            "analytics alerts update",
+            "analytics.alert.update",
+            err,
+            &ctx.auth,
+        ),
     }
 }
 
@@ -94,7 +127,12 @@ pub async fn delete(ctx: &Ctx, resource_type: &str, resource_id: &str, alert_id:
             Some(json!({ "alertId": alert_id })),
         )
         .with_hints(vec!["Deletes are irreversible".into()]),
-        Err(err) => failure("analytics alerts delete", err),
+        Err(err) => failure_for_endpoint(
+            "analytics alerts delete",
+            "analytics.alert.delete",
+            err,
+            &ctx.auth,
+        ),
     }
 }
 
@@ -123,7 +161,12 @@ pub async fn incidents(
                 Some(data),
             )
         }
-        Err(err) => failure("analytics alerts incidents", err),
+        Err(err) => failure_for_endpoint(
+            "analytics alerts incidents",
+            "analytics.alert.incidents",
+            err,
+            &ctx.auth,
+        ),
     }
 }
 
@@ -137,14 +180,22 @@ fn invalid_document(e: serde_json::Error) -> Output {
             detail: Some(
                 "The alert schema is provider-defined; pass the exact body you want sent".into(),
             ),
+
+            refs: None,
         },
     )
 }
 
-async fn finish(resp: reqwest::Response, command: &str, ok_message: &str) -> Output {
+async fn finish(
+    ctx: &Ctx,
+    resp: reqwest::Response,
+    command: &str,
+    endpoint_id: &str,
+    ok_message: &str,
+) -> Output {
     if !resp.status().is_success() {
         let err = crate::auth::error_from_response(resp).await;
-        return failure(command, err);
+        return failure_for_endpoint(command, endpoint_id, err, &ctx.auth);
     }
     let data: Value = resp.json().await.unwrap_or(Value::Null);
     Output::success(command, ok_message.to_string(), Some(data))

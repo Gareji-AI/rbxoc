@@ -7,6 +7,7 @@ use anyhow::Result;
 use serde_json::Value;
 
 use crate::auth::{self, Auth};
+use crate::open_cloud_errors;
 use crate::output::{ErrorBody, Output};
 
 /// Execution context.
@@ -60,6 +61,7 @@ impl Ctx {
                             "This request streams a body, so it cannot be retried automatically"
                                 .into(),
                         ),
+                        refs: None,
                     });
                 }
             };
@@ -91,6 +93,7 @@ impl Ctx {
                         message: format!("cannot send the request: {err}"),
                         status: None,
                         detail: None,
+                        refs: None,
                     });
                 }
             }
@@ -123,6 +126,8 @@ impl Ctx {
             message: format!("cannot read the response: {e}"),
             status: None,
             detail: None,
+
+            refs: None,
         })?;
         if text.trim().is_empty() {
             return Ok(Value::Null);
@@ -132,6 +137,8 @@ impl Ctx {
             message: format!("the response is not JSON: {e}"),
             status: None,
             detail: Some(text.chars().take(400).collect()),
+
+            refs: None,
         })
     }
 }
@@ -167,6 +174,31 @@ pub fn failure(command: &str, error: ErrorBody) -> Output {
     }
 }
 
+/// Failure output with catalog-backed permission hints for an endpoint.
+pub fn failure_for_endpoint(
+    command: &str,
+    endpoint_id: &str,
+    error: ErrorBody,
+    auth: &Auth,
+) -> Output {
+    let error = open_cloud_errors::apply_endpoint_context(error, endpoint_id, auth.kind());
+    let mut out = failure(command, error);
+    let Some(err) = out.error.as_ref() else {
+        return out;
+    };
+    if err.code == "feature_not_enrolled" {
+        return out;
+    }
+    if let Some(status) = err.status {
+        out.hints
+            .extend(open_cloud_errors::permission_hints_for_endpoint(
+                endpoint_id,
+                status,
+            ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,6 +222,44 @@ mod tests {
     }
 
     #[test]
+    fn failure_for_endpoint_adds_permission_hints() {
+        let out = failure_for_endpoint(
+            "analytics alerts list",
+            "analytics.alert.list",
+            ErrorBody {
+                code: "http_403",
+                message: "forbidden".into(),
+                status: Some(403),
+                detail: None,
+                refs: None,
+            },
+            &Auth::ApiKey("k".into()),
+        );
+        assert!(
+            out.hints
+                .iter()
+                .any(|h| h.contains("universe.analytics.alert:read"))
+        );
+    }
+
+    #[test]
+    fn failure_for_endpoint_skips_hints_when_not_enrolled() {
+        let out = failure_for_endpoint(
+            "analytics alerts list",
+            "analytics.alert.list",
+            ErrorBody {
+                code: "feature_not_enrolled",
+                message: "not enrolled".into(),
+                status: Some(403),
+                detail: None,
+                refs: None,
+            },
+            &Auth::ApiKey("k".into()),
+        );
+        assert!(!out.hints.iter().any(|h| h.contains("Creator Dashboard")));
+    }
+
+    #[test]
     fn failure_carries_hints_for_http_errors() {
         let out = failure(
             "test",
@@ -198,6 +268,7 @@ mod tests {
                 message: "forbidden".into(),
                 status: Some(403),
                 detail: None,
+                refs: None,
             },
         );
         assert!(!out.ok);

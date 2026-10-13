@@ -12,6 +12,7 @@ mod catalog;
 mod cli;
 mod cmd;
 mod ctx;
+mod open_cloud_errors;
 mod output;
 
 use clap::Parser;

@@ -145,6 +145,7 @@ pub fn missing_auth_error(message: impl Into<String>) -> ErrorBody {
         message: message.into(),
         status: None,
         detail: None,
+        refs: None,
     }
 }
 
@@ -160,24 +161,11 @@ pub fn http_client() -> Result<reqwest::Client> {
 
 /// Convert an API response status into an error. Callers use it for success checks.
 pub async fn error_from_response(response: reqwest::Response) -> ErrorBody {
-    let status = response.status().as_u16();
-    let body = response.text().await.unwrap_or_default();
-    // Do not forward an HTML error page verbatim. Keep the head only.
-    let detail = if body.is_empty() {
-        None
-    } else {
-        Some(body.chars().take(600).collect())
-    };
-    ErrorBody {
-        code: status_code(&status),
-        message: format!("Open Cloud returned HTTP {status}"),
-        status: Some(status),
-        detail,
-    }
+    crate::open_cloud_errors::error_from_http(response).await
 }
 
 /// Map an HTTP status to a stable `code`. Agents branch on this.
-fn status_code(status: &u16) -> &'static str {
+pub fn status_code(status: &u16) -> &'static str {
     match status {
         400 => "http_400",
         401 => "http_401",

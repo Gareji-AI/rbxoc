@@ -47,6 +47,8 @@ pub async fn set(
                     message: format!("--value is not valid JSON: {e}"),
                     status: None,
                     detail: Some("Example: --value '{\"coins\":100}'".into()),
+
+                    refs: None,
                 },
             );
         }

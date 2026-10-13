@@ -83,6 +83,8 @@ pub async fn gamepass_update(
                 message: "no fields to update".into(),
                 status: None,
                 detail: Some("Pass --name, --description, --price, or --image".into()),
+
+                refs: None,
             },
         );
     }
@@ -158,6 +160,8 @@ async fn submit_multipart(
                         message: format!("cannot read the image: {}", img.display()),
                         status: None,
                         detail: Some(e.to_string()),
+
+                        refs: None,
                     },
                 );
             }
@@ -186,6 +190,8 @@ async fn submit_multipart(
                         message: format!("invalid content-type: {e}"),
                         status: None,
                         detail: None,
+
+                        refs: None,
                     },
                 );
             }

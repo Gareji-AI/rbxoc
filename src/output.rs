@@ -15,6 +15,13 @@
 use serde::Serialize;
 use serde_json::Value;
 
+/// Link shown on errors that need dashboard or docs follow-up.
+#[derive(Debug, Clone, Serialize)]
+pub struct ErrorRef {
+    pub label: String,
+    pub url: String,
+}
+
 /// Machine-readable failure representation.
 #[derive(Debug, Clone, Serialize)]
 pub struct ErrorBody {
@@ -28,6 +35,8 @@ pub struct ErrorBody {
     /// Body returned by the API. Truncated raw text.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refs: Option<Vec<ErrorRef>>,
 }
 
 /// The envelope every command returns.
@@ -90,6 +99,11 @@ impl Output {
             }
             if let Some(detail) = &error.detail {
                 out.push_str(&format!("\n  detail: {detail}"));
+            }
+            if let Some(refs) = &error.refs {
+                for r in refs {
+                    out.push_str(&format!("\n  ref: {} ({})", r.label, r.url));
+                }
             }
         }
         out

@@ -31,6 +31,8 @@ pub async fn publish(
                     message: format!("cannot read the file: {}", file.display()),
                     status: None,
                     detail: Some(e.to_string()),
+
+                    refs: None,
                 },
             );
         }

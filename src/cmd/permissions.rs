@@ -27,6 +27,8 @@ pub async fn grant(
                 message: "at least one --asset-id is required".into(),
                 status: None,
                 detail: None,
+
+                refs: None,
             },
         );
     }
@@ -48,6 +50,8 @@ pub async fn grant(
                     message: format!("--subject-type {other} is not accepted"),
                     status: None,
                     detail: Some("Use user, group, group-roleset, universe, or all".into()),
+
+                    refs: None,
                 },
             );
         }
@@ -64,6 +68,8 @@ pub async fn grant(
                     message: format!("--action {other} is not accepted"),
                     status: None,
                     detail: Some("Use use, edit, or download".into()),
+
+                    refs: None,
                 },
             );
         }

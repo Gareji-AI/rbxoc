@@ -7,7 +7,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, failure_for_endpoint};
 use crate::output::{ErrorBody, Output};
 
 const COMMAND: &str = "analytics metrics";
@@ -27,6 +27,8 @@ pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
                         "Example: --query '{\"metrics\":[{\"metric\":\"DailyActiveUsers\"}],\"startTime\":\"2026-10-01T00:00:00Z\",\"endTime\":\"2026-10-08T00:00:00Z\",\"granularity\":\"P1D\"}'"
                             .into(),
                     ),
+
+                    refs: None,
                 },
             );
         }
@@ -38,7 +40,7 @@ pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure(COMMAND, err);
+                return failure_for_endpoint(COMMAND, "analytics.metrics", err, &ctx.auth);
             }
             let data: Value = resp.json().await.unwrap_or(Value::Null);
             let mut out =
@@ -52,7 +54,7 @@ pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
             }
             out
         }
-        Err(err) => failure(COMMAND, err),
+        Err(err) => failure_for_endpoint(COMMAND, "analytics.metrics", err, &ctx.auth),
     }
 }
 
@@ -69,6 +71,8 @@ pub async fn operation(ctx: &Ctx, universe_id: u64, kind: &str, operation_id: &s
                     message: format!("--kind does not accept {other}"),
                     status: None,
                     detail: Some("Use metrics or dimensions".into()),
+
+                    refs: None,
                 },
             );
         }
@@ -93,7 +97,9 @@ pub async fn operation(ctx: &Ctx, universe_id: u64, kind: &str, operation_id: &s
             }
             out
         }
-        Err(err) => failure("analytics operation", err),
+        Err(err) => {
+            failure_for_endpoint("analytics operation", "analytics.metrics", err, &ctx.auth)
+        }
     }
 }
 

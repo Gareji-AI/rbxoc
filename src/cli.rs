@@ -964,6 +964,8 @@ impl Cli {
                         message: format!("{e:#}"),
                         status: None,
                         detail: None,
+
+                        refs: None,
                     },
                 );
             }
@@ -1461,6 +1463,8 @@ async fn run_api(args: &ApiArgs) -> Output {
                                 message: format!("--auth does not accept {other}"),
                                 status: None,
                                 detail: Some("Use one of: api-key, oauth, legacy-cookie".into()),
+
+                                refs: None,
                             },
                         );
                     }
@@ -1493,6 +1497,8 @@ async fn run_api(args: &ApiArgs) -> Output {
                         message: format!("endpoint {id} is not in the catalog"),
                         status: None,
                         detail: None,
+
+                        refs: None,
                     },
                 );
                 if !similar.is_empty() {
@@ -1561,6 +1567,8 @@ async fn run_auth(
                     message: format!("{e:#}"),
                     status: None,
                     detail: None,
+
+                    refs: None,
                 },
             );
         }
@@ -1648,6 +1656,8 @@ fn init_manifest(
                     message: msg,
                     status: None,
                     detail: None,
+
+                    refs: None,
                 },
             );
         }
@@ -1660,6 +1670,8 @@ fn init_manifest(
                 message: format!("--language must be luau or typescript, got {language}"),
                 status: None,
                 detail: None,
+
+                refs: None,
             },
         );
     }
@@ -1674,6 +1686,8 @@ fn init_manifest(
                 message: format!("{} already exists", assets::MANIFEST_NAME),
                 status: None,
                 detail: Some("Edit it directly instead of re-initializing".into()),
+
+                refs: None,
             },
         );
     }
@@ -1708,6 +1722,8 @@ fn init_manifest(
                     message: format!("cannot serialize the manifest: {e}"),
                     status: None,
                     detail: None,
+
+                    refs: None,
                 },
             );
         }
@@ -1722,6 +1738,8 @@ fn init_manifest(
                 message: format!("cannot write {}: {e}", target.display()),
                 status: None,
                 detail: None,
+
+                refs: None,
             },
         );
     }
@@ -1762,6 +1780,8 @@ fn registry_failure(command: &str, err: anyhow::Error) -> Output {
             message: format!("{err:#}"),
             status: None,
             detail: None,
+
+            refs: None,
         },
     )
 }
@@ -1858,6 +1878,8 @@ fn unregister_asset(dir: &std::path::Path, path: &str) -> Output {
                 message: format!("{key} is not in the lockfile"),
                 status: None,
                 detail: None,
+
+                refs: None,
             },
         ),
     }
@@ -1883,6 +1905,8 @@ fn run_codegen(dir: &std::path::Path, to_stdout: bool, check: bool) -> Output {
                 message: format!("{} files have no asset ID yet", missing.len()),
                 status: None,
                 detail: Some(missing.join(", ")),
+
+                refs: None,
             },
         );
         out.hints

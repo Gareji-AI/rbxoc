@@ -157,6 +157,8 @@ fn invalid_document(e: serde_json::Error) -> Output {
             message: format!("--document is not valid JSON: {e}"),
             status: None,
             detail: Some("Example: --document '{\"flags\":{\"newShop\":true}}'".into()),
+
+            refs: None,
         },
     )
 }

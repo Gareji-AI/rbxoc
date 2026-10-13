@@ -36,6 +36,8 @@ pub async fn publish_message(ctx: &Ctx, universe_id: u64, topic: &str, message: 
                     message: format!("--message is not valid JSON: {e}"),
                     status: None,
                     detail: Some("Example: --message '{\"event\":\"restart\"}'".into()),
+
+                    refs: None,
                 },
             );
         }

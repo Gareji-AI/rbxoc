@@ -705,6 +705,62 @@ pub const ENDPOINTS: &[Endpoint] = &[
     },
 ];
 
+/// Creator Dashboard permission group label for scope hints.
+pub fn dashboard_permission_group(scopes: &[&str]) -> Option<&'static str> {
+    let primary = scopes.first()?;
+    if primary.starts_with("universe.analytics.alert") {
+        return Some("universe-analytics-alert");
+    }
+    if primary.starts_with("universe-datastores") {
+        return Some("universe-datastores");
+    }
+    if primary.starts_with("universe.analytics") {
+        return Some("universe-analytics");
+    }
+    if primary.starts_with("universe.thumbnail") {
+        return Some("universe-thumbnail");
+    }
+    if primary.starts_with("universe.event") {
+        return Some("universe-event");
+    }
+    if primary.starts_with("game-pass") {
+        return Some("game-pass");
+    }
+    if primary.starts_with("developer-product") {
+        return Some("developer-product");
+    }
+    if primary.starts_with("asset-permissions") {
+        return Some("asset-permissions");
+    }
+    if primary.starts_with("legacy-universe.badge") {
+        return Some("legacy-universe-badge");
+    }
+    if primary.starts_with("universe-places") {
+        return Some("universe-places");
+    }
+    if primary.starts_with("asset:") {
+        return Some("asset");
+    }
+    if primary.starts_with("universe:") || *primary == "universe:read" {
+        return Some("universe");
+    }
+    if primary.starts_with("creator-store-product") {
+        return Some("creator-store-product");
+    }
+    None
+}
+
+/// Scopes and dashboard grouping for an endpoint ID.
+pub fn permission_hints_for_endpoint_id(
+    id: &str,
+) -> Option<(&'static [&'static str], Option<&'static str>)> {
+    let endpoint = find(id)?;
+    if endpoint.scopes.is_empty() {
+        return None;
+    }
+    Some((endpoint.scopes, dashboard_permission_group(endpoint.scopes)))
+}
+
 /// Look up by ID.
 pub fn find(id: &str) -> Option<&'static Endpoint> {
     ENDPOINTS.iter().find(|e| e.id == id)
