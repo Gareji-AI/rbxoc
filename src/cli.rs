@@ -1830,59 +1830,82 @@ fn registry_status(dir: &std::path::Path) -> Output {
     out
 }
 
-fn register_asset(dir: &std::path::Path, path: &str, id: u64) -> Output {
-    const COMMAND: &str = "assets register";
-    let (_, mut lock) = match load_registry(dir, COMMAND) {
+fn registry_path_key(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+enum RegistryMutation {
+    Register { id: u64 },
+    Unregister,
+}
+
+fn mutate_registry(
+    dir: &std::path::Path,
+    path: &str,
+    command: &str,
+    mutation: RegistryMutation,
+) -> Output {
+    let (_, mut lock) = match load_registry(dir, command) {
         Ok(v) => v,
         Err(out) => return *out,
     };
-    let key = path.replace('\\', "/");
-    let previous = lock.assets.insert(key.clone(), id);
-    match assets::save_lockfile(dir, &lock) {
-        Ok(_) => {
-            let summary = match previous {
-                Some(old) if old != id => format!("Updated {key}: {old} -> {id}"),
-                Some(_) => format!("{key} already mapped to {id}"),
-                None => format!("Registered {key} -> {id}"),
-            };
-            Output::success(
-                COMMAND,
-                summary,
-                Some(serde_json::json!({ "path": key, "assetId": id, "previous": previous })),
-            )
+    let key = registry_path_key(path);
+    match mutation {
+        RegistryMutation::Register { id } => {
+            let previous = lock.assets.insert(key.clone(), id);
+            match assets::save_lockfile(dir, &lock) {
+                Ok(_) => {
+                    let summary = match previous {
+                        Some(old) if old != id => format!("Updated {key}: {old} -> {id}"),
+                        Some(_) => format!("{key} already mapped to {id}"),
+                        None => format!("Registered {key} -> {id}"),
+                    };
+                    Output::success(
+                        command,
+                        summary,
+                        Some(
+                            serde_json::json!({ "path": key, "assetId": id, "previous": previous }),
+                        ),
+                    )
+                }
+                Err(e) => registry_failure(command, e),
+            }
         }
-        Err(e) => registry_failure(COMMAND, e),
+        RegistryMutation::Unregister => match lock.assets.remove(&key) {
+            Some(removed) => match assets::save_lockfile(dir, &lock) {
+                Ok(_) => Output::success(
+                    command,
+                    format!("Removed {key}"),
+                    Some(serde_json::json!({ "path": key, "removedId": removed })),
+                ),
+                Err(e) => registry_failure(command, e),
+            },
+            None => failure(
+                command,
+                crate::output::ErrorBody {
+                    code: "not_registered",
+                    message: format!("{key} is not in the lockfile"),
+                    status: None,
+                    detail: None,
+
+                    refs: None,
+                },
+            ),
+        },
     }
 }
 
-fn unregister_asset(dir: &std::path::Path, path: &str) -> Output {
-    const COMMAND: &str = "assets unregister";
-    let (_, mut lock) = match load_registry(dir, COMMAND) {
-        Ok(v) => v,
-        Err(out) => return *out,
-    };
-    let key = path.replace('\\', "/");
-    match lock.assets.remove(&key) {
-        Some(removed) => match assets::save_lockfile(dir, &lock) {
-            Ok(_) => Output::success(
-                COMMAND,
-                format!("Removed {key}"),
-                Some(serde_json::json!({ "path": key, "removedId": removed })),
-            ),
-            Err(e) => registry_failure(COMMAND, e),
-        },
-        None => failure(
-            COMMAND,
-            crate::output::ErrorBody {
-                code: "not_registered",
-                message: format!("{key} is not in the lockfile"),
-                status: None,
-                detail: None,
+fn register_asset(dir: &std::path::Path, path: &str, id: u64) -> Output {
+    mutate_registry(
+        dir,
+        path,
+        "assets register",
+        RegistryMutation::Register { id },
+    )
+}
 
-                refs: None,
-            },
-        ),
-    }
+fn unregister_asset(dir: &std::path::Path, path: &str) -> Output {
+    mutate_registry(dir, path, "assets unregister", RegistryMutation::Unregister)
 }
 
 fn run_codegen(dir: &std::path::Path, to_stdout: bool, check: bool) -> Output {

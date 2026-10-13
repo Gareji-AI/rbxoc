@@ -10,24 +10,68 @@ use serde_json::Value;
 use crate::ctx::{Ctx, failure};
 use crate::output::{ErrorBody, Output};
 
+#[derive(Clone, Copy)]
+enum MonetizationKind {
+    GamePass,
+    DevProduct,
+}
+
+impl MonetizationKind {
+    fn list_endpoint(self, universe_id: u64) -> (String, &'static str, &'static str, &'static str) {
+        match self {
+            Self::GamePass => (
+                format!("/game-passes/v1/universes/{universe_id}/game-passes/creator"),
+                "gamepass list",
+                "gamePasses",
+                "Game Passes",
+            ),
+            Self::DevProduct => (
+                format!(
+                    "/developer-products/v2/universes/{universe_id}/developer-products/creator"
+                ),
+                "devproduct list",
+                "developerProducts",
+                "Developer Products",
+            ),
+        }
+    }
+
+    fn create_endpoint(self, universe_id: u64) -> (String, &'static str) {
+        match self {
+            Self::GamePass => (
+                format!("/game-passes/v1/universes/{universe_id}/game-passes"),
+                "gamepass create",
+            ),
+            Self::DevProduct => (
+                format!("/developer-products/v2/universes/{universe_id}/developer-products"),
+                "devproduct create",
+            ),
+        }
+    }
+}
+
+async fn list_monetization(ctx: &Ctx, kind: MonetizationKind, universe_id: u64) -> Output {
+    let (path, command, array_key, label) = kind.list_endpoint(universe_id);
+    list_collection(ctx, command, &path, array_key, label).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn create_monetization(
+    ctx: &Ctx,
+    kind: MonetizationKind,
+    universe_id: u64,
+    name: &str,
+    description: Option<&str>,
+    price: Option<u64>,
+    image: Option<&std::path::PathBuf>,
+) -> Output {
+    let (path, command) = kind.create_endpoint(universe_id);
+    create_named_product(ctx, command, &path, name, description, price, image).await
+}
+
 /// List Game Passes.
 pub async fn gamepass_list(ctx: &Ctx, universe_id: u64) -> Output {
-    let path = format!("/game-passes/v1/universes/{universe_id}/game-passes/creator");
-    match ctx.get_json(&path).await {
-        Ok(data) => {
-            let count = data
-                .get("gamePasses")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
-            Output::success(
-                "gamepass list",
-                format!("Fetched {count} Game Passes"),
-                Some(data),
-            )
-        }
-        Err(err) => failure("gamepass list", err),
-    }
+    list_monetization(ctx, MonetizationKind::GamePass, universe_id).await
 }
 
 /// Create a Game Pass.
@@ -40,17 +84,16 @@ pub async fn gamepass_create(
     price: Option<u64>,
     image: Option<&std::path::PathBuf>,
 ) -> Output {
-    // Each property is its own multipart part; there is no `request` JSON field.
-    let mut fields: Vec<(&str, String)> = vec![("name", name.to_string())];
-    if let Some(d) = description {
-        fields.push(("description", d.to_string()));
-    }
-    if let Some(p) = price {
-        fields.push(("price", p.to_string()));
-        fields.push(("isForSale", "true".to_string()));
-    }
-    let path = format!("/game-passes/v1/universes/{universe_id}/game-passes");
-    submit_multipart(ctx, "gamepass create", &path, "POST", fields, image).await
+    create_monetization(
+        ctx,
+        MonetizationKind::GamePass,
+        universe_id,
+        name,
+        description,
+        price,
+        image,
+    )
+    .await
 }
 
 /// Update a Game Pass.
@@ -64,17 +107,8 @@ pub async fn gamepass_update(
     price: Option<u64>,
     image: Option<&std::path::PathBuf>,
 ) -> Output {
-    let mut fields: Vec<(&str, String)> = Vec::new();
-    if let Some(n) = name {
-        fields.push(("name", n.to_string()));
-    }
-    if let Some(d) = description {
-        fields.push(("description", d.to_string()));
-    }
-    if let Some(p) = price {
-        fields.push(("price", p.to_string()));
-        fields.push(("isForSale", "true".to_string()));
-    }
+    let mut fields: Vec<(&'static str, String)> = Vec::new();
+    append_optional_product_fields(&mut fields, name, description, price);
     if fields.is_empty() && image.is_none() {
         return failure(
             "gamepass update",
@@ -94,22 +128,7 @@ pub async fn gamepass_update(
 
 /// List Developer Products.
 pub async fn devproduct_list(ctx: &Ctx, universe_id: u64) -> Output {
-    let path = format!("/developer-products/v2/universes/{universe_id}/developer-products/creator");
-    match ctx.get_json(&path).await {
-        Ok(data) => {
-            let count = data
-                .get("developerProducts")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0);
-            Output::success(
-                "devproduct list",
-                format!("Fetched {count} Developer Products"),
-                Some(data),
-            )
-        }
-        Err(err) => failure("devproduct list", err),
-    }
+    list_monetization(ctx, MonetizationKind::DevProduct, universe_id).await
 }
 
 /// Create a Developer Product.
@@ -121,7 +140,43 @@ pub async fn devproduct_create(
     price: Option<u64>,
     image: Option<&std::path::PathBuf>,
 ) -> Output {
-    let mut fields: Vec<(&str, String)> = vec![("name", name.to_string())];
+    create_monetization(
+        ctx,
+        MonetizationKind::DevProduct,
+        universe_id,
+        name,
+        description,
+        price,
+        image,
+    )
+    .await
+}
+
+async fn list_collection(
+    ctx: &Ctx,
+    command: &str,
+    path: &str,
+    array_key: &str,
+    label: &str,
+) -> Output {
+    match ctx.get_json(path).await {
+        Ok(data) => {
+            let count = data
+                .get(array_key)
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            Output::success(command, format!("Fetched {count} {label}"), Some(data))
+        }
+        Err(err) => failure(command, err),
+    }
+}
+
+fn append_description_and_price(
+    fields: &mut Vec<(&'static str, String)>,
+    description: Option<&str>,
+    price: Option<u64>,
+) {
     if let Some(d) = description {
         fields.push(("description", d.to_string()));
     }
@@ -129,8 +184,41 @@ pub async fn devproduct_create(
         fields.push(("price", p.to_string()));
         fields.push(("isForSale", "true".to_string()));
     }
-    let path = format!("/developer-products/v2/universes/{universe_id}/developer-products");
-    submit_multipart(ctx, "devproduct create", &path, "POST", fields, image).await
+}
+
+fn create_product_fields(
+    name: &str,
+    description: Option<&str>,
+    price: Option<u64>,
+) -> Vec<(&'static str, String)> {
+    let mut fields = vec![("name", name.to_string())];
+    append_description_and_price(&mut fields, description, price);
+    fields
+}
+
+fn append_optional_product_fields(
+    fields: &mut Vec<(&'static str, String)>,
+    name: Option<&str>,
+    description: Option<&str>,
+    price: Option<u64>,
+) {
+    if let Some(n) = name {
+        fields.push(("name", n.to_string()));
+    }
+    append_description_and_price(fields, description, price);
+}
+
+async fn create_named_product(
+    ctx: &Ctx,
+    command: &str,
+    path: &str,
+    name: &str,
+    description: Option<&str>,
+    price: Option<u64>,
+    image: Option<&std::path::PathBuf>,
+) -> Output {
+    let fields = create_product_fields(name, description, price);
+    submit_multipart(ctx, command, path, "POST", fields, image).await
 }
 
 /// Build and send the multipart body. The image is optional.
@@ -139,7 +227,7 @@ async fn submit_multipart(
     command: &str,
     path: &str,
     method: &str,
-    fields: Vec<(&str, String)>,
+    fields: Vec<(&'static str, String)>,
     image: Option<&std::path::PathBuf>,
 ) -> Output {
     // Update responses carry no body, so remember a caller-known id for the

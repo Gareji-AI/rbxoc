@@ -18,7 +18,10 @@ const apply = process.argv.includes("--apply");
 
 // Update targets. These mirror [tools] in mise.toml.
 // Only Rust. rbxoc shells out to no Roblox tooling, so none is pinned.
-const TRACKED = [{ key: "rust", label: "rust" }];
+const TRACKED = [
+	{ key: "rust", label: "rust" },
+	{ key: "cargo:similarity-rs", label: "similarity-rs" },
+];
 
 function mise(args) {
 	const result = spawnSync("mise", args, { cwd: root, encoding: "utf8", shell: false });
