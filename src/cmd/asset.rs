@@ -521,6 +521,117 @@ pub async fn archive(ctx: &Ctx, asset_id: u64) -> Output {
     }
 }
 
+/// Start an asset create upload and return the operation id.
+pub(crate) async fn start_create(
+    ctx: &Ctx,
+    file: &std::path::Path,
+    display_name: &str,
+    description: &str,
+    creator_user_id: Option<u64>,
+    creator_group_id: Option<u64>,
+    asset_type_override: Option<&str>,
+) -> Result<(String, String), ErrorBody> {
+    let (asset_type, content_type, _type_note) =
+        resolve_asset_type(file, asset_type_override, CMD_CREATE).await?;
+    let creator = creator_json(creator_user_id, creator_group_id)?;
+    let request = json!({
+        "assetType": asset_type,
+        "displayName": display_name,
+        "description": description,
+        "creationContext": { "creator": creator },
+    });
+    let form = build_multipart(&request, file, content_type, CMD_CREATE).await?;
+    let req = ctx
+        .client
+        .post(ctx.url("/assets/v1/assets"))
+        .multipart(form);
+    let op_id = start_operation(ctx, req, CMD_CREATE).await?;
+    Ok((op_id, asset_type))
+}
+
+/// Poll until the operation completes or times out.
+pub(crate) async fn wait_for_operation(
+    ctx: &Ctx,
+    operation_id: &str,
+    max_attempts: u32,
+    pause_ms: u64,
+) -> Result<Value, ErrorBody> {
+    let path = format!("/assets/v1/operations/{operation_id}");
+    for attempt in 0..max_attempts {
+        let data = ctx.get_json(&path).await?;
+        let done = data.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
+        if done {
+            if let Some(err) = data.get("error") {
+                return Err(ErrorBody {
+                    code: "operation_failed",
+                    message: format!("operation {operation_id} failed"),
+                    status: None,
+                    detail: Some(err.to_string()),
+                    refs: None,
+                });
+            }
+            return Ok(data);
+        }
+        if attempt + 1 < max_attempts {
+            tokio::time::sleep(std::time::Duration::from_millis(pause_ms)).await;
+        }
+    }
+    Err(ErrorBody {
+        code: "operation_timeout",
+        message: format!("operation {operation_id} did not finish in time"),
+        status: None,
+        detail: Some("Poll again with `rbxoc asset operation`".into()),
+        refs: None,
+    })
+}
+
+/// Read the created asset id from a completed operation payload.
+pub fn asset_id_from_operation(data: &Value) -> Result<u64, ErrorBody> {
+    if let Some(response) = data.get("response") {
+        if let Some(id) = response
+            .get("assetId")
+            .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64()))
+        {
+            return Ok(id);
+        }
+        if let Some(path) = response.get("path").and_then(|v| v.as_str()) {
+            if let Some(id) = path.strip_prefix("assets/").and_then(|s| s.parse().ok()) {
+                return Ok(id);
+            }
+        }
+    }
+    Err(ErrorBody {
+        code: "asset_id_missing",
+        message: "completed operation has no assetId in response".into(),
+        status: None,
+        detail: Some(data.to_string()),
+        refs: None,
+    })
+}
+
+async fn start_operation(
+    ctx: &Ctx,
+    req: reqwest::RequestBuilder,
+    _command: &str,
+) -> Result<String, ErrorBody> {
+    let resp = ctx.send(req).await?;
+    if !resp.status().is_success() {
+        return Err(crate::auth::error_from_response(resp).await);
+    }
+    let data = resp.json::<Value>().await.map_err(|e| ErrorBody {
+        code: "invalid_json",
+        message: format!("cannot parse the response: {e}"),
+        status: None,
+        detail: None,
+        refs: None,
+    })?;
+    let op = data
+        .get("path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(unknown)");
+    Ok(op.strip_prefix("operations/").unwrap_or(op).to_string())
+}
+
 /// Check an operation's status.
 pub async fn operation(ctx: &Ctx, operation_id: &str) -> Output {
     let path = format!("/assets/v1/operations/{operation_id}");
@@ -721,6 +832,15 @@ mod tests {
             creator_json(None, None).unwrap_err().code,
             "creator_missing"
         );
+    }
+
+    #[test]
+    fn parses_asset_id_from_operation_response() {
+        let data = json!({
+            "done": true,
+            "response": { "path": "assets/12345", "assetId": "12345" }
+        });
+        assert_eq!(asset_id_from_operation(&data).unwrap(), 12345);
     }
 
     #[test]

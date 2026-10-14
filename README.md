@@ -244,7 +244,13 @@ rbxoc assets init --creator user:12345
 rbxoc assets status
 rbxoc assets register --path assets/ui/button.png --id 123456789
 rbxoc assets codegen
+rbxoc assets sync              # upload missing, refresh lock, codegen
+rbxoc assets sync --dry-run      # CI freshness check (no credentials)
+rbxoc assets import-asphalt-lock --asphalt-lock asphalt.lock.toml --input Assets --write
 ```
+
+`assets sync` rasterizes `.svg` to PNG before upload. Import Asphalt v2 hash
+locks with `import-asphalt-lock` when migrating from Asphalt.
 
 Generated Luau from that registry:
 

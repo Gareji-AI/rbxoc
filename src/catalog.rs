@@ -170,7 +170,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[],
         scopes: &[],
         mutating: true,
-        note: "Local files only; no API calls. rbxoc assets init/status/register/codegen.",
+        note: "Local + sync. rbxoc assets init/status/register/codegen/sync/import-asphalt-lock. SVG rasterizes to PNG on upload.",
     },
     // ---- thumbnails ----
     Endpoint {

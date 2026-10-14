@@ -324,6 +324,35 @@ pub enum AssetsCommand {
         #[arg(long)]
         check: bool,
     },
+    /// Upload missing files, refresh the lockfile, and run codegen
+    Sync {
+        #[arg(long, default_value = ".")]
+        dir: std::path::PathBuf,
+        /// Exit with an error when any manifest path lacks an ID (no uploads)
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Write preprocessed files (SVG rasterize, alpha bleed) to a folder
+    Preprocess {
+        #[arg(long, default_value = ".")]
+        dir: std::path::PathBuf,
+        /// Output directory (mirrors manifest paths)
+        #[arg(long, default_value = ".rbxoc-debug")]
+        out: std::path::PathBuf,
+    },
+    /// Copy IDs from an Asphalt lockfile (hash keys) into rbxoc.assets.lock.toml
+    ImportAsphaltLock {
+        #[arg(long, default_value = ".")]
+        dir: std::path::PathBuf,
+        #[arg(long)]
+        asphalt_lock: std::path::PathBuf,
+        /// Asphalt input name (e.g. Assets, CharmAssets)
+        #[arg(long)]
+        input: String,
+        /// Write rbxoc.assets.lock.toml after import
+        #[arg(long)]
+        write: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -891,9 +920,18 @@ impl Cli {
             return run_api(args).await;
         }
 
-        // The asset registry works on local files only. No API calls.
+        // Asset registry commands are local-only except `assets sync` (upload path).
         if let Command::Assets(args) = &self.command {
-            return run_assets(&args.command).await;
+            if let AssetsCommand::Sync {
+                dir,
+                dry_run: true,
+            } = &args.command
+            {
+                return cmd::assets_sync::run_dry_run(dir);
+            }
+            if !matches!(args.command, AssetsCommand::Sync { .. }) {
+                return run_assets(&args.command).await;
+            }
         }
 
         if let Command::Auth(AuthArgs { command }) = &self.command {
@@ -972,9 +1010,13 @@ impl Cli {
         };
 
         match self.command {
-            Command::Api(_) | Command::Auth(_) | Command::Assets(_) => {
-                unreachable!("handled above")
-            }
+            Command::Api(_) | Command::Auth(_) => unreachable!("handled above"),
+            Command::Assets(args) => match args.command {
+                AssetsCommand::Sync { dir, dry_run: false } => {
+                    cmd::assets_sync::run(&ctx, &dir).await
+                }
+                _ => unreachable!("handled above"),
+            },
             Command::Place(args) => match args.command {
                 PlaceCommand::Publish {
                     universe_id,
@@ -1618,6 +1660,14 @@ async fn run_assets(command: &AssetsCommand) -> Output {
         AssetsCommand::Register { path, id, dir } => register_asset(dir, path, *id),
         AssetsCommand::Unregister { path, dir } => unregister_asset(dir, path),
         AssetsCommand::Codegen { dir, stdout, check } => run_codegen(dir, *stdout, *check),
+        AssetsCommand::Sync { .. } => unreachable!("handled in Cli::run with credentials"),
+        AssetsCommand::Preprocess { dir, out } => cmd::assets_preprocess::run(dir, out),
+        AssetsCommand::ImportAsphaltLock {
+            dir,
+            asphalt_lock,
+            input,
+            write,
+        } => import_asphalt_lock(dir, asphalt_lock, input, *write),
     }
 }
 
@@ -1699,13 +1749,18 @@ fn init_manifest(
             style: "nested".into(),
             output_path: output_path.to_path_buf(),
             variable: "Assets".into(),
+            output_basename: None,
+            generator: "rbxoc".into(),
             strip_extensions: false,
             content: false,
+            bleed: true,
         },
         inputs: [(
             "assets".to_string(),
             assets::Inputs {
                 path: glob_path.to_string(),
+                path_key_from: None,
+                bleed: None,
             },
         )]
         .into_iter()
@@ -1947,27 +2002,10 @@ fn run_codegen(dir: &std::path::Path, to_stdout: bool, check: bool) -> Output {
         );
     }
 
-    // output_path is a directory. The file name follows the language.
-    let extension = if manifest.codegen.language == "typescript" {
-        "d.ts"
-    } else {
-        "luau"
+    let out_file = match assets::write_generated(dir, &manifest, &lock) {
+        Ok(p) => p,
+        Err(e) => return registry_failure(COMMAND, e),
     };
-    let file_name = format!("{}.{extension}", manifest.codegen.variable.to_lowercase());
-    let out_dir = dir.join(&manifest.codegen.output_path);
-    if let Err(e) = std::fs::create_dir_all(&out_dir) {
-        return registry_failure(
-            COMMAND,
-            anyhow::anyhow!("cannot create {}: {e}", out_dir.display()),
-        );
-    }
-    let out_file = out_dir.join(&file_name);
-    if let Err(e) = std::fs::write(&out_file, &source) {
-        return registry_failure(
-            COMMAND,
-            anyhow::anyhow!("cannot write {}: {e}", out_file.display()),
-        );
-    }
 
     let mut out = Output::success(
         COMMAND,
@@ -1989,4 +2027,40 @@ fn run_codegen(dir: &std::path::Path, to_stdout: bool, check: bool) -> Output {
         )]);
     }
     out
+}
+
+fn import_asphalt_lock(
+    dir: &std::path::Path,
+    asphalt_lock: &std::path::Path,
+    input: &str,
+    write: bool,
+) -> Output {
+    const COMMAND: &str = "assets import-asphalt-lock";
+    match assets::import_asphalt_lock(dir, asphalt_lock, input) {
+        Ok((imported, lock)) => {
+            let lock_path = if write {
+                match assets::save_lockfile(dir, &lock) {
+                    Ok(p) => Some(p),
+                    Err(e) => return registry_failure(COMMAND, e),
+                }
+            } else {
+                None
+            };
+            Output::success(
+                COMMAND,
+                format!("Matched {imported} paths from Asphalt input {input}"),
+                Some(serde_json::json!({
+                    "imported": imported,
+                    "registered": lock.assets.len(),
+                    "lockfile": lock_path.map(|p| p.to_string_lossy().to_string()),
+                })),
+            )
+            .with_hints(if write {
+                vec!["Run `rbxoc assets sync` to codegen (uploads only missing paths)".into()]
+            } else {
+                vec!["Re-run with --write to save rbxoc.assets.lock.toml".into()]
+            })
+        }
+        Err(e) => registry_failure(COMMAND, e),
+    }
 }

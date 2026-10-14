@@ -48,10 +48,23 @@ pub struct CodegenConfig {
     /// Variable name inside the generated file.
     #[serde(default = "default_variable")]
     pub variable: String,
+    /// Output file base name. Defaults to the lowercased `variable` (e.g. `Assets.luau`).
+    #[serde(default)]
+    pub output_basename: Option<String>,
+    /// Banner tool name. Defaults to `rbxoc`.
+    #[serde(default = "default_generator")]
+    pub generator: String,
     #[serde(default)]
     pub strip_extensions: bool,
     #[serde(default)]
     pub content: bool,
+    /// Alpha-bleed transparent PNG edges before upload (Asphalt default: true).
+    #[serde(default = "default_bleed")]
+    pub bleed: bool,
+}
+
+fn default_bleed() -> bool {
+    true
 }
 
 fn default_language() -> String {
@@ -63,12 +76,21 @@ fn default_style() -> String {
 fn default_variable() -> String {
     "Assets".into()
 }
+fn default_generator() -> String {
+    "rbxoc".into()
+}
 
 /// One input group.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Inputs {
     /// Glob for the source files, relative to the manifest.
     pub path: String,
+    /// When set, lock/codegen keys drop everything through this segment (e.g. `assets/`).
+    #[serde(default)]
+    pub path_key_from: Option<String>,
+    /// Override manifest `[codegen].bleed` for this input.
+    #[serde(default)]
+    pub bleed: Option<bool>,
 }
 
 /// The manifest.
@@ -90,7 +112,7 @@ pub struct Lockfile {
 }
 
 impl Lockfile {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             version: 1,
             assets: BTreeMap::new(),
@@ -177,8 +199,15 @@ pub fn collect_paths(dir: &Path, manifest: &Manifest) -> Result<Vec<String>> {
             if !path.is_file() {
                 continue;
             }
+            if path.file_name().is_some_and(|n| n == ".gitkeep") {
+                continue;
+            }
+            if is_non_asset_sidecar(&path) {
+                continue;
+            }
             let rel = path.strip_prefix(dir).unwrap_or(&path);
-            found.push(rel.to_string_lossy().replace('\\', "/"));
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            found.push(normalize_path_key(&rel, input));
             matched += 1;
         }
         if matched == 0 {
@@ -189,6 +218,29 @@ pub fn collect_paths(dir: &Path, manifest: &Manifest) -> Result<Vec<String>> {
     found.sort();
     found.dedup();
     Ok(found)
+}
+
+pub fn normalize_path_key_for_input(rel: &str, input: &Inputs) -> String {
+    normalize_path_key(rel, input)
+}
+
+fn is_non_asset_sidecar(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase()),
+        Some(ext) if matches!(ext.as_str(), "md" | "json" | "txt" | "toml")
+    )
+}
+
+fn normalize_path_key(rel: &str, input: &Inputs) -> String {
+    if let Some(anchor) = &input.path_key_from {
+        let anchor = anchor.replace('\\', "/");
+        if let Some(idx) = rel.find(&anchor) {
+            return rel[idx + anchor.len()..].to_string();
+        }
+    }
+    rel.to_string()
 }
 
 /// Convert the manifest's codegen settings into generator options.
@@ -206,7 +258,34 @@ pub fn codegen_options(config: &CodegenConfig) -> Options {
         },
         strip_extensions: config.strip_extensions,
         content: config.content,
+        generator: config.generator.clone(),
     }
+}
+
+/// File name for generated output (includes extension).
+pub fn output_file_name(config: &CodegenConfig) -> String {
+    let extension = if config.language == "typescript" {
+        "d.ts"
+    } else {
+        "luau"
+    };
+    match &config.output_basename {
+        Some(base) if base.contains('.') => base.clone(),
+        Some(base) => format!("{base}.{extension}"),
+        None => format!("{}.{}", config.variable.to_lowercase(), extension),
+    }
+}
+
+/// Write generated source from the lockfile. Returns the output path.
+pub fn write_generated(dir: &Path, manifest: &Manifest, lock: &Lockfile) -> Result<PathBuf> {
+    let source = render(manifest, lock);
+    let out_dir = dir.join(&manifest.codegen.output_path);
+    std::fs::create_dir_all(&out_dir)
+        .with_context(|| format!("cannot create {}", out_dir.display()))?;
+    let out_file = out_dir.join(output_file_name(&manifest.codegen));
+    std::fs::write(&out_file, &source)
+        .with_context(|| format!("cannot write {}", out_file.display()))?;
+    Ok(out_file)
 }
 
 /// Render the registry as source.
@@ -224,6 +303,81 @@ pub fn missing_ids(paths: &[String], lock: &Lockfile) -> Vec<String> {
         .filter(|p| !lock.assets.contains_key(*p))
         .cloned()
         .collect()
+}
+
+/// Import asset IDs from an Asphalt v2 lockfile (hash keys) into a path-keyed lock.
+///
+/// Asphalt hashes raw file bytes before SVG/bleed processing. Matching files get
+/// their existing Roblox IDs without re-uploading.
+pub fn import_asphalt_lock(
+    dir: &Path,
+    asphalt_lock: &Path,
+    input_name: &str,
+) -> Result<(usize, Lockfile)> {
+    let manifest = load_manifest(dir)?;
+    let by_hash = load_asphalt_hashes(asphalt_lock, input_name)?;
+    let mut lock = load_lockfile(dir)?;
+    let mut imported = 0usize;
+    for (input_label, input) in &manifest.inputs {
+        let pattern = dir.join(&input.path);
+        let pattern_str = pattern.to_string_lossy().replace('\\', "/");
+        for entry in glob::glob(&pattern_str)
+            .with_context(|| format!("invalid glob for input {input_label}: {}", input.path))?
+        {
+            let path = entry.with_context(|| format!("cannot read a match of input {input_label}"))?;
+            if !path.is_file()
+                || path.file_name().is_some_and(|n| n == ".gitkeep")
+                || is_non_asset_sidecar(&path)
+            {
+                continue;
+            }
+            let rel = path.strip_prefix(dir).unwrap_or(&path);
+            let rel = rel.to_string_lossy().replace('\\', "/");
+            let key = normalize_path_key(&rel, input);
+            let bytes = std::fs::read(&path)
+                .with_context(|| format!("cannot read {} for hash import", path.display()))?;
+            if let Some(id) = match_asphalt_hash(&bytes, &by_hash) {
+                lock.assets.insert(key, id);
+                imported += 1;
+            }
+        }
+    }
+    Ok((imported, lock))
+}
+
+fn match_asphalt_hash(bytes: &[u8], by_hash: &BTreeMap<String, u64>) -> Option<u64> {
+    let blake = blake3::hash(bytes).to_hex().to_string();
+    if let Some(id) = by_hash.get(&blake) {
+        return Some(*id);
+    }
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let sha: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    by_hash.get(&sha).copied()
+}
+
+fn load_asphalt_hashes(path: &Path, input_name: &str) -> Result<BTreeMap<String, u64>> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    let doc: toml::Value =
+        toml::from_str(&text).with_context(|| format!("cannot parse {}", path.display()))?;
+    let mut out = BTreeMap::new();
+    let Some(scope) = doc
+        .get("inputs")
+        .and_then(|v| v.get(input_name))
+        .and_then(|v| v.as_table())
+    else {
+        bail!("no inputs.{input_name} entries found in {}", path.display());
+    };
+    for (hash, entry) in scope {
+        let Some(id) = entry.get("asset_id").and_then(|v| v.as_integer()) else {
+            continue;
+        };
+        if id >= 0 {
+            out.insert(hash.clone(), id as u64);
+        }
+    }
+    Ok(out)
 }
 
 /// Paths that have an ID but no longer match the manifest.
@@ -251,8 +405,11 @@ mod tests {
                 style: "nested".into(),
                 output_path: PathBuf::from("src/shared"),
                 variable: "Assets".into(),
+                output_basename: None,
+                generator: "rbxoc".into(),
                 strip_extensions: false,
                 content: false,
+                bleed: true,
             },
             inputs: BTreeMap::new(),
         }
