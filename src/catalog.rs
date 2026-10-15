@@ -93,7 +93,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["asset:write"],
         mutating: true,
-        note: "Up to 20 MB per request. Models accept fbx / gltf / glb / rbxm / rbxmx.",
+        note: "Up to 20 MB per request. Models accept fbx / gltf / glb / rbxm / rbxmx. Image uploads return Decal IDs, not resolved Image IDs; see asset image-id.",
     },
     Endpoint {
         id: "asset.update",
@@ -170,7 +170,18 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[],
         scopes: &[],
         mutating: true,
-        note: "Local + sync. rbxoc assets init/status/register/codegen/sync/import-asphalt-lock. SVG rasterizes to PNG on upload.",
+        note: "Local registry + sync. Exact repeatable sync --path selection, full local upload preflight, durable per-file receipts, recover, changed/unverified status. Dry-run is a registry/known-freshness check only. Register --image-id and codegen.image_ids are explicit offline Image reference options.",
+    },
+    Endpoint {
+        id: "asset.image-id",
+        method: "LOCAL",
+        path: "Decal.Texture",
+        summary: "Interpret a supplied Studio Decal.Texture as an Image ID",
+        implemented: true,
+        auth: &[],
+        scopes: &[],
+        mutating: false,
+        note: "Offline fallback, not an Open Cloud lookup. Requires --decal-id and a --texture from Studio; without it returns unresolved instructions. Preserves original Decal IDs and never uploads or claims remote validation.",
     },
     // ---- thumbnails ----
     Endpoint {

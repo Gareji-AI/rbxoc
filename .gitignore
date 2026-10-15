@@ -3,6 +3,7 @@
 # Project-local Open Cloud credentials. A key is scoped to one universe, so it
 # lives beside the project, never in the repository.
 .rbxoc/
+.rbxoc-assets-sync.lock
 
 # Agent loop / local task state (not part of the crate or CI).
 .ralph/

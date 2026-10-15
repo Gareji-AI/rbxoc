@@ -420,7 +420,7 @@ async fn submit_operation(
                     Output::success(
                         command,
                         format!("Accepted the {asset_type} operation (operation {op_id})"),
-                        Some(json!({ "operationId": op_id, "response": data })),
+                        Some(json!({ "operationId": op_id, "assetType": asset_type, "response": data })),
                     )
                     .with_hints(
                         type_note
@@ -431,6 +431,7 @@ async fn submit_operation(
                                 ),
                                 "Processing is asynchronous; it is not immediate".into(),
                             ])
+                            .chain((asset_type == "Decal").then(|| "The completed assetId is a Decal ID, not a resolved Image ID. For ImageLabel/ImageButton, see `asset image-id` and docs/image-ids.md. Do not re-upload to resolve it.".into()))
                             .collect::<Vec<_>>(),
                     )
                 }
@@ -590,14 +591,22 @@ pub fn asset_id_from_operation(data: &Value) -> Result<u64, ErrorBody> {
     if let Some(response) = data.get("response") {
         if let Some(id) = response
             .get("assetId")
-            .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64()))
+            .and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| v.as_u64())
+            })
+            .filter(|id| *id > 0)
         {
             return Ok(id);
         }
-        if let Some(path) = response.get("path").and_then(|v| v.as_str()) {
-            if let Some(id) = path.strip_prefix("assets/").and_then(|s| s.parse().ok()) {
-                return Ok(id);
-            }
+        if let Some(path) = response.get("path").and_then(|v| v.as_str())
+            && let Some(id) = path
+                .strip_prefix("assets/")
+                .and_then(|s| s.parse().ok())
+                .filter(|id| *id > 0)
+        {
+            return Ok(id);
         }
     }
     Err(ErrorBody {
@@ -625,11 +634,79 @@ async fn start_operation(
         detail: None,
         refs: None,
     })?;
-    let op = data
-        .get("path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("(unknown)");
-    Ok(op.strip_prefix("operations/").unwrap_or(op).to_string())
+    let path = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    normalize_operation_id(path)
+}
+
+/// Reject absent/malformed operation receipts rather than poll an invented ID.
+pub fn normalize_operation_id(path: &str) -> Result<String, ErrorBody> {
+    let id = path.strip_prefix("operations/").unwrap_or(path);
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(ErrorBody {
+            code: "operation_id_missing",
+            message: "create response has no valid operation ID; outcome may be uncertain".into(),
+            status: None,
+            detail: None,
+            refs: None,
+        });
+    }
+    Ok(id.to_string())
+}
+
+/// Explicit offline fallback: interpret a Decal.Texture obtained in Studio.
+/// Open Cloud does not provide a supported Decal-to-Image lookup here. Never
+/// pretend the supplied texture was remotely verified, or replace the Decal ID.
+pub fn image_id(decal_id: u64, texture: Option<&str>) -> Output {
+    const COMMAND: &str = "asset image-id";
+    if decal_id == 0 {
+        return failure(
+            COMMAND,
+            ErrorBody {
+                code: "asset_id_invalid",
+                message: "--decal-id must be positive".into(),
+                status: None,
+                detail: None,
+                refs: None,
+            },
+        );
+    }
+    let image_id = texture.and_then(parse_texture_id);
+    let Some(image_id) = image_id else {
+        let mut out = failure(COMMAND, ErrorBody {
+            code: if texture.is_some() { "image_texture_invalid" } else { "image_resolution_unavailable" },
+            message: format!("Image ID for Decal {decal_id} was not resolved; original Decal ID remains unchanged"),
+            status: None, detail: Some("No supported Open Cloud Decal.Texture lookup is implemented. In Studio, load the Decal using InsertService:LoadAsset, read Decal.Texture, and pass it with --texture. See docs/image-ids.md.".into()), refs: None,
+        });
+        out.data = Some(json!({"decalId": decal_id, "imageId": null, "resolution": "unresolved"}));
+        return out.with_hints(vec!["Do not upload again. Preserve the original operation/asset receipt; resolve its existing Decal.Texture in Studio.".into()]);
+    };
+    Output::success(COMMAND, format!("Read Image {image_id} from supplied Decal.Texture; Decal {decal_id} preserved"),
+        Some(json!({"decalId": decal_id, "imageId": image_id, "uri": format!("rbxassetid://{image_id}"), "resolution": "supplied-studio-texture", "networkValidated": false})))
+        .with_hints(vec!["Offline interpretation only: caller must verify the supplied Texture belongs to this Decal. Register with --id DECAL_ID --image-id IMAGE_ID; verify ImageLabel.IsLoaded in Studio.".into()])
+}
+
+fn parse_texture_id(texture: &str) -> Option<u64> {
+    let id = if let Some(id) = texture.strip_prefix("rbxassetid://") {
+        id.parse().ok()?
+    } else {
+        let url = reqwest::Url::parse(texture).ok()?;
+        if !matches!(url.scheme(), "http" | "https")
+            || !matches!(url.host_str(), Some("www.roblox.com" | "roblox.com"))
+            || !matches!(url.path(), "/asset" | "/asset/")
+        {
+            return None;
+        }
+        let ids: Vec<_> = url.query_pairs().filter(|(key, _)| key == "id").collect();
+        if ids.len() != 1 {
+            return None;
+        }
+        ids[0].1.parse().ok()?
+    };
+    (id > 0).then_some(id)
 }
 
 /// Check an operation's status.
@@ -853,5 +930,61 @@ mod tests {
             build_update_mask(true, true, true, true),
             "assetType,assetId,displayName,description,icon,preview"
         );
+    }
+
+    #[test]
+    fn distinguishes_decal_from_supplied_image_without_claiming_remote_resolution() {
+        for texture in [
+            "rbxassetid://456",
+            "http://www.roblox.com/asset/?id=456",
+            "https://roblox.com/asset?id=456",
+        ] {
+            let out = image_id(123, Some(texture));
+            assert!(out.ok, "{out:?}");
+            let data = out.data.unwrap();
+            assert_eq!(data["decalId"], 123);
+            assert_eq!(data["imageId"], 456);
+            assert_eq!(data["networkValidated"], false);
+            assert_eq!(data["resolution"], "supplied-studio-texture");
+        }
+    }
+
+    #[test]
+    fn failed_image_resolution_preserves_original_id_and_returns_fallback() {
+        let unavailable = image_id(123, None);
+        assert_eq!(
+            unavailable.error.unwrap().code,
+            "image_resolution_unavailable"
+        );
+        assert_eq!(unavailable.data.unwrap()["decalId"], 123);
+        for texture in [
+            "rbxassetid://0",
+            "https://example.com/asset/?id=456",
+            "not a texture",
+            "https://www.roblox.com/asset/?id=1&id=2",
+        ] {
+            let out = image_id(123, Some(texture));
+            assert!(!out.ok);
+            assert_eq!(out.error.unwrap().code, "image_texture_invalid");
+            assert!(
+                out.hints
+                    .iter()
+                    .any(|hint| hint.contains("Do not upload again"))
+            );
+            assert_eq!(out.data.unwrap()["imageId"], serde_json::Value::Null);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_operation_and_zero_asset_receipts() {
+        assert_eq!(
+            normalize_operation_id("operations/abc-123_def").unwrap(),
+            "abc-123_def"
+        );
+        for id in ["", "(unknown)", "../operation", "op?query", "operations/"] {
+            assert!(normalize_operation_id(id).is_err());
+        }
+        assert!(asset_id_from_operation(&json!({"response": {"assetId": "0"}})).is_err());
+        assert!(asset_id_from_operation(&json!({"response": {"path": "assets/0"}})).is_err());
     }
 }

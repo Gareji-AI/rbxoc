@@ -195,7 +195,22 @@ rbxoc asset update --asset-id 2205400862 --file v2.fbx
 rbxoc asset rollback --asset-id 2205400862 --version 1
 ```
 
-Supported formats (20 MB per request): `.fbx` `.gltf` `.glb` `.rbxm` `.rbxmx` (Model), `.png` `.jpeg` `.bmp` `.tga` (Image), `.mp3` `.ogg` `.wav` `.flac`, `.mp4` `.mov`.
+Supported formats (20 MB per request): `.fbx` `.gltf` `.glb` `.rbxm` `.rbxmx` (Model), `.png` `.jpeg` `.bmp` `.tga` (Decal image uploads), `.mp3` `.ogg` `.wav` `.flac`, `.mp4` `.mov`.
+
+**Decal ID is not Image ID.** An image upload's completed `assetId` remains
+the original Decal ID; rbxoc never silently redefines it. For ImageLabel or
+ImageButton, resolve the existing Decal's `Texture` in Studio, then use the
+explicit offline workflow:
+
+```bash
+rbxoc asset image-id --decal-id 123 --texture rbxassetid://456
+rbxoc assets register --path assets/ui/icon.png --id 123 --image-id 456
+```
+
+Enable `[codegen] image_ids = true` for generated image-consumer references.
+Default codegen keeps original IDs for compatibility. Without `--texture`,
+`asset image-id` returns an actionable unresolved error, not a fabricated ID
+or another upload. See [Image IDs and Studio fallback](docs/image-ids.md).
 
 ### 3D models and animations
 
@@ -245,12 +260,26 @@ rbxoc assets status
 rbxoc assets register --path assets/ui/button.png --id 123456789
 rbxoc assets codegen
 rbxoc assets sync              # upload missing, refresh lock, codegen
-rbxoc assets sync --dry-run      # CI freshness check (no credentials)
+rbxoc assets sync --path assets/ui/button.png --path assets/sfx/hit.ogg
+rbxoc assets sync --dry-run     # registry + known-freshness check, not upload preflight
 rbxoc assets import-asphalt-lock --asphalt-lock asphalt.lock.toml --input Assets --write
 ```
 
 `assets sync` rasterizes `.svg` to PNG before upload. Import Asphalt v2 hash
 locks with `import-asphalt-lock` when migrating from Asphalt.
+
+Sync validates the entire selected batch before any upload, records each
+successful ID immediately, and resumes known pending operations instead of
+creating duplicates. `--path` selects exact manifest/lock keys, after
+`path_key_from` normalization. Unknown keys fail; they never trigger full sync.
+Codegen keeps all registered IDs and omits unselected missing files. Ambiguous
+generated keys fail without overwriting existing output.
+
+`assets status` distinguishes `current`, `changed`, and `unverified` entries.
+Only a successful sync receipt proves known freshness. Changed registered
+files are **not** automatically replaced, and legacy/manual registrations stay
+unverified. See [asset sync safety and recovery](docs/asset-sync-safety.md) for
+dry-run limits, pending operations, and uncertain outcomes.
 
 Generated Luau from that registry:
 

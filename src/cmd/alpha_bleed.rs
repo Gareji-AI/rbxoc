@@ -97,12 +97,7 @@ pub fn alpha_bleed(img: &mut DynamicImage) {
             img.put_pixel(
                 x,
                 y,
-                Rgba([
-                    (sum.0 / d) as u8,
-                    (sum.1 / d) as u8,
-                    (sum.2 / d) as u8,
-                    0,
-                ]),
+                Rgba([(sum.0 / d) as u8, (sum.1 / d) as u8, (sum.2 / d) as u8, 0]),
             );
             mutated.push((x, y));
         }

@@ -91,7 +91,10 @@ if (cookieImplemented.length > 0) {
 
 // --- Cross-check against the CLI ----------------------------------------
 
-const binary = path.join(root, "target", "release", process.platform === "win32" ? "rbxoc.exe" : "rbxoc");
+const target = process.env.CARGO_TARGET_DIR
+	? path.resolve(root, process.env.CARGO_TARGET_DIR)
+	: path.join(root, "target");
+const binary = path.join(target, "release", process.platform === "win32" ? "rbxoc.exe" : "rbxoc");
 if (!fs.existsSync(binary)) {
 	fail(`release binary missing at ${binary}; run \`mise run build\` first`);
 } else {

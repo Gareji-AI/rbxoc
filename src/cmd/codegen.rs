@@ -14,6 +14,8 @@
 
 use std::collections::BTreeMap;
 
+use anyhow::{Result, bail};
+
 /// A node in the generated tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Node {
@@ -54,7 +56,8 @@ pub struct Options {
 }
 
 /// Build the tree from `path -> assetId` pairs.
-pub fn build_tree(pairs: &[(String, u64)], options: &Options) -> Node {
+pub fn build_tree(pairs: &[(String, u64)], options: &Options) -> Result<Node> {
+    validate_keys(pairs.iter().map(|(path, _)| path.as_str()), options)?;
     let mut root = Node::Table(BTreeMap::new());
     for (path, id) in pairs {
         let uri = format!("rbxassetid://{id}");
@@ -75,7 +78,39 @@ pub fn build_tree(pairs: &[(String, u64)], options: &Options) -> Node {
             }
         }
     }
-    root
+    Ok(root)
+}
+
+/// Validate prospective output without needing remote IDs. Sorted adjacent
+/// keys reveal both identical leaves and leaf/table prefix conflicts.
+pub fn validate_keys<'a>(
+    paths: impl IntoIterator<Item = &'a str>,
+    options: &Options,
+) -> Result<()> {
+    let mut keys = Vec::new();
+    for path in paths {
+        let components = match options.style {
+            Style::Flat => vec![flat_key(path, options.strip_extensions)],
+            Style::Nested => path_components(path, options.strip_extensions),
+        };
+        if components.is_empty() || components.iter().any(String::is_empty) {
+            bail!(
+                "empty generated key for source {path:?}; rename the source or adjust path_key_from"
+            );
+        }
+        keys.push((components, path));
+    }
+    keys.sort();
+    for pair in keys.windows(2) {
+        let (left, source_a) = &pair[0];
+        let (right, source_b) = &pair[1];
+        if right.starts_with(left) {
+            bail!(
+                "generated key collision at {left:?}: sources {source_a:?} and {source_b:?}; rename a source or adjust strip_extensions/style"
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Split a path into nesting components. Extension stripping applies to the
@@ -226,7 +261,7 @@ fn table_key(key: &str, language: Language) -> String {
     }
 }
 
-fn is_valid_identifier(value: &str) -> bool {
+pub(crate) fn is_valid_identifier(value: &str) -> bool {
     let mut chars = value.chars();
     match chars.next() {
         Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
@@ -287,7 +322,7 @@ mod tests {
             ("ui/panel.png".to_string(), 456u64),
             ("sfx/hit.ogg".to_string(), 789u64),
         ];
-        let tree = build_tree(&pairs, &opts(Language::Luau, Style::Nested));
+        let tree = build_tree(&pairs, &opts(Language::Luau, Style::Nested)).unwrap();
         let code = generate(&tree, "Assets", &opts(Language::Luau, Style::Nested));
         // BTreeMap orders keys, so the output is stable.
         assert!(code.contains("local Assets = {"));
@@ -304,7 +339,7 @@ mod tests {
     #[test]
     fn typescript_flat_is_a_type_declaration() {
         let pairs = vec![("ui/button.png".to_string(), 123u64)];
-        let tree = build_tree(&pairs, &opts(Language::TypeScript, Style::Flat));
+        let tree = build_tree(&pairs, &opts(Language::TypeScript, Style::Flat)).unwrap();
         let code = generate(&tree, "Assets", &opts(Language::TypeScript, Style::Flat));
         assert!(code.contains("declare const Assets: {"));
         assert!(code.contains("\"ui/button.png\": string"));
@@ -322,7 +357,8 @@ mod tests {
                 content: false,
                 generator: "rbxoc".into(),
             },
-        );
+        )
+        .unwrap();
         let code = generate(
             &tree,
             "A",
@@ -353,7 +389,8 @@ mod tests {
                 content: true,
                 generator: "rbxoc".into(),
             },
-        );
+        )
+        .unwrap();
         let code = generate(
             &tree,
             "A",
@@ -393,11 +430,38 @@ mod tests {
         let tree = build_tree(
             &[("x.png".to_string(), 1u64)],
             &opts(Language::Luau, Style::Nested),
-        );
+        )
+        .unwrap();
         let code = generate(&tree, "A", &opts(Language::Luau, Style::Nested));
         assert!(
             code.ends_with('\n'),
             "generated files must end with a newline"
         );
+    }
+
+    #[test]
+    fn rejects_extension_collisions_in_both_languages_and_styles() {
+        for language in [Language::Luau, Language::TypeScript] {
+            for style in [Style::Flat, Style::Nested] {
+                let mut options = opts(language, style);
+                options.strip_extensions = true;
+                let err = validate_keys(["ui/icon.png", "ui/icon.svg"], &options).unwrap_err();
+                let message = err.to_string();
+                assert!(message.contains("ui/icon.png"));
+                assert!(message.contains("ui/icon.svg"));
+                assert!(message.contains("collision"));
+                assert!(validate_keys(["ui/icon.png", "ui/other.svg"], &options).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_leaf_table_conflicts_in_either_input_order() {
+        let options = opts(Language::Luau, Style::Nested);
+        for paths in [["ui", "ui/icon.png"], ["ui/icon.png", "ui"]] {
+            let err = validate_keys(paths, &options).unwrap_err().to_string();
+            assert!(err.contains("ui/icon.png"));
+            assert!(err.contains("\"ui\""));
+        }
     }
 }
