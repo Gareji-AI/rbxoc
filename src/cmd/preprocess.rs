@@ -29,13 +29,16 @@ fn file_error(code: &'static str, message: String, detail: Option<String>) -> Er
 }
 
 fn write_temp_png(png: &[u8]) -> Result<UploadFile, ErrorBody> {
-    let mut temp = tempfile::NamedTempFile::new().map_err(|e| ErrorBody {
-        code: "temp_file_failed",
-        message: format!("cannot create temp file: {e}"),
-        status: None,
-        detail: None,
-        refs: None,
-    })?;
+    let mut temp = tempfile::Builder::new()
+        .suffix(".png")
+        .tempfile()
+        .map_err(|e| ErrorBody {
+            code: "temp_file_failed",
+            message: format!("cannot create temp file: {e}"),
+            status: None,
+            detail: None,
+            refs: None,
+        })?;
     temp.write_all(png).map_err(|e| ErrorBody {
         code: "temp_write_failed",
         message: format!("cannot write temp PNG: {e}"),
@@ -58,15 +61,14 @@ fn rasterize_svg(source: &Path) -> Result<Vec<u8>, ErrorBody> {
             Some(e.to_string()),
         )
     })?;
-    let tree = resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).map_err(
-        |e| {
+    let tree =
+        resvg::usvg::Tree::from_data(&data, &resvg::usvg::Options::default()).map_err(|e| {
             file_error(
                 "svg_parse_failed",
                 format!("cannot parse SVG: {}", source.display()),
                 Some(e.to_string()),
             )
-        },
-    )?;
+        })?;
     let size = tree.size().to_int_size();
     let (width, height) = (size.width(), size.height());
     if width == 0 || height == 0 {
@@ -83,7 +85,11 @@ fn rasterize_svg(source: &Path) -> Result<Vec<u8>, ErrorBody> {
             None,
         )
     })?;
-    resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::default(),
+        &mut pixmap.as_mut(),
+    );
     pixmap.encode_png().map_err(|e| {
         file_error(
             "svg_encode_failed",
@@ -106,17 +112,14 @@ fn maybe_bleed_png_bytes(png: Vec<u8>, bleed: bool) -> Result<Vec<u8>, ErrorBody
     })?;
     alpha_bleed::alpha_bleed(&mut img);
     let mut out = Vec::new();
-    img.write_to(
-        &mut std::io::Cursor::new(&mut out),
-        image::ImageFormat::Png,
-    )
-    .map_err(|e| {
-        file_error(
-            "png_encode_failed",
-            "cannot encode PNG after alpha bleed".into(),
-            Some(e.to_string()),
-        )
-    })?;
+    img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .map_err(|e| {
+            file_error(
+                "png_encode_failed",
+                "cannot encode PNG after alpha bleed".into(),
+                Some(e.to_string()),
+            )
+        })?;
     Ok(out)
 }
 
@@ -130,17 +133,14 @@ fn bleed_raster_file(source: &Path) -> Result<UploadFile, ErrorBody> {
     })?;
     alpha_bleed::alpha_bleed(&mut img);
     let mut png = Vec::new();
-    img.write_to(
-        &mut std::io::Cursor::new(&mut png),
-        image::ImageFormat::Png,
-    )
-    .map_err(|e| {
-        file_error(
-            "png_encode_failed",
-            format!("cannot encode PNG: {}", source.display()),
-            Some(e.to_string()),
-        )
-    })?;
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| {
+            file_error(
+                "png_encode_failed",
+                format!("cannot encode PNG: {}", source.display()),
+                Some(e.to_string()),
+            )
+        })?;
     write_temp_png(&png)
 }
 
@@ -165,4 +165,43 @@ pub fn prepare_upload_file(source: &Path, bleed: bool) -> Result<UploadFile, Err
         path: source.to_path_buf(),
         _temp: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cmd::asset;
+
+    #[tokio::test]
+    async fn converted_images_keep_png_format_and_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bleed) in [("a.png", true), ("a.svg", true), ("a.svg", false)] {
+            let source = dir.path().join(name);
+            if name.ends_with("svg") {
+                std::fs::write(&source, r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="red"/></svg>"#).unwrap();
+            } else {
+                image::RgbaImage::new(2, 2).save(&source).unwrap();
+            }
+            let upload = prepare_upload_file(&source, bleed).unwrap();
+            let temp_path = upload.as_path().to_path_buf();
+            assert_ne!(temp_path, source);
+            let (kind, mime, _) = asset::infer_asset_from_file(&temp_path).await.unwrap();
+            assert_eq!((kind, mime), ("Decal", "image/png"));
+            assert!(image::open(&temp_path).is_ok());
+            drop(upload);
+            assert!(!temp_path.exists());
+            assert!(source.exists());
+        }
+    }
+
+    #[test]
+    fn unprocessed_files_keep_original_path_and_lifetime() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("a.png");
+        std::fs::write(&source, b"unchanged").unwrap();
+        let upload = prepare_upload_file(&source, false).unwrap();
+        assert_eq!(upload.as_path(), source);
+        drop(upload);
+        assert_eq!(std::fs::read(source).unwrap(), b"unchanged");
+    }
 }

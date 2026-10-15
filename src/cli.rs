@@ -922,11 +922,7 @@ impl Cli {
 
         // Asset registry commands are local-only except `assets sync` (upload path).
         if let Command::Assets(args) = &self.command {
-            if let AssetsCommand::Sync {
-                dir,
-                dry_run: true,
-            } = &args.command
-            {
+            if let AssetsCommand::Sync { dir, dry_run: true } = &args.command {
                 return cmd::assets_sync::run_dry_run(dir);
             }
             if !matches!(args.command, AssetsCommand::Sync { .. }) {
@@ -1012,9 +1008,10 @@ impl Cli {
         match self.command {
             Command::Api(_) | Command::Auth(_) => unreachable!("handled above"),
             Command::Assets(args) => match args.command {
-                AssetsCommand::Sync { dir, dry_run: false } => {
-                    cmd::assets_sync::run(&ctx, &dir).await
-                }
+                AssetsCommand::Sync {
+                    dir,
+                    dry_run: false,
+                } => cmd::assets_sync::run(&ctx, &dir).await,
                 _ => unreachable!("handled above"),
             },
             Command::Place(args) => match args.command {
@@ -1992,7 +1989,10 @@ fn run_codegen(dir: &std::path::Path, to_stdout: bool, check: bool) -> Output {
         return out;
     }
 
-    let source = assets::render(&manifest, &lock);
+    let source = match assets::render(&manifest, &lock) {
+        Ok(source) => source,
+        Err(e) => return registry_failure(COMMAND, e),
+    };
 
     if to_stdout {
         return Output::success(

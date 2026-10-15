@@ -278,7 +278,7 @@ pub fn output_file_name(config: &CodegenConfig) -> String {
 
 /// Write generated source from the lockfile. Returns the output path.
 pub fn write_generated(dir: &Path, manifest: &Manifest, lock: &Lockfile) -> Result<PathBuf> {
-    let source = render(manifest, lock);
+    let source = render(manifest, lock)?;
     let out_dir = dir.join(&manifest.codegen.output_path);
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("cannot create {}", out_dir.display()))?;
@@ -289,11 +289,15 @@ pub fn write_generated(dir: &Path, manifest: &Manifest, lock: &Lockfile) -> Resu
 }
 
 /// Render the registry as source.
-pub fn render(manifest: &Manifest, lock: &Lockfile) -> String {
+pub fn render(manifest: &Manifest, lock: &Lockfile) -> Result<String> {
     let options = codegen_options(&manifest.codegen);
     let pairs: Vec<(String, u64)> = lock.assets.iter().map(|(k, v)| (k.clone(), *v)).collect();
-    let tree = codegen::build_tree(&pairs, &options);
-    codegen::generate(&tree, &manifest.codegen.variable, &options)
+    let tree = codegen::build_tree(&pairs, &options)?;
+    Ok(codegen::generate(
+        &tree,
+        &manifest.codegen.variable,
+        &options,
+    ))
 }
 
 /// Paths that are in the manifest but have no ID yet.
@@ -324,7 +328,8 @@ pub fn import_asphalt_lock(
         for entry in glob::glob(&pattern_str)
             .with_context(|| format!("invalid glob for input {input_label}: {}", input.path))?
         {
-            let path = entry.with_context(|| format!("cannot read a match of input {input_label}"))?;
+            let path =
+                entry.with_context(|| format!("cannot read a match of input {input_label}"))?;
             if !path.is_file()
                 || path.file_name().is_some_and(|n| n == ".gitkeep")
                 || is_non_asset_sidecar(&path)
@@ -437,7 +442,7 @@ mod tests {
     fn renders_from_lockfile() {
         let mut lock = Lockfile::new();
         lock.assets.insert("ui/button.png".into(), 123);
-        let code = render(&manifest(), &lock);
+        let code = render(&manifest(), &lock).unwrap();
         assert!(code.contains("local Assets = {"));
         // Dotted names cannot be bare identifiers, so they are bracketed.
         assert!(code.contains("[\"button.png\"] = \"rbxassetid://123\""));
@@ -477,5 +482,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = load_manifest(dir.path()).unwrap_err().to_string();
         assert!(err.contains(MANIFEST_NAME));
+    }
+
+    #[test]
+    fn collision_does_not_overwrite_generated_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut m = manifest();
+        m.codegen.strip_extensions = true;
+        let mut lock = Lockfile::new();
+        lock.assets.insert("ui/icon.png".into(), 1);
+        let output = write_generated(dir.path(), &m, &lock).unwrap();
+        let previous = std::fs::read(&output).unwrap();
+        lock.assets.insert("ui/icon.svg".into(), 2);
+        assert!(write_generated(dir.path(), &m, &lock).is_err());
+        assert_eq!(std::fs::read(output).unwrap(), previous);
     }
 }
