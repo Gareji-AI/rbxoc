@@ -25,6 +25,8 @@ use crate::cmd::codegen::{self, Language, Options, Style};
 pub const MANIFEST_NAME: &str = "rbxoc.assets.toml";
 /// Lockfile name.
 pub const LOCKFILE_NAME: &str = "rbxoc.assets.lock.toml";
+/// Separate from .rbxoc so locking never changes credential discovery boundaries.
+pub const MUTATION_LOCK_NAME: &str = ".rbxoc-assets-sync.lock";
 
 /// Creator that owns uploaded assets.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -265,14 +267,12 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
 
 /// Serialize publication and local registry mutations in the same directory.
 pub fn registry_guard(dir: &Path) -> Result<std::fs::File> {
-    let state_dir = dir.join(".rbxoc");
-    std::fs::create_dir_all(&state_dir)?;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(state_dir.join("assets-sync.lock"))?;
+        .open(dir.join(MUTATION_LOCK_NAME))?;
     file.try_lock()
         .context("another process is changing this asset registry; retry when it finishes")?;
     Ok(file)
@@ -498,7 +498,11 @@ pub fn prepare_output_path(
             .join(out_file.file_name().context("output has no file name")?)
     };
     let root = dir.canonicalize()?;
-    let mut protected = vec![root.join(MANIFEST_NAME), root.join(LOCKFILE_NAME)];
+    let mut protected = vec![
+        root.join(MANIFEST_NAME),
+        root.join(LOCKFILE_NAME),
+        root.join(MUTATION_LOCK_NAME),
+    ];
     for path in [dir.join(MANIFEST_NAME), dir.join(LOCKFILE_NAME)] {
         if path.exists() {
             protected.push(path.canonicalize()?);
@@ -881,6 +885,10 @@ mod tests {
     fn registry_guard_refuses_concurrent_mutations() {
         let dir = tempfile::tempdir().unwrap();
         let guard = registry_guard(dir.path()).unwrap();
+        assert!(
+            !dir.path().join(".rbxoc").exists(),
+            "locking must not shadow parent-project credentials"
+        );
         assert!(registry_guard(dir.path()).is_err());
         drop(guard);
         assert!(registry_guard(dir.path()).is_ok());

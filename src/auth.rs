@@ -65,6 +65,22 @@ pub const CREDENTIAL_DIR: &str = ".rbxoc";
 
 /// Resolve credentials. Returns an actionable hint when nothing is found.
 pub fn resolve(api_key: Option<&str>, api_key_file: Option<&PathBuf>) -> Result<Auth> {
+    resolve_with_sources(
+        api_key,
+        api_key_file,
+        std::env::var("RBXOC_API_KEY").ok().as_deref(),
+        std::env::var("RBXOC_OAUTH_TOKEN").ok().as_deref(),
+        find_credential_dir(),
+    )
+}
+
+fn resolve_with_sources(
+    api_key: Option<&str>,
+    api_key_file: Option<&PathBuf>,
+    env_key: Option<&str>,
+    env_token: Option<&str>,
+    credential_dir: Option<PathBuf>,
+) -> Result<Auth> {
     if let Some(key) = api_key {
         let key = key.trim();
         if key.is_empty() {
@@ -73,7 +89,7 @@ pub fn resolve(api_key: Option<&str>, api_key_file: Option<&PathBuf>) -> Result<
         return Ok(Auth::ApiKey(key.to_string()));
     }
 
-    if let Ok(key) = std::env::var("RBXOC_API_KEY") {
+    if let Some(key) = env_key {
         let key = key.trim().to_string();
         if !key.is_empty() {
             return Ok(Auth::ApiKey(key));
@@ -84,7 +100,7 @@ pub fn resolve(api_key: Option<&str>, api_key_file: Option<&PathBuf>) -> Result<
         return read_secret(path, Auth::ApiKey);
     }
 
-    if let Ok(token) = std::env::var("RBXOC_OAUTH_TOKEN") {
+    if let Some(token) = env_token {
         let token = token.trim().to_string();
         if !token.is_empty() {
             return Ok(Auth::OAuth(token));
@@ -93,7 +109,7 @@ pub fn resolve(api_key: Option<&str>, api_key_file: Option<&PathBuf>) -> Result<
 
     // Project-local lookup. An API key is scoped to one universe, so it belongs
     // beside the project it targets, not in the home directory.
-    if let Some(dir) = find_credential_dir() {
+    if let Some(dir) = credential_dir {
         let key_path = dir.join("api-key");
         if key_path.exists() {
             return read_secret(&key_path, Auth::ApiKey);
@@ -115,7 +131,10 @@ pub fn resolve(api_key: Option<&str>, api_key_file: Option<&PathBuf>) -> Result<
 /// Stopping at the first match is what keeps keys per-project: a nested
 /// repository with its own `.rbxoc` never inherits the parent's key.
 pub fn find_credential_dir() -> Option<PathBuf> {
-    let mut dir = std::env::current_dir().ok()?;
+    find_credential_dir_from(std::env::current_dir().ok()?)
+}
+
+fn find_credential_dir_from(mut dir: PathBuf) -> Option<PathBuf> {
     loop {
         let candidate = dir.join(CREDENTIAL_DIR);
         if candidate.is_dir() {
@@ -246,11 +265,7 @@ mod tests {
         )
         .unwrap();
 
-        let previous = std::env::current_dir().unwrap();
-        // Serialize the cwd change; other tests read the working directory too.
-        std::env::set_current_dir(dir.path()).unwrap();
-        let found = find_credential_dir();
-        std::env::set_current_dir(previous).unwrap();
+        let found = find_credential_dir_from(dir.path().to_path_buf());
 
         assert_eq!(found.as_deref(), Some(creds.as_path()));
     }
@@ -265,10 +280,7 @@ mod tests {
         let child_creds = child.join(CREDENTIAL_DIR);
         std::fs::create_dir(&child_creds).unwrap();
 
-        let previous = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&child).unwrap();
-        let found = find_credential_dir();
-        std::env::set_current_dir(previous).unwrap();
+        let found = find_credential_dir_from(child);
 
         assert_eq!(found.as_deref(), Some(child_creds.as_path()));
     }
@@ -302,19 +314,7 @@ ignored-trailing-line
         )
         .unwrap();
 
-        // SAFETY: single-threaded test setup, restored before the test ends.
-        let previous = std::env::var("RBXOC_API_KEY").ok();
-        unsafe { std::env::set_var("RBXOC_API_KEY", "from-env") };
-
-        let previous_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
-        let resolved = resolve(None, None);
-        std::env::set_current_dir(previous_dir).unwrap();
-
-        match previous {
-            Some(v) => unsafe { std::env::set_var("RBXOC_API_KEY", v) },
-            None => unsafe { std::env::remove_var("RBXOC_API_KEY") },
-        }
+        let resolved = resolve_with_sources(None, None, Some("from-env"), None, Some(creds));
 
         assert_eq!(resolved.unwrap(), Auth::ApiKey("from-env".into()));
     }
