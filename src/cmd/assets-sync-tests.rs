@@ -560,3 +560,30 @@ async fn image_codegen_cannot_fail_for_missing_resolution_after_creating_assets(
     );
     assert!(server.requests.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn output_cannot_overwrite_source_or_publication_receipts() {
+    for (output_dir, basename) in [
+        (".", assets::LOCKFILE_NAME),
+        (".", assets::MANIFEST_NAME),
+        ("assets", "a.png"),
+    ] {
+        let dir = fixture();
+        png(dir.path(), "a.png");
+        let original = std::fs::read(dir.path().join("assets/a.png")).unwrap();
+        let mut manifest = assets::load_manifest(dir.path()).unwrap();
+        manifest.codegen.output_path = output_dir.into();
+        manifest.codegen.output_basename = Some(basename.into());
+        write_manifest(dir.path(), &manifest);
+        let server = MockServer::success();
+        let out = run(&server.ctx(), dir.path(), &[]).await;
+        assert!(!out.ok);
+        assert!(out.error.unwrap().message.contains("overwrite"));
+        assert!(server.requests.lock().unwrap().is_empty());
+        assert_eq!(
+            std::fs::read(dir.path().join("assets/a.png")).unwrap(),
+            original
+        );
+        assert!(assets::load_manifest(dir.path()).is_ok());
+    }
+}

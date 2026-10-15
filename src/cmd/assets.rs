@@ -470,12 +470,51 @@ pub fn output_file_name(config: &CodegenConfig) -> String {
 /// Write generated source from the lockfile. Returns the output path.
 pub fn write_generated(dir: &Path, manifest: &Manifest, lock: &Lockfile) -> Result<PathBuf> {
     let source = render(manifest, lock)?;
+    let sources = collect_sources(dir, manifest)?;
+    let out_file = prepare_output_path(dir, manifest, &sources)?;
+    atomic_write(&out_file, source.as_bytes())?;
+    Ok(out_file)
+}
+
+/// Validate the actual destination, including symlink aliases, before uploads
+/// or generation can overwrite source files, the manifest, or receipts.
+pub fn prepare_output_path(
+    dir: &Path,
+    manifest: &Manifest,
+    sources: &BTreeMap<String, Source>,
+) -> Result<PathBuf> {
     let out_dir = dir.join(&manifest.codegen.output_path);
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("cannot create {}", out_dir.display()))?;
     let out_file = out_dir.join(output_file_name(&manifest.codegen));
-    std::fs::write(&out_file, &source)
-        .with_context(|| format!("cannot write {}", out_file.display()))?;
+    if out_file.is_dir() {
+        bail!("generated output {} is a directory", out_file.display());
+    }
+    let destination = if out_file.exists() {
+        out_file.canonicalize()?
+    } else {
+        out_dir
+            .canonicalize()?
+            .join(out_file.file_name().context("output has no file name")?)
+    };
+    let root = dir.canonicalize()?;
+    let mut protected = vec![root.join(MANIFEST_NAME), root.join(LOCKFILE_NAME)];
+    for path in [dir.join(MANIFEST_NAME), dir.join(LOCKFILE_NAME)] {
+        if path.exists() {
+            protected.push(path.canonicalize()?);
+        }
+    }
+    for source in sources.values() {
+        protected.push(source.path.canonicalize()?);
+    }
+    if destination.starts_with(root.join(".rbxoc")) || protected.contains(&destination) {
+        bail!(
+            "generated output {} would overwrite a source, manifest, receipt, or credential/state file; choose a different codegen destination",
+            out_file.display()
+        );
+    }
+    tempfile::NamedTempFile::new_in(&out_dir)
+        .with_context(|| format!("cannot write output in {}", out_dir.display()))?;
     Ok(out_file)
 }
 

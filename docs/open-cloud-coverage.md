@@ -26,7 +26,7 @@ The checker parses `src/catalog.rs` and the release binary, then asserts:
 
 | Domain | Implemented | Notes |
 | --- | --- | --- |
-| `asset` | 8 | create/update/get/versions/rollback/archive/operation + the local ID registry |
+| `asset` | 9 | create/update/get/versions/rollback/archive/operation + the local ID registry + explicit offline Image ID fallback |
 | `config` | 7 | remote config and feature flags, draft/publish |
 | `analytics` | 6 | metrics query plus alert configurations |
 | `event` | 5 | virtual events v3 |

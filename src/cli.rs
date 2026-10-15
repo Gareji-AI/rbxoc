@@ -2263,4 +2263,48 @@ output_path = "generated"
             _ => panic!("expected scoped sync"),
         }
     }
+
+    #[test]
+    fn unregister_requires_explicit_pending_discard() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(assets::MANIFEST_NAME),
+            "[creator]\ntype='group'\nid=7\n[codegen]\noutput_path='generated'\n",
+        )
+        .unwrap();
+        let mut lock = assets::Lockfile::new();
+        lock.pending.insert(
+            "a.png".into(),
+            assets::PendingUpload {
+                fingerprint: "test-fingerprint".into(),
+                creator: assets::Creator {
+                    kind: "group".into(),
+                    id: 7,
+                },
+                asset_type: "Decal".into(),
+                operation_id: Some("op1".into()),
+            },
+        );
+        assets::save_lockfile(dir.path(), &lock).unwrap();
+        assert_eq!(
+            unregister_asset(dir.path(), "a.png", false)
+                .error
+                .unwrap()
+                .code,
+            "publication_pending"
+        );
+        assert!(
+            assets::load_lockfile(dir.path())
+                .unwrap()
+                .pending
+                .contains_key("a.png")
+        );
+        assert!(unregister_asset(dir.path(), "a.png", true).ok);
+        assert!(
+            assets::load_lockfile(dir.path())
+                .unwrap()
+                .pending
+                .is_empty()
+        );
+    }
 }

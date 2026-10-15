@@ -280,12 +280,6 @@ async fn preflight(
                 err.message = format!("{key}: {}", err.message);
                 err
             })?;
-        let (asset_type, _, _) = asset::infer_asset_from_file(upload.as_path())
-            .await
-            .map_err(|mut err| {
-                err.message = format!("{key}: {}", err.message);
-                err
-            })?;
         let size = std::fs::metadata(upload.as_path())
             .map_err(|e| local_error("file_unreadable", format!("{key}: {e}")))?
             .len();
@@ -297,6 +291,12 @@ async fn preflight(
                 ),
             ));
         }
+        let (asset_type, _, _) = asset::infer_asset_from_file(upload.as_path())
+            .await
+            .map_err(|mut err| {
+                err.message = format!("{key}: {}", err.message);
+                err
+            })?;
         if let Some(pending) = lock.pending.get(key) {
             if pending.fingerprint != fingerprint
                 || pending.creator != manifest.creator
@@ -316,6 +316,17 @@ async fn preflight(
                         "{key}: a prior create has no operation receipt; inspect Creator Dashboard, then use `assets recover --path {key} --operation-id ID` or register the known asset ID; do not blindly upload again"
                     ),
                 ));
+            }
+            if let Some(id) = &pending.operation_id {
+                let normalized = asset::normalize_operation_id(id)?;
+                if normalized != *id {
+                    return Err(local_error(
+                        "recovery_error",
+                        format!(
+                            "{key}: stored operation ID is not normalized; reconcile its receipt before recovery"
+                        ),
+                    ));
+                }
             }
             if lock.assets.contains_key(key) {
                 return Err(local_error(
@@ -354,26 +365,8 @@ async fn preflight(
         }
     }
     // Check local destination/receipt persistence before mutating the cloud.
-    let output_dir = dir.join(&manifest.codegen.output_path);
-    std::fs::create_dir_all(&output_dir).map_err(|e| {
-        local_error(
-            "registry_error",
-            format!("cannot prepare output {}: {e}", output_dir.display()),
-        )
-    })?;
-    let output_file = output_dir.join(assets::output_file_name(&manifest.codegen));
-    if output_file.is_dir() {
-        return Err(local_error(
-            "registry_error",
-            format!("generated output {} is a directory", output_file.display()),
-        ));
-    }
-    tempfile::NamedTempFile::new_in(&output_dir).map_err(|e| {
-        local_error(
-            "registry_error",
-            format!("cannot write output in {}: {e}", output_dir.display()),
-        )
-    })?;
+    assets::prepare_output_path(dir, manifest, sources)
+        .map_err(|e| local_error("registry_error", format!("{e:#}")))?;
     assets::save_lockfile(dir, lock).map_err(|e| {
         local_error(
             "receipt_write_failed",

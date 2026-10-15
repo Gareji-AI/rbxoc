@@ -589,15 +589,22 @@ pub(crate) async fn wait_for_operation(
 /// Read the created asset id from a completed operation payload.
 pub fn asset_id_from_operation(data: &Value) -> Result<u64, ErrorBody> {
     if let Some(response) = data.get("response") {
-        if let Some(id) = response.get("assetId").and_then(|v| {
-            v.as_str()
-                .and_then(|s| s.parse().ok())
-                .or_else(|| v.as_u64())
-        }) {
+        if let Some(id) = response
+            .get("assetId")
+            .and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse().ok())
+                    .or_else(|| v.as_u64())
+            })
+            .filter(|id| *id > 0)
+        {
             return Ok(id);
         }
         if let Some(path) = response.get("path").and_then(|v| v.as_str())
-            && let Some(id) = path.strip_prefix("assets/").and_then(|s| s.parse().ok())
+            && let Some(id) = path
+                .strip_prefix("assets/")
+                .and_then(|s| s.parse().ok())
+                .filter(|id| *id > 0)
         {
             return Ok(id);
         }
@@ -966,5 +973,18 @@ mod tests {
             );
             assert_eq!(out.data.unwrap()["imageId"], serde_json::Value::Null);
         }
+    }
+
+    #[test]
+    fn rejects_invalid_operation_and_zero_asset_receipts() {
+        assert_eq!(
+            normalize_operation_id("operations/abc-123_def").unwrap(),
+            "abc-123_def"
+        );
+        for id in ["", "(unknown)", "../operation", "op?query", "operations/"] {
+            assert!(normalize_operation_id(id).is_err());
+        }
+        assert!(asset_id_from_operation(&json!({"response": {"assetId": "0"}})).is_err());
+        assert!(asset_id_from_operation(&json!({"response": {"path": "assets/0"}})).is_err());
     }
 }
