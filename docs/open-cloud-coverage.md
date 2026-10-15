@@ -22,7 +22,7 @@ The checker parses `src/catalog.rs` and the release binary, then asserts:
 
 ## Current state
 
-58 catalog entries, 54 implemented.
+59 catalog entries, 55 implemented.
 
 | Domain | Implemented | Notes |
 | --- | --- | --- |
