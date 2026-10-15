@@ -588,16 +588,17 @@ pub(crate) async fn wait_for_operation(
 /// Read the created asset id from a completed operation payload.
 pub fn asset_id_from_operation(data: &Value) -> Result<u64, ErrorBody> {
     if let Some(response) = data.get("response") {
-        if let Some(id) = response
-            .get("assetId")
-            .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64()))
-        {
+        if let Some(id) = response.get("assetId").and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.parse().ok())
+                .or_else(|| v.as_u64())
+        }) {
             return Ok(id);
         }
-        if let Some(path) = response.get("path").and_then(|v| v.as_str()) {
-            if let Some(id) = path.strip_prefix("assets/").and_then(|s| s.parse().ok()) {
-                return Ok(id);
-            }
+        if let Some(path) = response.get("path").and_then(|v| v.as_str())
+            && let Some(id) = path.strip_prefix("assets/").and_then(|s| s.parse().ok())
+        {
+            return Ok(id);
         }
     }
     Err(ErrorBody {

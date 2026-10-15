@@ -12,12 +12,16 @@ use crate::output::{ErrorBody, Output};
 const COMMAND: &str = "assets sync";
 
 /// Freshness check only. No API credentials required.
-pub fn run_dry_run(dir: &Path) -> Output {
-    dry_run_report(dir)
+pub fn run_dry_run(dir: &Path, selection: &[String]) -> Output {
+    dry_run_report(dir, selection)
 }
 
 /// Upload missing files, update the lockfile, and write generated source.
-pub async fn run(ctx: &Ctx, dir: &Path) -> Output {
+pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
+    let _guard = match assets::registry_guard(dir) {
+        Ok(guard) => guard,
+        Err(e) => return registry_failure(e),
+    };
     let (manifest, mut lock) = match load_registry(dir) {
         Ok(v) => v,
         Err(out) => return *out,
@@ -27,6 +31,23 @@ pub async fn run(ctx: &Ctx, dir: &Path) -> Output {
         Err(e) => return registry_failure(e),
     };
     let missing = assets::missing_ids(&paths, &lock);
+
+    let selected = match assets::select_paths(&paths, selection) {
+        Ok(selected) => selected,
+        Err(e) => return registry_failure(e),
+    };
+    let missing: Vec<_> = missing
+        .into_iter()
+        .filter(|key| selected.contains(key))
+        .collect();
+    let mut prospective: std::collections::BTreeSet<_> =
+        lock.assets.keys().map(String::as_str).collect();
+    prospective.extend(missing.iter().map(String::as_str));
+    if let Err(e) =
+        crate::cmd::codegen::validate_keys(prospective, &assets::codegen_options(&manifest.codegen))
+    {
+        return registry_failure(e);
+    }
 
     let (user_id, group_id) = creator_ids(&manifest);
     let mut uploaded = 0usize;
@@ -66,10 +87,10 @@ pub async fn run(ctx: &Ctx, dir: &Path) -> Output {
         uploaded += 1;
     }
 
-    if uploaded > 0 {
-        if let Err(e) = assets::save_lockfile(dir, &lock) {
-            return registry_failure(e);
-        }
+    if uploaded > 0
+        && let Err(e) = assets::save_lockfile(dir, &lock)
+    {
+        return registry_failure(e);
     }
 
     let out_file = match assets::write_generated(dir, &manifest, &lock) {
@@ -89,34 +110,59 @@ pub async fn run(ctx: &Ctx, dir: &Path) -> Output {
             "output": out_file.to_string_lossy(),
             "registered": lock.assets.len(),
             "missingAfter": assets::missing_ids(&paths, &lock),
+            "selected": selected,
         })),
     )
 }
 
-fn dry_run_report(dir: &Path) -> Output {
+fn dry_run_report(dir: &Path, selection: &[String]) -> Output {
     let (manifest, lock) = match load_registry(dir) {
         Ok(v) => v,
         Err(out) => return *out,
     };
-    let paths = match assets::collect_paths(dir, &manifest) {
-        Ok(p) => p,
+    let sources = match assets::collect_sources(dir, &manifest) {
+        Ok(sources) => sources,
+        Err(e) => return registry_failure(e),
+    };
+    let paths: Vec<_> = sources.keys().cloned().collect();
+    let paths = match assets::select_paths(&paths, selection) {
+        Ok(selected) => selected,
         Err(e) => return registry_failure(e),
     };
     let missing = assets::missing_ids(&paths, &lock);
-    if missing.is_empty() {
+    let freshness = match assets::freshness(&sources, &paths, &manifest, &lock) {
+        Ok(state) => state,
+        Err(e) => return registry_failure(e),
+    };
+    let pending: Vec<_> = paths
+        .iter()
+        .filter(|path| lock.pending.contains_key(*path))
+        .collect();
+    let data = json!({
+        "total": paths.len(), "selected": paths, "missing": missing,
+        "current": freshness.current, "changed": freshness.changed,
+        "unverified": freshness.unverified, "pending": pending,
+        "check": "registry-and-known-freshness-only",
+    });
+    if missing.is_empty() && freshness.changed.is_empty() && pending.is_empty() {
         return Output::success(
             COMMAND,
-            format!("All {} manifest files have asset IDs", paths.len()),
-            Some(json!({ "total": paths.len(), "missing": [] })),
-        );
+            format!("All {} selected files have asset IDs ({} unverified)", paths.len(), freshness.unverified.len()),
+            Some(data),
+        ).with_hints(vec!["Registry check only: unverified entries are not proof of freshness; no preprocessing or upload preflight was performed.".into()]);
     }
     failure(
         COMMAND,
         ErrorBody {
             code: "assets_out_of_sync",
-            message: format!("{} files are not registered yet", missing.len()),
+            message: format!(
+                "{} missing, {} changed, {} pending selected files",
+                missing.len(),
+                freshness.changed.len(),
+                pending.len()
+            ),
             status: None,
-            detail: Some(missing.join(", ")),
+            detail: Some(data.to_string()),
             refs: None,
         },
     )
@@ -135,8 +181,8 @@ pub fn resolve_file_for_key(
         let bleed = input.bleed.unwrap_or(manifest.codegen.bleed);
         let pattern = dir.join(&input.path);
         let pattern_str = pattern.to_string_lossy().replace('\\', "/");
-        for entry in glob::glob(&pattern_str)
-            .with_context(|| format!("invalid glob: {}", input.path))?
+        for entry in
+            glob::glob(&pattern_str).with_context(|| format!("invalid glob: {}", input.path))?
         {
             let path = entry?;
             if !path.is_file() {
@@ -250,5 +296,40 @@ mod tests {
         let paths = assets::collect_paths(dir.path(), &manifest).unwrap();
         let missing = assets::missing_ids(&paths, &Lockfile::new());
         assert_eq!(missing, vec!["assets/a.png"]);
+        assert!(!run_dry_run(dir.path(), &[]).ok);
+        assert!(!run_dry_run(dir.path(), &["unknown.png".into()]).ok);
+
+        std::fs::write(dir.path().join("assets/b.png"), b"other png").unwrap();
+        let mut lock = Lockfile::new();
+        lock.assets.insert("assets/a.png".into(), 10);
+        assets::save_lockfile(dir.path(), &lock).unwrap();
+        let scoped = run_dry_run(dir.path(), &["assets/a.png".into()]);
+        assert!(scoped.ok);
+        assert_eq!(scoped.data.unwrap()["unverified"], json!(["assets/a.png"]));
+        assert!(!run_dry_run(dir.path(), &[]).ok);
+
+        let source = assets::Source {
+            path: dir.path().join("assets/a.png"),
+            bleed: true,
+        };
+        lock.publications.insert(
+            "assets/a.png".into(),
+            assets::PublicationReceipt {
+                asset_id: 10,
+                fingerprint: assets::fingerprint(&source).unwrap(),
+                creator: manifest.creator,
+                asset_type: "Decal".into(),
+            },
+        );
+        assets::save_lockfile(dir.path(), &lock).unwrap();
+        assert!(run_dry_run(dir.path(), &["assets/a.png".into()]).ok);
+        std::fs::write(&source.path, b"new content").unwrap();
+        let stale = run_dry_run(dir.path(), &["assets/a.png".into()]);
+        assert!(!stale.ok);
+        assert!(stale.error.unwrap().detail.unwrap().contains("changed"));
+        assert_eq!(
+            assets::load_lockfile(dir.path()).unwrap().assets["assets/a.png"],
+            10
+        );
     }
 }

@@ -328,7 +328,10 @@ pub enum AssetsCommand {
     Sync {
         #[arg(long, default_value = ".")]
         dir: std::path::PathBuf,
-        /// Exit with an error when any manifest path lacks an ID (no uploads)
+        /// Exact normalized manifest/lock key to sync; repeat for multiple files
+        #[arg(long = "path")]
+        paths: Vec<String>,
+        /// Registry/freshness check only, not full upload preflight (no uploads)
         #[arg(long)]
         dry_run: bool,
     },
@@ -922,8 +925,13 @@ impl Cli {
 
         // Asset registry commands are local-only except `assets sync` (upload path).
         if let Command::Assets(args) = &self.command {
-            if let AssetsCommand::Sync { dir, dry_run: true } = &args.command {
-                return cmd::assets_sync::run_dry_run(dir);
+            if let AssetsCommand::Sync {
+                dir,
+                paths,
+                dry_run: true,
+            } = &args.command
+            {
+                return cmd::assets_sync::run_dry_run(dir, paths);
             }
             if !matches!(args.command, AssetsCommand::Sync { .. }) {
                 return run_assets(&args.command).await;
@@ -1010,8 +1018,9 @@ impl Cli {
             Command::Assets(args) => match args.command {
                 AssetsCommand::Sync {
                     dir,
+                    paths,
                     dry_run: false,
-                } => cmd::assets_sync::run(&ctx, &dir).await,
+                } => cmd::assets_sync::run(&ctx, &dir, &paths).await,
                 _ => unreachable!("handled above"),
             },
             Command::Place(args) => match args.command {
@@ -1844,8 +1853,13 @@ fn registry_status(dir: &std::path::Path) -> Output {
         Ok(v) => v,
         Err(out) => return *out,
     };
-    let paths = match assets::collect_paths(dir, &manifest) {
-        Ok(p) => p,
+    let sources = match assets::collect_sources(dir, &manifest) {
+        Ok(sources) => sources,
+        Err(e) => return registry_failure(COMMAND, e),
+    };
+    let paths: Vec<_> = sources.keys().cloned().collect();
+    let freshness = match assets::freshness(&sources, &paths, &manifest, &lock) {
+        Ok(state) => state,
         Err(e) => return registry_failure(COMMAND, e),
     };
     let missing = assets::missing_ids(&paths, &lock);
@@ -1865,6 +1879,10 @@ fn registry_status(dir: &std::path::Path) -> Output {
             "registered": registered,
             "missing": missing,
             "orphaned": orphaned,
+            "current": freshness.current,
+            "changed": freshness.changed,
+            "unverified": freshness.unverified,
+            "pending": lock.pending.keys().collect::<Vec<_>>(),
         })),
     );
     if !missing.is_empty() {
@@ -1878,6 +1896,12 @@ fn registry_status(dir: &std::path::Path) -> Output {
             "Orphaned IDs no longer match the manifest. Remove them with `rbxoc assets unregister`"
                 .into(),
         ]);
+    }
+    if !freshness.changed.is_empty() {
+        out.hints.push("Changed content is not published automatically; IDs are preserved. Explicitly update supported Model assets with `asset update`, or create/register a replacement.".into());
+    }
+    if !freshness.unverified.is_empty() {
+        out.hints.push("Unverified entries have no matching publication fingerprint; registration alone does not prove remote freshness.".into());
     }
     out
 }
@@ -1897,6 +1921,10 @@ fn mutate_registry(
     command: &str,
     mutation: RegistryMutation,
 ) -> Output {
+    let _guard = match assets::registry_guard(dir) {
+        Ok(guard) => guard,
+        Err(e) => return registry_failure(command, e),
+    };
     let (_, mut lock) = match load_registry(dir, command) {
         Ok(v) => v,
         Err(out) => return *out,
@@ -1905,6 +1933,8 @@ fn mutate_registry(
     match mutation {
         RegistryMutation::Register { id } => {
             let previous = lock.assets.insert(key.clone(), id);
+            lock.publications.remove(&key);
+            lock.pending.remove(&key);
             match assets::save_lockfile(dir, &lock) {
                 Ok(_) => {
                     let summary = match previous {
@@ -1923,27 +1953,30 @@ fn mutate_registry(
                 Err(e) => registry_failure(command, e),
             }
         }
-        RegistryMutation::Unregister => match lock.assets.remove(&key) {
-            Some(removed) => match assets::save_lockfile(dir, &lock) {
-                Ok(_) => Output::success(
-                    command,
-                    format!("Removed {key}"),
-                    Some(serde_json::json!({ "path": key, "removedId": removed })),
-                ),
-                Err(e) => registry_failure(command, e),
-            },
-            None => failure(
-                command,
-                crate::output::ErrorBody {
-                    code: "not_registered",
-                    message: format!("{key} is not in the lockfile"),
-                    status: None,
-                    detail: None,
-
-                    refs: None,
+        RegistryMutation::Unregister => {
+            lock.publications.remove(&key);
+            match lock.assets.remove(&key) {
+                Some(removed) => match assets::save_lockfile(dir, &lock) {
+                    Ok(_) => Output::success(
+                        command,
+                        format!("Removed {key}"),
+                        Some(serde_json::json!({ "path": key, "removedId": removed })),
+                    ),
+                    Err(e) => registry_failure(command, e),
                 },
-            ),
-        },
+                None => failure(
+                    command,
+                    crate::output::ErrorBody {
+                        code: "not_registered",
+                        message: format!("{key} is not in the lockfile"),
+                        status: None,
+                        detail: None,
+
+                        refs: None,
+                    },
+                ),
+            }
+        }
     }
 }
 
@@ -2036,6 +2069,14 @@ fn import_asphalt_lock(
     write: bool,
 ) -> Output {
     const COMMAND: &str = "assets import-asphalt-lock";
+    let _guard = if write {
+        match assets::registry_guard(dir) {
+            Ok(guard) => Some(guard),
+            Err(e) => return registry_failure(COMMAND, e),
+        }
+    } else {
+        None
+    };
     match assets::import_asphalt_lock(dir, asphalt_lock, input) {
         Ok((imported, lock)) => {
             let lock_path = if write {

@@ -49,19 +49,19 @@ pub fn run(dir: &Path, out: &Path) -> Output {
             Err(err) => return failure(COMMAND, err),
         };
         let dest = out.join(rel);
-        if let Some(parent) = dest.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return failure(
-                    COMMAND,
-                    ErrorBody {
-                        code: "mkdir_failed",
-                        message: format!("cannot create {}: {e}", parent.display()),
-                        status: None,
-                        detail: None,
-                        refs: None,
-                    },
-                );
-            }
+        if let Some(parent) = dest.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            return failure(
+                COMMAND,
+                ErrorBody {
+                    code: "mkdir_failed",
+                    message: format!("cannot create {}: {e}", parent.display()),
+                    status: None,
+                    detail: None,
+                    refs: None,
+                },
+            );
         }
         if let Err(e) = std::fs::copy(upload.as_path(), &dest) {
             return failure(
