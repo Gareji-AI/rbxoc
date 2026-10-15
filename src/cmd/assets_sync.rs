@@ -217,6 +217,18 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
         Err(e) => return registry_failure(e),
     };
 
+    let unresolved_images: Vec<_> = lock
+        .assets
+        .iter()
+        .filter(|(key, id)| {
+            assets::is_image_entry(key, &lock)
+                && !lock
+                    .image_ids
+                    .get(*key)
+                    .is_some_and(|image| image.decal_id == **id && image.image_id > 0)
+        })
+        .map(|(key, _)| key.clone())
+        .collect();
     Output::success(
         COMMAND,
         format!(
@@ -233,9 +245,11 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
             "selected": selected,
             "changed": freshness.changed,
             "unverified": freshness.unverified,
+            "unresolvedImages": unresolved_images,
         })),
     )
     .with_hints(vec!["Registered IDs were preserved. Changed or unverified existing files are not uploaded automatically.".into()])
+    .with_hints((!unresolved_images.is_empty()).then(|| "Image uploads return Decal IDs, not resolved Image IDs. Preserve these receipts; resolve Decal.Texture in Studio, register --id DECAL_ID --image-id IMAGE_ID, then enable codegen.image_ids for image consumers. See docs/image-ids.md.".into()))
 }
 
 struct Prepared {
@@ -255,6 +269,7 @@ async fn preflight(
     sources: &std::collections::BTreeMap<String, assets::Source>,
     selected: &[String],
 ) -> Result<Vec<Prepared>, ErrorBody> {
+    assets::render(manifest, lock).map_err(|e| local_error("registry_error", format!("{e:#}")))?;
     let mut prepared = Vec::new();
     for key in selected {
         let source = &sources[key];
@@ -321,6 +336,14 @@ async fn preflight(
             ));
         }
         if !lock.assets.contains_key(key) {
+            if manifest.codegen.image_ids && asset_type == "Decal" {
+                return Err(local_error(
+                    "image_resolution_required",
+                    format!(
+                        "{key}: image_ids codegen needs an explicitly resolved Image ID. First upload with codegen.image_ids = false, retain the Decal receipt, then resolve/register its Image ID and enable image_ids. No upload was attempted."
+                    ),
+                ));
+            }
             prepared.push(Prepared {
                 key: key.clone(),
                 source: source.clone(),
@@ -521,6 +544,7 @@ mod tests {
                 generator: "rbxoc".into(),
                 strip_extensions: false,
                 content: false,
+                image_ids: false,
                 bleed: true,
             },
             inputs: BTreeMap::new(),
@@ -545,6 +569,7 @@ mod tests {
                 generator: "rbxoc".into(),
                 strip_extensions: false,
                 content: false,
+                image_ids: false,
                 bleed: true,
             },
             inputs: [(

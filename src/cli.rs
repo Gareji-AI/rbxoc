@@ -264,6 +264,14 @@ pub enum AssetCommand {
         #[arg(long)]
         operation_id: String,
     },
+    /// Interpret a Studio Decal.Texture as an Image ID; no automatic cloud lookup
+    ImageId {
+        #[arg(long)]
+        decal_id: u64,
+        /// Decal.Texture copied from Studio (rbxassetid://ID or Roblox asset URL)
+        #[arg(long)]
+        texture: Option<String>,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -303,6 +311,9 @@ pub enum AssetsCommand {
         /// Roblox asset ID
         #[arg(long)]
         id: u64,
+        /// Explicitly resolved Image ID; --id remains the original Decal ID (offline)
+        #[arg(long)]
+        image_id: Option<u64>,
         #[arg(long, default_value = ".")]
         dir: std::path::PathBuf,
     },
@@ -958,6 +969,9 @@ impl Cli {
         // without credentials. Report inference and stop.
         if let Command::Asset(AssetArgs { command }) = &self.command {
             match command {
+                AssetCommand::ImageId { decal_id, texture } => {
+                    return cmd::asset::image_id(*decal_id, texture.as_deref());
+                }
                 AssetCommand::Create {
                     file,
                     display_name,
@@ -1051,6 +1065,7 @@ impl Cli {
                 }
             },
             Command::Asset(args) => match args.command {
+                AssetCommand::ImageId { .. } => unreachable!("handled without credentials"),
                 AssetCommand::Create {
                     file,
                     display_name,
@@ -1675,7 +1690,12 @@ async fn run_assets(command: &AssetsCommand) -> Output {
             language,
         } => init_manifest(creator, path, output_path, language),
         AssetsCommand::Status { dir } => registry_status(dir),
-        AssetsCommand::Register { path, id, dir } => register_asset(dir, path, *id),
+        AssetsCommand::Register {
+            path,
+            id,
+            image_id,
+            dir,
+        } => register_asset(dir, path, *id, *image_id),
         AssetsCommand::Unregister {
             path,
             dir,
@@ -1780,6 +1800,7 @@ fn init_manifest(
             generator: "rbxoc".into(),
             strip_extensions: false,
             content: false,
+            image_ids: false,
             bleed: true,
         },
         inputs: [(
@@ -1904,6 +1925,7 @@ fn registry_status(dir: &std::path::Path) -> Output {
             "changed": freshness.changed,
             "unverified": freshness.unverified,
             "pending": lock.pending.keys().collect::<Vec<_>>(),
+            "imageIds": lock.image_ids,
         })),
     );
     if !missing.is_empty() {
@@ -1932,7 +1954,7 @@ fn registry_path_key(path: &str) -> String {
 }
 
 enum RegistryMutation {
-    Register { id: u64 },
+    Register { id: u64, image_id: Option<u64> },
     Unregister { discard_pending: bool },
 }
 
@@ -1952,10 +1974,29 @@ fn mutate_registry(
     };
     let key = registry_path_key(path);
     match mutation {
-        RegistryMutation::Register { id } => {
+        RegistryMutation::Register { id, image_id } => {
+            if id == 0 || image_id == Some(0) {
+                return registry_failure(
+                    command,
+                    anyhow::anyhow!(
+                        "asset and Image IDs must be positive; original receipt was not modified"
+                    ),
+                );
+            }
             let previous = lock.assets.insert(key.clone(), id);
             lock.publications.remove(&key);
             lock.pending.remove(&key);
+            if let Some(image_id) = image_id {
+                lock.image_ids.insert(
+                    key.clone(),
+                    assets::ImageReference {
+                        decal_id: id,
+                        image_id,
+                    },
+                );
+            } else if previous != Some(id) {
+                lock.image_ids.remove(&key);
+            }
             match assets::save_lockfile(dir, &lock) {
                 Ok(_) => {
                     let summary = match previous {
@@ -1967,9 +2008,11 @@ fn mutate_registry(
                         command,
                         summary,
                         Some(
-                            serde_json::json!({ "path": key, "assetId": id, "previous": previous }),
+                            serde_json::json!({ "path": key, "assetId": id, "previous": previous,
+                                "decalId": image_id.map(|_| id), "imageId": image_id, "networkValidated": false }),
                         ),
                     )
+                    .with_hints(vec!["Registration is offline; no asset-type or Decal/Image association was checked. ImageLabel/ImageButton need an Image ID, not an unresolved Decal ID. Set codegen.image_ids = true only after registering resolved --image-id values.".into()])
                 }
                 Err(e) => registry_failure(command, e),
             }
@@ -1982,6 +2025,7 @@ fn mutate_registry(
                 });
             }
             lock.publications.remove(&key);
+            lock.image_ids.remove(&key);
             let removed = lock.assets.remove(&key);
             let pending = lock.pending.remove(&key);
             if removed.is_some() || pending.is_some() {
@@ -2010,12 +2054,12 @@ fn mutate_registry(
     }
 }
 
-fn register_asset(dir: &std::path::Path, path: &str, id: u64) -> Output {
+fn register_asset(dir: &std::path::Path, path: &str, id: u64, image_id: Option<u64>) -> Output {
     mutate_registry(
         dir,
         path,
         "assets register",
-        RegistryMutation::Register { id },
+        RegistryMutation::Register { id, image_id },
     )
 }
 
@@ -2138,5 +2182,85 @@ fn import_asphalt_lock(
             })
         }
         Err(e) => registry_failure(COMMAND, e),
+    }
+}
+
+#[cfg(test)]
+mod asset_workflow_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn image_id_command_is_explicitly_offline() {
+        let cli = Cli::try_parse_from([
+            "rbxoc",
+            "asset",
+            "image-id",
+            "--decal-id",
+            "123",
+            "--texture",
+            "rbxassetid://456",
+        ])
+        .unwrap();
+        let out = cli.run().await;
+        assert!(out.ok);
+        assert_eq!(out.data.unwrap()["imageId"], 456);
+        let cli = Cli::try_parse_from(["rbxoc", "asset", "image-id", "--decal-id", "123"]).unwrap();
+        assert_eq!(
+            cli.run().await.error.unwrap().code,
+            "image_resolution_unavailable"
+        );
+    }
+
+    #[test]
+    fn register_keeps_distinct_ids_and_invalid_input_preserves_receipts() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = r#"[creator]
+type = "group"
+id = 7
+[codegen]
+output_path = "generated"
+"#;
+        std::fs::write(dir.path().join(assets::MANIFEST_NAME), manifest).unwrap();
+        assert!(register_asset(dir.path(), "ui/icon.png", 123, Some(456)).ok);
+        let lock = assets::load_lockfile(dir.path()).unwrap();
+        assert_eq!(lock.assets["ui/icon.png"], 123);
+        assert_eq!(lock.image_ids["ui/icon.png"].image_id, 456);
+        let before = std::fs::read(dir.path().join(assets::LOCKFILE_NAME)).unwrap();
+        assert!(!register_asset(dir.path(), "ui/icon.png", 123, Some(0)).ok);
+        assert_eq!(
+            std::fs::read(dir.path().join(assets::LOCKFILE_NAME)).unwrap(),
+            before
+        );
+        assert!(register_asset(dir.path(), "ui/icon.png", 999, None).ok);
+        assert!(
+            !assets::load_lockfile(dir.path())
+                .unwrap()
+                .image_ids
+                .contains_key("ui/icon.png")
+        );
+    }
+
+    #[test]
+    fn repeatable_sync_paths_are_preserved_by_cli() {
+        let cli = Cli::try_parse_from([
+            "rbxoc",
+            "assets",
+            "sync",
+            "--path",
+            "ui/a.png",
+            "--path",
+            "ui/b.svg",
+            "--dry-run",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::Assets(AssetsArgs {
+                command: AssetsCommand::Sync { paths, dry_run, .. },
+            }) => {
+                assert_eq!(paths, vec!["ui/a.png", "ui/b.svg"]);
+                assert!(dry_run);
+            }
+            _ => panic!("expected scoped sync"),
+        }
     }
 }

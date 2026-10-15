@@ -59,6 +59,9 @@ pub struct CodegenConfig {
     pub strip_extensions: bool,
     #[serde(default)]
     pub content: bool,
+    /// Use explicitly resolved Image IDs for image references, never Decal IDs.
+    #[serde(default)]
+    pub image_ids: bool,
     /// Alpha-bleed transparent PNG edges before upload (Asphalt default: true).
     #[serde(default = "default_bleed")]
     pub bleed: bool,
@@ -116,6 +119,15 @@ pub struct Lockfile {
     /// An entry without an operation ID is an uncertain create, never retryable.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending: BTreeMap<String, PendingUpload>,
+    /// Explicit offline Decal -> Image associations; original IDs stay intact.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub image_ids: BTreeMap<String, ImageReference>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ImageReference {
+    pub decal_id: u64,
+    pub image_id: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -155,6 +167,7 @@ impl Lockfile {
             assets: BTreeMap::new(),
             publications: BTreeMap::new(),
             pending: BTreeMap::new(),
+            image_ids: BTreeMap::new(),
         }
     }
 }
@@ -469,13 +482,37 @@ pub fn write_generated(dir: &Path, manifest: &Manifest, lock: &Lockfile) -> Resu
 /// Render the registry as source.
 pub fn render(manifest: &Manifest, lock: &Lockfile) -> Result<String> {
     let options = codegen_options(&manifest.codegen);
-    let pairs: Vec<(String, u64)> = lock.assets.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    codegen::validate_keys(lock.assets.keys().map(String::as_str), &options)?;
+    let pairs: Vec<(String, u64)> = lock.assets.iter().map(|(key, id)| {
+        let resolved = if manifest.codegen.image_ids && is_image_entry(key, lock) {
+            let image = lock.image_ids.get(key).filter(|image| image.decal_id == *id && image.image_id > 0)
+                .with_context(|| format!("{key}: no resolved Image ID for Decal {id}; use `asset image-id` and `assets register --id {id} --image-id IMAGE_ID`; do not re-upload"))?;
+            image.image_id
+        } else { *id };
+        Ok((key.clone(), resolved))
+    }).collect::<Result<_>>()?;
     let tree = codegen::build_tree(&pairs, &options)?;
     Ok(codegen::generate(
         &tree,
         &manifest.codegen.variable,
         &options,
     ))
+}
+
+pub fn is_image_entry(key: &str, lock: &Lockfile) -> bool {
+    lock.image_ids.contains_key(key)
+        || lock
+            .publications
+            .get(key)
+            .is_some_and(|receipt| receipt.asset_type == "Decal")
+        || matches!(
+            Path::new(key)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("svg" | "png" | "jpg" | "jpeg" | "bmp" | "tga")
+        )
 }
 
 /// Paths that are in the manifest but have no ID yet.
@@ -522,6 +559,7 @@ pub fn import_asphalt_lock(
             if let Some(id) = match_asphalt_hash(&bytes, &by_hash) {
                 lock.publications.remove(&key);
                 lock.pending.remove(&key);
+                lock.image_ids.remove(&key);
                 lock.assets.insert(key, id);
                 imported += 1;
             }
@@ -594,6 +632,7 @@ mod tests {
                 generator: "rbxoc".into(),
                 strip_extensions: false,
                 content: false,
+                image_ids: false,
                 bleed: true,
             },
             inputs: BTreeMap::new(),
@@ -806,5 +845,42 @@ mod tests {
         assert!(registry_guard(dir.path()).is_err());
         drop(guard);
         assert!(registry_guard(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn image_reference_codegen_is_explicit_and_preserves_decal_ids() {
+        let mut m = manifest();
+        let mut lock = Lockfile::new();
+        lock.assets.insert("ui/icon.png".into(), 123);
+        lock.image_ids.insert(
+            "ui/icon.png".into(),
+            ImageReference {
+                decal_id: 123,
+                image_id: 456,
+            },
+        );
+        assert!(render(&m, &lock).unwrap().contains("rbxassetid://123"));
+        m.codegen.image_ids = true;
+        assert!(render(&m, &lock).unwrap().contains("rbxassetid://456"));
+        assert_eq!(lock.assets["ui/icon.png"], 123);
+        lock.image_ids.clear();
+        for language in ["luau", "typescript"] {
+            m.codegen.language = language.into();
+            let error = render(&m, &lock).unwrap_err().to_string();
+            assert!(error.contains("ui/icon.png"));
+            assert!(error.contains("Decal 123"));
+            assert!(error.contains("do not re-upload"));
+        }
+        lock.image_ids.insert(
+            "ui/icon.png".into(),
+            ImageReference {
+                decal_id: 999,
+                image_id: 456,
+            },
+        );
+        assert!(
+            render(&m, &lock).is_err(),
+            "stale association must not be used"
+        );
     }
 }

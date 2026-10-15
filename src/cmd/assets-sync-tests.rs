@@ -519,3 +519,44 @@ async fn preprocessing_type_and_destination_errors_all_precede_mutations() {
     assert!(!run(&server.ctx(), dir.path(), &[]).await.ok);
     assert!(server.requests.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn image_resolution_failure_keeps_successful_receipt_without_new_upload() {
+    let dir = fixture();
+    png(dir.path(), "a.png");
+    let server = MockServer::success();
+    let out = run(&server.ctx(), dir.path(), &[]).await;
+    assert!(out.ok);
+    assert_eq!(
+        out.data.unwrap()["unresolvedImages"],
+        json!(["assets/a.png"])
+    );
+    let before = std::fs::read(dir.path().join(assets::LOCKFILE_NAME)).unwrap();
+    assert!(!asset::image_id(101, None).ok);
+    assert!(!asset::image_id(101, Some("invalid texture")).ok);
+    assert_eq!(
+        std::fs::read(dir.path().join(assets::LOCKFILE_NAME)).unwrap(),
+        before
+    );
+    assert!(run(&server.ctx(), dir.path(), &[]).await.ok);
+    assert_eq!(server.creates(), 1);
+}
+
+#[tokio::test]
+async fn image_codegen_cannot_fail_for_missing_resolution_after_creating_assets() {
+    let dir = fixture();
+    png(dir.path(), "a.png");
+    let mut manifest = assets::load_manifest(dir.path()).unwrap();
+    manifest.codegen.image_ids = true;
+    write_manifest(dir.path(), &manifest);
+    let server = MockServer::success();
+    assert_eq!(
+        run(&server.ctx(), dir.path(), &[])
+            .await
+            .error
+            .unwrap()
+            .code,
+        "image_resolution_required"
+    );
+    assert!(server.requests.lock().unwrap().is_empty());
+}

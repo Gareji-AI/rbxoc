@@ -195,7 +195,22 @@ rbxoc asset update --asset-id 2205400862 --file v2.fbx
 rbxoc asset rollback --asset-id 2205400862 --version 1
 ```
 
-Supported formats (20 MB per request): `.fbx` `.gltf` `.glb` `.rbxm` `.rbxmx` (Model), `.png` `.jpeg` `.bmp` `.tga` (Image), `.mp3` `.ogg` `.wav` `.flac`, `.mp4` `.mov`.
+Supported formats (20 MB per request): `.fbx` `.gltf` `.glb` `.rbxm` `.rbxmx` (Model), `.png` `.jpeg` `.bmp` `.tga` (Decal image uploads), `.mp3` `.ogg` `.wav` `.flac`, `.mp4` `.mov`.
+
+**Decal ID is not Image ID.** An image upload's completed `assetId` remains
+the original Decal ID; rbxoc never silently redefines it. For ImageLabel or
+ImageButton, resolve the existing Decal's `Texture` in Studio, then use the
+explicit offline workflow:
+
+```bash
+rbxoc asset image-id --decal-id 123 --texture rbxassetid://456
+rbxoc assets register --path assets/ui/icon.png --id 123 --image-id 456
+```
+
+Enable `[codegen] image_ids = true` for generated image-consumer references.
+Default codegen keeps original IDs for compatibility. Without `--texture`,
+`asset image-id` returns an actionable unresolved error, not a fabricated ID
+or another upload. See [Image IDs and Studio fallback](docs/image-ids.md).
 
 ### 3D models and animations
 
