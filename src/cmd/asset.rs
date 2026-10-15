@@ -626,11 +626,27 @@ async fn start_operation(
         detail: None,
         refs: None,
     })?;
-    let op = data
-        .get("path")
-        .and_then(|v| v.as_str())
-        .unwrap_or("(unknown)");
-    Ok(op.strip_prefix("operations/").unwrap_or(op).to_string())
+    let path = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    normalize_operation_id(path)
+}
+
+/// Reject absent/malformed operation receipts rather than poll an invented ID.
+pub fn normalize_operation_id(path: &str) -> Result<String, ErrorBody> {
+    let id = path.strip_prefix("operations/").unwrap_or(path);
+    if id.is_empty()
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(ErrorBody {
+            code: "operation_id_missing",
+            message: "create response has no valid operation ID; outcome may be uncertain".into(),
+            status: None,
+            detail: None,
+            refs: None,
+        });
+    }
+    Ok(id.to_string())
 }
 
 /// Check an operation's status.

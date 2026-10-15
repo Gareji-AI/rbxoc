@@ -11,6 +11,45 @@ use crate::output::{ErrorBody, Output};
 
 const COMMAND: &str = "assets sync";
 
+/// Explicit offline recovery of an operation ID learned from a saved response
+/// or Creator Dashboard. Never creates a publication or fabricates freshness.
+pub fn recover_operation(dir: &Path, path: &str, operation_id: &str) -> Output {
+    const RECOVER: &str = "assets recover";
+    let result = (|| -> anyhow::Result<String> {
+        let _guard = assets::registry_guard(dir)?;
+        let manifest = assets::load_manifest(dir)?;
+        let mut lock = assets::load_lockfile(dir)?;
+        let key = path.replace('\\', "/");
+        let sources = assets::collect_sources(dir, &manifest)?;
+        let source = sources
+            .get(&key)
+            .with_context(|| format!("{key}: not a manifest key"))?;
+        let pending = lock
+            .pending
+            .get_mut(&key)
+            .with_context(|| format!("{key}: no pending upload receipt to recover"))?;
+        anyhow::ensure!(
+            pending.fingerprint == assets::fingerprint(source)?
+                && pending.creator == manifest.creator,
+            "{key}: pending upload belongs to different input bytes, preprocessing settings, or creator; restore originals first"
+        );
+        let id =
+            asset::normalize_operation_id(operation_id).map_err(|e| anyhow::anyhow!(e.message))?;
+        anyhow::ensure!(
+            pending.operation_id.as_ref().is_none_or(|old| old == &id),
+            "{key}: an existing operation is already recorded; refusing to replace its identity"
+        );
+        pending.operation_id = Some(id.clone());
+        assets::save_lockfile(dir, &lock)?;
+        Ok(id)
+    })();
+    match result {
+        Ok(id) => Output::success(RECOVER, format!("Recorded operation {id} for {path}; no cloud writes"), Some(json!({"path": path, "operationId": id})))
+            .with_hints(vec!["Run sync with the same --path selection to poll this operation, not create a new asset. Only attach an operation known to belong to this exact source and creator.".into()]),
+        Err(e) => failure(RECOVER, local_error("recovery_error", format!("{e:#}"))),
+    }
+}
+
 /// Freshness check only. No API credentials required.
 pub fn run_dry_run(dir: &Path, selection: &[String]) -> Output {
     dry_run_report(dir, selection)
@@ -26,20 +65,16 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
         Ok(v) => v,
         Err(out) => return *out,
     };
-    let paths = match assets::collect_paths(dir, &manifest) {
-        Ok(p) => p,
+    let sources = match assets::collect_sources(dir, &manifest) {
+        Ok(sources) => sources,
         Err(e) => return registry_failure(e),
     };
-    let missing = assets::missing_ids(&paths, &lock);
-
+    let paths: Vec<_> = sources.keys().cloned().collect();
     let selected = match assets::select_paths(&paths, selection) {
         Ok(selected) => selected,
         Err(e) => return registry_failure(e),
     };
-    let missing: Vec<_> = missing
-        .into_iter()
-        .filter(|key| selected.contains(key))
-        .collect();
+    let missing = assets::missing_ids(&selected, &lock);
     let mut prospective: std::collections::BTreeSet<_> =
         lock.assets.keys().map(String::as_str).collect();
     prospective.extend(missing.iter().map(String::as_str));
@@ -49,48 +84,132 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
         return registry_failure(e);
     }
 
+    let prepared = match preflight(dir, &manifest, &lock, &sources, &selected).await {
+        Ok(prepared) => prepared,
+        Err(err) => return failure(COMMAND, err),
+    };
+    let freshness = match assets::freshness(&sources, &selected, &manifest, &lock) {
+        Ok(state) => state,
+        Err(e) => return registry_failure(e),
+    };
+
     let (user_id, group_id) = creator_ids(&manifest);
     let mut uploaded = 0usize;
-    for rel in &missing {
-        let (file, bleed) = match resolve_file_for_key(dir, &manifest, rel) {
-            Ok(p) => p,
+    let mut resumed = 0usize;
+    for item in prepared {
+        let key = &item.key;
+        match assets::fingerprint(&item.source) {
+            Ok(current) if current == item.fingerprint => {}
+            Ok(_) => {
+                return failure(
+                    COMMAND,
+                    local_error(
+                        "source_changed",
+                        format!(
+                            "{key}: source changed after preflight; no create was attempted for this file"
+                        ),
+                    ),
+                );
+            }
             Err(e) => return registry_failure(e),
-        };
-        let upload = match preprocess::prepare_upload_file(&file, bleed) {
-            Ok(u) => u,
-            Err(err) => return failure(COMMAND, err),
-        };
-        let display_name = file.file_stem().and_then(|s| s.to_str()).unwrap_or(rel);
-        let (op_id, _asset_type) = match asset::start_create(
-            ctx,
-            upload.as_path(),
-            display_name,
-            "",
-            user_id,
-            group_id,
-            None,
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(err) => return failure(COMMAND, err),
+        }
+        let op_id = if let Some(pending) = lock.pending.get(key) {
+            resumed += 1;
+            // Preflight already rejected uncertain or mismatched receipts.
+            pending.operation_id.clone().expect("validated operation")
+        } else {
+            lock.pending.insert(
+                key.clone(),
+                assets::PendingUpload {
+                    fingerprint: item.fingerprint.clone(),
+                    creator: manifest.creator.clone(),
+                    asset_type: item.asset_type.clone(),
+                    operation_id: None,
+                },
+            );
+            if let Err(e) = assets::save_lockfile(dir, &lock) {
+                return receipt_failure(key, None, e);
+            }
+            let display_name = item
+                .source
+                .path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(key);
+            let op_id = match asset::start_create(
+                ctx,
+                item.upload.as_path(),
+                display_name,
+                "",
+                user_id,
+                group_id,
+                None,
+            )
+            .await
+            {
+                Ok((op_id, _)) => op_id,
+                Err(err) => {
+                    // An explicit 4xx rejection (except timeout) did not accept
+                    // creation. Transport, 5xx, and invalid/lost response remain
+                    // uncertain and must not be retried as a new create.
+                    if err
+                        .status
+                        .is_some_and(|status| (400..500).contains(&status) && status != 408)
+                    {
+                        lock.pending.remove(key);
+                        if let Err(e) = assets::save_lockfile(dir, &lock) {
+                            return receipt_failure(key, None, e);
+                        }
+                        return source_failure(key, err);
+                    }
+                    return failure(
+                        COMMAND,
+                        local_error(
+                            "publication_uncertain",
+                            format!("{key}: create outcome is unknown: {}", err.message),
+                        ),
+                    )
+                    .with_hints(recovery_hints(key, None));
+                }
+            };
+            lock.pending
+                .get_mut(key)
+                .expect("persisted intent")
+                .operation_id = Some(op_id.clone());
+            if let Err(e) = assets::save_lockfile(dir, &lock) {
+                return receipt_failure(key, Some(&op_id), e);
+            }
+            uploaded += 1;
+            op_id
         };
         let done = match asset::wait_for_operation(ctx, &op_id, 60, 2000).await {
             Ok(v) => v,
-            Err(err) => return failure(COMMAND, err),
+            Err(err) => {
+                return source_failure(key, err).with_hints(recovery_hints(key, Some(&op_id)));
+            }
         };
         let asset_id = match asset::asset_id_from_operation(&done) {
             Ok(id) => id,
-            Err(err) => return failure(COMMAND, err),
+            Err(err) => {
+                return source_failure(key, err).with_hints(recovery_hints(key, Some(&op_id)));
+            }
         };
-        lock.assets.insert(rel.clone(), asset_id);
-        uploaded += 1;
-    }
-
-    if uploaded > 0
-        && let Err(e) = assets::save_lockfile(dir, &lock)
-    {
-        return registry_failure(e);
+        lock.assets.insert(key.clone(), asset_id);
+        lock.publications.insert(
+            key.clone(),
+            assets::PublicationReceipt {
+                asset_id,
+                fingerprint: item.fingerprint,
+                creator: manifest.creator.clone(),
+                asset_type: item.asset_type,
+            },
+        );
+        lock.pending.remove(key);
+        if let Err(e) = assets::save_lockfile(dir, &lock) {
+            return receipt_failure(key, Some(&op_id), e).with_hints(vec![format!(
+                "Completed asset ID: {asset_id}; preserve this receipt before any retry."
+            )]);
+        }
     }
 
     let out_file = match assets::write_generated(dir, &manifest, &lock) {
@@ -107,12 +226,177 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
         ),
         Some(json!({
             "uploaded": uploaded,
+            "resumed": resumed,
             "output": out_file.to_string_lossy(),
             "registered": lock.assets.len(),
             "missingAfter": assets::missing_ids(&paths, &lock),
             "selected": selected,
+            "changed": freshness.changed,
+            "unverified": freshness.unverified,
         })),
     )
+    .with_hints(vec!["Registered IDs were preserved. Changed or unverified existing files are not uploaded automatically.".into()])
+}
+
+struct Prepared {
+    key: String,
+    source: assets::Source,
+    fingerprint: String,
+    upload: preprocess::UploadFile,
+    asset_type: String,
+}
+
+/// Prepare the entire selection, one file in memory at a time. Converted files
+/// stay on disk under RAII guards until publication, including on early errors.
+async fn preflight(
+    dir: &Path,
+    manifest: &assets::Manifest,
+    lock: &assets::Lockfile,
+    sources: &std::collections::BTreeMap<String, assets::Source>,
+    selected: &[String],
+) -> Result<Vec<Prepared>, ErrorBody> {
+    let mut prepared = Vec::new();
+    for key in selected {
+        let source = &sources[key];
+        let fingerprint = assets::fingerprint(source)
+            .map_err(|e| local_error("file_unreadable", format!("{key}: {e:#}")))?;
+        let upload =
+            preprocess::prepare_upload_file(&source.path, source.bleed).map_err(|mut err| {
+                err.message = format!("{key}: {}", err.message);
+                err
+            })?;
+        let (asset_type, _, _) = asset::infer_asset_from_file(upload.as_path())
+            .await
+            .map_err(|mut err| {
+                err.message = format!("{key}: {}", err.message);
+                err
+            })?;
+        let size = std::fs::metadata(upload.as_path())
+            .map_err(|e| local_error("file_unreadable", format!("{key}: {e}")))?
+            .len();
+        if size == 0 || size > 20 * 1024 * 1024 {
+            return Err(local_error(
+                "file_size_invalid",
+                format!(
+                    "{key}: prepared upload must be nonempty and at most 20 MiB, got {size} bytes"
+                ),
+            ));
+        }
+        if let Some(pending) = lock.pending.get(key) {
+            if pending.fingerprint != fingerprint
+                || pending.creator != manifest.creator
+                || pending.asset_type != asset_type
+            {
+                return Err(local_error(
+                    "recovery_input_changed",
+                    format!(
+                        "{key}: pending upload belongs to different source bytes, preprocessing settings, type, or creator; restore original inputs before recovery"
+                    ),
+                ));
+            }
+            if pending.operation_id.is_none() {
+                return Err(local_error(
+                    "publication_uncertain",
+                    format!(
+                        "{key}: a prior create has no operation receipt; inspect Creator Dashboard, then use `assets recover --path {key} --operation-id ID` or register the known asset ID; do not blindly upload again"
+                    ),
+                ));
+            }
+            if lock.assets.contains_key(key) {
+                return Err(local_error(
+                    "registry_error",
+                    format!(
+                        "{key}: both registered and pending; reconcile the receipt before syncing"
+                    ),
+                ));
+            }
+        }
+        if assets::fingerprint(source)
+            .map_err(|e| local_error("file_unreadable", format!("{key}: {e:#}")))?
+            != fingerprint
+        {
+            return Err(local_error(
+                "source_changed",
+                format!("{key}: source changed during preflight"),
+            ));
+        }
+        if !lock.assets.contains_key(key) {
+            prepared.push(Prepared {
+                key: key.clone(),
+                source: source.clone(),
+                fingerprint,
+                upload,
+                asset_type: asset_type.into(),
+            });
+        }
+    }
+    // Check local destination/receipt persistence before mutating the cloud.
+    let output_dir = dir.join(&manifest.codegen.output_path);
+    std::fs::create_dir_all(&output_dir).map_err(|e| {
+        local_error(
+            "registry_error",
+            format!("cannot prepare output {}: {e}", output_dir.display()),
+        )
+    })?;
+    let output_file = output_dir.join(assets::output_file_name(&manifest.codegen));
+    if output_file.is_dir() {
+        return Err(local_error(
+            "registry_error",
+            format!("generated output {} is a directory", output_file.display()),
+        ));
+    }
+    tempfile::NamedTempFile::new_in(&output_dir).map_err(|e| {
+        local_error(
+            "registry_error",
+            format!("cannot write output in {}: {e}", output_dir.display()),
+        )
+    })?;
+    assets::save_lockfile(dir, lock).map_err(|e| {
+        local_error(
+            "receipt_write_failed",
+            format!("cannot persist registry before uploads: {e:#}"),
+        )
+    })?;
+    Ok(prepared)
+}
+
+fn local_error(code: &'static str, message: String) -> ErrorBody {
+    ErrorBody {
+        code,
+        message,
+        status: None,
+        detail: None,
+        refs: None,
+    }
+}
+
+fn source_failure(key: &str, mut err: ErrorBody) -> Output {
+    err.message = format!("{key}: {}", err.message);
+    failure(COMMAND, err)
+}
+
+fn recovery_hints(key: &str, operation_id: Option<&str>) -> Vec<String> {
+    let mut hints = vec![format!(
+        "Do not issue a new create for {key}. Keep the lockfile and restore original source/creator settings before retrying sync."
+    )];
+    if let Some(id) = operation_id {
+        hints.push(format!("Run `rbxoc asset operation --operation-id {id}`; sync will poll this existing operation on retry."));
+        hints.push(format!("If the operation receipt was not saved, attach it with `assets recover --path {key} --operation-id {id}`."));
+    } else {
+        hints.push("Inspect Creator Dashboard for the outcome; attach a known operation with `assets recover`, or record a known successful ID with `assets register`. A lost response cannot guarantee exactly-once publication.".into());
+    }
+    hints
+}
+
+fn receipt_failure(key: &str, operation_id: Option<&str>, err: anyhow::Error) -> Output {
+    failure(
+        COMMAND,
+        local_error(
+            "receipt_write_failed",
+            format!("{key}: cannot persist upload receipt: {err:#}"),
+        ),
+    )
+    .with_hints(recovery_hints(key, operation_id))
 }
 
 fn dry_run_report(dir: &Path, selection: &[String]) -> Output {
@@ -167,7 +451,7 @@ fn dry_run_report(dir: &Path, selection: &[String]) -> Output {
         },
     )
     .with_hints(vec![
-        "Run without --dry-run to upload and register them".into(),
+        "Run without --dry-run to upload missing files or recover known operations. Changed existing files require an explicit update/replacement; unverified entries remain unverified.".into(),
     ])
 }
 
@@ -177,25 +461,10 @@ pub fn resolve_file_for_key(
     manifest: &assets::Manifest,
     key: &str,
 ) -> anyhow::Result<(std::path::PathBuf, bool)> {
-    for input in manifest.inputs.values() {
-        let bleed = input.bleed.unwrap_or(manifest.codegen.bleed);
-        let pattern = dir.join(&input.path);
-        let pattern_str = pattern.to_string_lossy().replace('\\', "/");
-        for entry in
-            glob::glob(&pattern_str).with_context(|| format!("invalid glob: {}", input.path))?
-        {
-            let path = entry?;
-            if !path.is_file() {
-                continue;
-            }
-            let rel = path.strip_prefix(dir).unwrap_or(&path);
-            let rel = rel.to_string_lossy().replace('\\', "/");
-            if assets::normalize_path_key_for_input(&rel, input) == key {
-                return Ok((path, bleed));
-            }
-        }
-    }
-    anyhow::bail!("no manifest file matches lock key {key}");
+    let source = assets::collect_sources(dir, manifest)?
+        .remove(key)
+        .with_context(|| format!("no manifest file matches lock key {key}"))?;
+    Ok((source.path, source.bleed))
 }
 
 fn creator_ids(manifest: &assets::Manifest) -> (Option<u64>, Option<u64>) {
@@ -224,6 +493,10 @@ fn registry_failure(err: anyhow::Error) -> Output {
         },
     )
 }
+
+#[cfg(test)]
+#[path = "assets-sync-tests.rs"]
+mod publication_tests;
 
 #[cfg(test)]
 mod tests {

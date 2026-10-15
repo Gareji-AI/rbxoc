@@ -200,6 +200,14 @@ fn validate(manifest: &Manifest) -> Result<()> {
             manifest.codegen.style
         );
     }
+    if !codegen::is_valid_identifier(&manifest.codegen.variable) {
+        bail!("codegen.variable must be a non-reserved identifier");
+    }
+    if let Some(base) = &manifest.codegen.output_basename
+        && (base.is_empty() || base.contains(['/', '\\']) || matches!(base.as_str(), "." | ".."))
+    {
+        bail!("codegen.output_basename must be a nonempty file name, not a path");
+    }
     Ok(())
 }
 
@@ -392,10 +400,6 @@ pub fn freshness(
         }
     }
     Ok(state)
-}
-
-pub fn normalize_path_key_for_input(rel: &str, input: &Inputs) -> String {
-    normalize_path_key(rel, input)
 }
 
 fn is_non_asset_sidecar(path: &Path) -> bool {

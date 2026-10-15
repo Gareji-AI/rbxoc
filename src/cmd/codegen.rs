@@ -261,7 +261,7 @@ fn table_key(key: &str, language: Language) -> String {
     }
 }
 
-fn is_valid_identifier(value: &str) -> bool {
+pub(crate) fn is_valid_identifier(value: &str) -> bool {
     let mut chars = value.chars();
     match chars.next() {
         Some(first) if first.is_ascii_alphabetic() || first == '_' => {}

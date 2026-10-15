@@ -245,12 +245,26 @@ rbxoc assets status
 rbxoc assets register --path assets/ui/button.png --id 123456789
 rbxoc assets codegen
 rbxoc assets sync              # upload missing, refresh lock, codegen
-rbxoc assets sync --dry-run      # CI freshness check (no credentials)
+rbxoc assets sync --path assets/ui/button.png --path assets/sfx/hit.ogg
+rbxoc assets sync --dry-run     # registry + known-freshness check, not upload preflight
 rbxoc assets import-asphalt-lock --asphalt-lock asphalt.lock.toml --input Assets --write
 ```
 
 `assets sync` rasterizes `.svg` to PNG before upload. Import Asphalt v2 hash
 locks with `import-asphalt-lock` when migrating from Asphalt.
+
+Sync validates the entire selected batch before any upload, records each
+successful ID immediately, and resumes known pending operations instead of
+creating duplicates. `--path` selects exact manifest/lock keys, after
+`path_key_from` normalization. Unknown keys fail; they never trigger full sync.
+Codegen keeps all registered IDs and omits unselected missing files. Ambiguous
+generated keys fail without overwriting existing output.
+
+`assets status` distinguishes `current`, `changed`, and `unverified` entries.
+Only a successful sync receipt proves known freshness. Changed registered
+files are **not** automatically replaced, and legacy/manual registrations stay
+unverified. See [asset sync safety and recovery](docs/asset-sync-safety.md) for
+dry-run limits, pending operations, and uncertain outcomes.
 
 Generated Luau from that registry:
 

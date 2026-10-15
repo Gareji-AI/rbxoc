@@ -312,6 +312,9 @@ pub enum AssetsCommand {
         path: String,
         #[arg(long, default_value = ".")]
         dir: std::path::PathBuf,
+        /// Forget a pending upload only after verifying no asset was created
+        #[arg(long)]
+        discard_pending: bool,
     },
     /// Emit Luau or TypeScript that exposes the IDs by name
     Codegen {
@@ -334,6 +337,15 @@ pub enum AssetsCommand {
         /// Registry/freshness check only, not full upload preflight (no uploads)
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Attach a known operation to an uncertain upload receipt (offline)
+    Recover {
+        #[arg(long, default_value = ".")]
+        dir: std::path::PathBuf,
+        #[arg(long)]
+        path: String,
+        #[arg(long)]
+        operation_id: String,
     },
     /// Write preprocessed files (SVG rasterize, alpha bleed) to a folder
     Preprocess {
@@ -1664,9 +1676,18 @@ async fn run_assets(command: &AssetsCommand) -> Output {
         } => init_manifest(creator, path, output_path, language),
         AssetsCommand::Status { dir } => registry_status(dir),
         AssetsCommand::Register { path, id, dir } => register_asset(dir, path, *id),
-        AssetsCommand::Unregister { path, dir } => unregister_asset(dir, path),
+        AssetsCommand::Unregister {
+            path,
+            dir,
+            discard_pending,
+        } => unregister_asset(dir, path, *discard_pending),
         AssetsCommand::Codegen { dir, stdout, check } => run_codegen(dir, *stdout, *check),
         AssetsCommand::Sync { .. } => unreachable!("handled in Cli::run with credentials"),
+        AssetsCommand::Recover {
+            dir,
+            path,
+            operation_id,
+        } => cmd::assets_sync::recover_operation(dir, path, operation_id),
         AssetsCommand::Preprocess { dir, out } => cmd::assets_preprocess::run(dir, out),
         AssetsCommand::ImportAsphaltLock {
             dir,
@@ -1912,7 +1933,7 @@ fn registry_path_key(path: &str) -> String {
 
 enum RegistryMutation {
     Register { id: u64 },
-    Unregister,
+    Unregister { discard_pending: bool },
 }
 
 fn mutate_registry(
@@ -1953,18 +1974,27 @@ fn mutate_registry(
                 Err(e) => registry_failure(command, e),
             }
         }
-        RegistryMutation::Unregister => {
+        RegistryMutation::Unregister { discard_pending } => {
+            if lock.pending.contains_key(&key) && !discard_pending {
+                return failure(command, crate::output::ErrorBody {
+                    code: "publication_pending", message: format!("{key}: refusing to forget a pending upload; inspect its outcome first"),
+                    status: None, detail: Some("Use --discard-pending only after verifying no asset was created; discarding an uncertain receipt can cause duplicates.".into()), refs: None,
+                });
+            }
             lock.publications.remove(&key);
-            match lock.assets.remove(&key) {
-                Some(removed) => match assets::save_lockfile(dir, &lock) {
+            let removed = lock.assets.remove(&key);
+            let pending = lock.pending.remove(&key);
+            if removed.is_some() || pending.is_some() {
+                match assets::save_lockfile(dir, &lock) {
                     Ok(_) => Output::success(
                         command,
                         format!("Removed {key}"),
                         Some(serde_json::json!({ "path": key, "removedId": removed })),
                     ),
                     Err(e) => registry_failure(command, e),
-                },
-                None => failure(
+                }
+            } else {
+                failure(
                     command,
                     crate::output::ErrorBody {
                         code: "not_registered",
@@ -1974,7 +2004,7 @@ fn mutate_registry(
 
                         refs: None,
                     },
-                ),
+                )
             }
         }
     }
@@ -1989,8 +2019,13 @@ fn register_asset(dir: &std::path::Path, path: &str, id: u64) -> Output {
     )
 }
 
-fn unregister_asset(dir: &std::path::Path, path: &str) -> Output {
-    mutate_registry(dir, path, "assets unregister", RegistryMutation::Unregister)
+fn unregister_asset(dir: &std::path::Path, path: &str, discard_pending: bool) -> Output {
+    mutate_registry(
+        dir,
+        path,
+        "assets unregister",
+        RegistryMutation::Unregister { discard_pending },
+    )
 }
 
 fn run_codegen(dir: &std::path::Path, to_stdout: bool, check: bool) -> Output {
