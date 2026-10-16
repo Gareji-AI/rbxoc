@@ -15,6 +15,14 @@ mod ctx;
 mod open_cloud_errors;
 mod output;
 
+#[cfg(test)]
+#[path = "http-contract-tests.rs"]
+mod http_contract_tests;
+
+#[cfg(test)]
+#[path = "catalog-contract-tests.rs"]
+mod catalog_contract_tests;
+
 use clap::Parser;
 use std::process::ExitCode;
 

@@ -81,9 +81,7 @@ pub async fn set(
     let body = json!({ "value": value });
     let mut req = ctx.client.patch(ctx.url(&path)).json(&body);
     if allow_missing {
-        req = req
-            .header("if-none-match", "*")
-            .header("roblox-entry-attributes", "create-only");
+        req = req.query(&[("allow_missing", "true")]);
     }
     match ctx.send(req).await {
         Ok(resp) => {

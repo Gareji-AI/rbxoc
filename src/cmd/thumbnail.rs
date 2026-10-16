@@ -186,11 +186,25 @@ pub async fn list(ctx: &Ctx, universe_id: u64) -> Output {
 
 /// Delete thumbnails.
 pub async fn delete(ctx: &Ctx, universe_id: u64, thumbnail_ids: &[String]) -> Output {
+    if thumbnail_ids.is_empty() || thumbnail_ids.iter().any(|id| id.trim().is_empty()) {
+        return failure(
+            "thumbnail delete",
+            ErrorBody {
+                code: "invalid_thumbnail_ids",
+                message: "--thumbnail-ids requires at least one non-empty ID".into(),
+                status: None,
+                detail: Some("Pass comma-separated IDs from `rbxoc thumbnail list`".into()),
+                refs: None,
+            },
+        );
+    }
     let path = format!("/thumbnail-personalization-api/v1/universes/{universe_id}/thumbnails");
-    let req = ctx
-        .client
-        .delete(ctx.url(&path))
-        .json(&json!({ "thumbnailIds": thumbnail_ids }));
+    // OpenAPI query arrays default to form/explode: repeat the key per ID.
+    let query: Vec<_> = thumbnail_ids
+        .iter()
+        .map(|id| ("homepageThumbnailIds", id.as_str()))
+        .collect();
+    let req = ctx.client.delete(ctx.url(&path)).query(&query);
     match ctx.send_empty(req).await {
         Ok(_) => Output::success(
             "thumbnail delete",

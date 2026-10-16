@@ -60,6 +60,17 @@ pub const ENDPOINTS: &[Endpoint] = &[
         mutating: false,
         note: "The smallest read, used as a connectivity probe.",
     },
+    Endpoint {
+        id: "universe.get",
+        method: "GET",
+        path: "/cloud/v2/universes/{universe_id}",
+        summary: "Fetch a universe's metadata",
+        implemented: true,
+        auth: &[ApiKey, OAuth],
+        scopes: &["universe:read"],
+        mutating: false,
+        note: "Also used by auth check when a universe is supplied.",
+    },
     // ---- place publishing ----
     Endpoint {
         id: "place.publish",
@@ -226,7 +237,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["universe.thumbnail:write"],
         mutating: true,
-        note: "Experimental.",
+        note: "Experimental. Repeat the homepageThumbnailIds query parameter for each ID; no JSON body.",
     },
     // ---- servers and logs ----
     Endpoint {
@@ -262,6 +273,17 @@ pub const ENDPOINTS: &[Endpoint] = &[
         mutating: true,
         note: "Use forecast first to check the impact.",
     },
+    Endpoint {
+        id: "server.restart-forecast",
+        method: "GET",
+        path: "/server-management/v1/universes/{universeId}/restarts:forecast",
+        summary: "Forecast a universe server restart's impact without restarting",
+        implemented: true,
+        auth: &[ApiKey, OAuth],
+        scopes: &["universe:read"],
+        mutating: false,
+        note: "Also used by server restart --dry-run. Sends no restart mutation.",
+    },
     // ---- analytics ----
     Endpoint {
         id: "analytics.metrics",
@@ -273,6 +295,17 @@ pub const ENDPOINTS: &[Endpoint] = &[
         scopes: &["universe.analytics:read"],
         mutating: false,
         note: "Not covered by rbxcloud. Requires OAuth2, not an API key.",
+    },
+    Endpoint {
+        id: "analytics.operation",
+        method: "GET",
+        path: "/analytics-query-api/v1/universes/{universeId}/operations/{kind}/{operationId}",
+        summary: "Fetch the result of an asynchronous analytics query",
+        implemented: true,
+        auth: &[ApiKey, OAuth],
+        scopes: &["universe.analytics:read"],
+        mutating: false,
+        note: "kind is metrics or dimension-values; CLI --kind dimensions maps to dimension-values.",
     },
     Endpoint {
         id: "analytics.dimensions",
@@ -329,7 +362,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["universe-datastores.control:write"],
         mutating: true,
-        note: "",
+        note: "Preserves the supplied JSON value type. --create sends allowMissing=true; otherwise updates only.",
     },
     Endpoint {
         id: "datastore.delete",
@@ -385,7 +418,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["universe-datastores.control:write"],
         mutating: true,
-        note: "Values are integers, not JSON blobs.",
+        note: "Values are integers, not JSON blobs. --create sends allow_missing=true; otherwise updates only.",
     },
     Endpoint {
         id: "ordered-datastore.delete",
@@ -454,6 +487,17 @@ pub const ENDPOINTS: &[Endpoint] = &[
         mutating: false,
         note: "Beta.",
     },
+    Endpoint {
+        id: "devproduct.create",
+        method: "POST",
+        path: "/developer-products/v2/universes/{universeId}/developer-products",
+        summary: "Create a Developer Product",
+        implemented: true,
+        auth: &[ApiKey, OAuth],
+        scopes: &["developer-product:write"],
+        mutating: true,
+        note: "Multipart. imageFile is optional. Beta; sent at most once.",
+    },
     // ---- badges ----
     Endpoint {
         id: "badge.create",
@@ -464,7 +508,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["legacy-universe.badge:manage-and-spend-robux"],
         mutating: true,
-        note: "Spends Robux. The OAuth scope name makes that explicit.",
+        note: "Spends Robux. Multipart paymentSourceType is 1 (user) or 2 (group); sent at most once.",
     },
     Endpoint {
         id: "badge.update",
@@ -583,18 +627,18 @@ pub const ENDPOINTS: &[Endpoint] = &[
     Endpoint {
         id: "analytics.alert.list",
         method: "GET",
-        path: "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts",
+        path: "/analytics-alert-control-plane/v1/resource/Universe/id/{resourceId}/alerts",
         summary: "List metric alert configurations for a universe",
         implemented: true,
         auth: &[ApiKey, OAuth],
         scopes: &["universe.analytics.alert:read"],
         mutating: false,
-        note: "resourceType is universe in this CLI.",
+        note: "resourceType is the case-sensitive provider value Universe.",
     },
     Endpoint {
         id: "analytics.alert.create",
         method: "POST",
-        path: "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts",
+        path: "/analytics-alert-control-plane/v1/resource/Universe/id/{resourceId}/alerts",
         summary: "Create a metric alert configuration",
         implemented: true,
         auth: &[ApiKey, OAuth],
@@ -605,7 +649,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
     Endpoint {
         id: "analytics.alert.update",
         method: "PATCH",
-        path: "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts/{alertId}",
+        path: "/analytics-alert-control-plane/v1/resource/Universe/id/{resourceId}/alerts/{alertId}",
         summary: "Update a metric alert configuration",
         implemented: true,
         auth: &[ApiKey, OAuth],
@@ -616,7 +660,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
     Endpoint {
         id: "analytics.alert.delete",
         method: "DELETE",
-        path: "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts/{alertId}",
+        path: "/analytics-alert-control-plane/v1/resource/Universe/id/{resourceId}/alerts/{alertId}",
         summary: "Delete a metric alert configuration",
         implemented: true,
         auth: &[ApiKey, OAuth],
@@ -627,7 +671,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
     Endpoint {
         id: "analytics.alert.incidents",
         method: "GET",
-        path: "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts/incidents",
+        path: "/analytics-alert-control-plane/v1/resource/Universe/id/{resourceId}/alerts/incidents",
         summary: "List alert incidents in a time window",
         implemented: true,
         auth: &[ApiKey, OAuth],

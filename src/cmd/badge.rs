@@ -21,13 +21,24 @@ pub async fn create(
     payment_source: Option<&str>,
 ) -> Output {
     const COMMAND: &str = "badge create";
-    let mut body = json!({
-        "name": name,
-        "description": description,
-    });
     // Roblox requires knowing who pays the creation fee.
-    match payment_source {
-        Some(source) => body["paymentSource"] = json!(source),
+    let payment_source_type = match payment_source {
+        Some("user") => "1",
+        Some("group") => "2",
+        Some(_) => {
+            return failure(
+                COMMAND,
+                ErrorBody {
+                    code: "invalid_payment_source",
+                    message: "--payment-source must be user or group".into(),
+                    status: None,
+                    detail: Some(
+                        "Creating a badge spends Robux; confirm who pays before submitting".into(),
+                    ),
+                    refs: None,
+                },
+            );
+        }
         None => {
             return failure(
                 COMMAND,
@@ -43,10 +54,14 @@ pub async fn create(
                 },
             );
         }
-    }
+    };
 
     let path = format!("/legacy-badges/v1/universes/{universe_id}/badges");
-    let req = ctx.client.post(ctx.url(&path)).json(&body);
+    let form = reqwest::multipart::Form::new()
+        .text("name", name.to_string())
+        .text("description", description.to_string())
+        .text("paymentSourceType", payment_source_type);
+    let req = ctx.client.post(ctx.url(&path)).multipart(form);
     match ctx.send(req).await {
         Ok(resp) => {
             if !resp.status().is_success() {

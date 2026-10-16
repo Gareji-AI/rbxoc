@@ -40,11 +40,7 @@ async fn named_segments_stay_encoded_in_actual_http_request_targets() {
             .await
             .ok
     );
-    assert!(
-        crate::cmd::alerts::update(&ctx, "universe", "1", raw, "{}")
-            .await
-            .ok
-    );
+    assert!(crate::cmd::alerts::update(&ctx, "1", raw, "{}").await.ok);
     assert!(
         crate::cmd::analytics::operation(&ctx, 1, "metrics", raw)
             .await

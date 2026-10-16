@@ -31,6 +31,8 @@ Do not commit API keys, OAuth tokens, or live universe/place IDs invented for te
 3. **Credentials are project-local.** Resolution order: `--api-key` → `RBXOC_API_KEY` → `--api-key-file` → walk up to first `.rbxoc/api-key`. OAuth: `RBXOC_OAUTH_TOKEN` or `.rbxoc/oauth-token`. No home-directory fallback (keys are universe-scoped).
 4. **Multipart uploads.** Bodies that cannot `try_clone()` must still send once (`ctx.rs`); do not require clone for retry on streaming uploads.
 5. **English** for user-facing CLI strings, README, and agent docs in this repo.
+6. **Replay safety.** `Ctx::send` retries only safe HTTP methods (GET/HEAD/OPTIONS/TRACE). All other methods are sent once, even when the body is cloneable. Transport/429/5xx outcomes return `mutation_outcome_unknown`; reconcile the target or receipt before resubmitting. Keep publication-specific `send_once` receipt recovery intact.
+7. **Failure hints.** Construct failures through `ctx::failure` / `failure_for_endpoint`. Every failure must serialize a non-empty `hints` array; JSON and text render the same `Output`. Do not replace unknown-mutation reconciliation hints with generic retry advice.
 
 ## Coding standards
 
@@ -43,6 +45,8 @@ Do not commit API keys, OAuth tokens, or live universe/place IDs invented for te
 ## Testing and CI
 
 GitHub Actions (`.github/workflows/ci.yml`): `cargo fmt --check`, clippy, test, release build, catalog JSON smoke test, exit codes **2** (`auth_missing`) and **64** (unknown endpoint).
+
+`src/http-contract-tests.rs` captures requests on loopback with synthetic credentials. `src/catalog-contract-tests.rs` and `scripts/check-coverage.mjs` discover actual CLI commands and check catalog coverage in both directions, not just entry counts.
 
 When changing CLI behavior, run locally:
 

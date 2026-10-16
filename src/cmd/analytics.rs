@@ -102,7 +102,7 @@ pub async fn operation(ctx: &Ctx, universe_id: u64, kind: &str, operation_id: &s
             out
         }
         Err(err) => {
-            failure_for_endpoint("analytics operation", "analytics.metrics", err, &ctx.auth)
+            failure_for_endpoint("analytics operation", "analytics.operation", err, &ctx.auth)
         }
     }
 }

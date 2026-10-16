@@ -52,6 +52,51 @@ fn documented_exit_codes_do_not_collide() {
 }
 
 #[test]
+fn local_validation_registry_and_file_failures_have_nonempty_hints() {
+    for args in [
+        vec![
+            "--api-key",
+            "fixture-not-a-real-key",
+            "analytics",
+            "metrics",
+            "--universe-id",
+            "1",
+            "--query",
+            "nope",
+        ],
+        vec!["assets", "status"],
+        vec![
+            "--api-key",
+            "fixture-not-a-real-key",
+            "thumbnail",
+            "upload",
+            "--universe-id",
+            "1",
+            "--files",
+            "missing-fixture.png",
+        ],
+        vec!["api", "list", "--auth", "invalid-fixture"],
+    ] {
+        let out = run(&args);
+        assert!(!out.status.success(), "{out:?}");
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["ok"], false);
+        let hints = json["hints"]
+            .as_array()
+            .expect("every failure must include hints");
+        assert!(!hints.is_empty(), "{json}");
+        let mut text_args = vec!["--format", "text"];
+        text_args.extend(&args);
+        let text = String::from_utf8(run(&text_args).stdout).unwrap();
+        for hint in hints {
+            let hint = hint.as_str().unwrap();
+            assert!(!hint.trim().is_empty());
+            assert!(text.contains(hint), "{text}");
+        }
+    }
+}
+
+#[test]
 fn help_and_version_remain_successful_human_readable_output() {
     for arg in ["--help", "--version"] {
         let out = run(&[arg]);
