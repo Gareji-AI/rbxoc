@@ -254,7 +254,7 @@ pub fn hints_for_status(status: u16) -> Vec<String> {
         409 => vec!["Conflicting state. Wait a moment and retry".into()],
         429 => vec![
             "Rate limited. Retry with exponential backoff".into(),
-            "`--retry 3` adds automatic retries".into(),
+            "`--retry 3` adds automatic retries for replay-safe reads only".into(),
         ],
         500..=599 => vec!["Temporary Roblox-side failure. Retry later".into()],
         _ => Vec::new(),

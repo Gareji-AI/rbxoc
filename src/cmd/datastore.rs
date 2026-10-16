@@ -1,7 +1,6 @@
 //! DataStore operations.
 //!
-//! Uses the v2 data-stores endpoints. Entry values are stored as JSON strings,
-//! so the CLI forwards the input JSON as-is.
+//! Uses the v2 data-stores endpoints. Entry values retain their JSON types.
 
 use serde_json::{Value, json};
 
@@ -30,7 +29,7 @@ pub async fn get(
     }
 }
 
-/// Create or update an entry. Updating an existing one may need an ETag.
+/// Update an entry, creating it when missing only if `allow_missing` is set.
 pub async fn set(
     ctx: &Ctx,
     universe_id: u64,
@@ -60,14 +59,10 @@ pub async fn set(
         Ok(path) => path,
         Err(err) => return failure("datastore set", err),
     };
-    // The value must be wrapped as a JSON string.
-    let body = json!({ "value": parsed.to_string() });
+    let body = json!({ "value": parsed });
     let mut req = ctx.client.patch(ctx.url(&path)).json(&body);
     if allow_missing {
-        // Permit creation. Overwriting an existing entry still needs a matching ETag.
-        req = req
-            .header("if-none-match", "*")
-            .header("roblox-entry-attributes", "create-only");
+        req = req.query(&[("allowMissing", "true")]);
     }
     match ctx.send(req).await {
         Ok(resp) => {

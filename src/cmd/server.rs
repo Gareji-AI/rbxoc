@@ -127,9 +127,16 @@ fn extract_log_entries(data: &Value) -> Vec<Value> {
 
 /// Trigger a universe server restart.
 pub async fn restart(ctx: &Ctx, universe_id: u64, dry_run: bool) -> Output {
+    if dry_run {
+        let mut out = restart_forecast(ctx, universe_id).await;
+        out.command = "server restart".into();
+        return out.with_hints(vec![
+            "Drop --dry-run to request a real restart after reviewing the forecast".into(),
+            "This is a high-impact operation. Confirm the target first".into(),
+        ]);
+    }
     let path = format!("/cloud/v2/universes/{universe_id}:restartServers");
-    let body = json!({ "dryRun": dry_run });
-    let req = ctx.client.post(ctx.url(&path)).json(&body);
+    let req = ctx.client.post(ctx.url(&path)).json(&json!({}));
     match ctx.send(req).await {
         Ok(resp) => {
             if !resp.status().is_success() {
@@ -137,19 +144,7 @@ pub async fn restart(ctx: &Ctx, universe_id: u64, dry_run: bool) -> Output {
                 return failure("server restart", err);
             }
             let data: Value = resp.json().await.unwrap_or(Value::Null);
-            if dry_run {
-                Output::success(
-                    "server restart",
-                    "Ran a restart impact forecast",
-                    Some(data),
-                )
-                .with_hints(vec![
-                    "Drop --dry-run to restart for real".into(),
-                    "This is a high-impact operation. Confirm the target first".into(),
-                ])
-            } else {
-                Output::success("server restart", "Requested a server restart", Some(data))
-            }
+            Output::success("server restart", "Requested a server restart", Some(data))
         }
         Err(err) => failure("server restart", err),
     }

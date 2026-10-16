@@ -36,7 +36,7 @@ pub fn path_segment(value: &str) -> Result<String, ErrorBody> {
 pub struct Ctx {
     pub client: reqwest::Client,
     pub auth: Auth,
-    /// Automatic retry count for 429 / 5xx.
+    /// Bounded retries for replay-safe HTTP methods only.
     pub retry: u32,
     pub api_host: String,
 }
@@ -64,18 +64,40 @@ impl Ctx {
         }
     }
 
-    /// Send a request. 429 / 5xx retry with exponential backoff.
+    /// Retry only safe HTTP methods (GET, HEAD, OPTIONS, TRACE). All other
+    /// methods are sent once: a cloneable body does not imply idempotency.
     pub async fn send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, ErrorBody> {
-        let req = self.apply_auth(req);
+        let req = self.apply_auth(req).build().map_err(|err| ErrorBody {
+            code: "invalid_request",
+            message: format!("cannot build the request: {err}"),
+            status: None,
+            detail: None,
+            refs: None,
+        })?;
+        if !req.method().is_safe() {
+            return match self.client.execute(req).await {
+                Ok(resp) if resp.status().as_u16() == 429 || resp.status().is_server_error() => {
+                    let original = auth::error_from_response(resp).await;
+                    Err(unknown_mutation_error(
+                        original.status,
+                        format!(
+                            "{}\n{}",
+                            original.message,
+                            original.detail.unwrap_or_default()
+                        ),
+                    ))
+                }
+                Ok(resp) => Ok(resp),
+                Err(err) => Err(unknown_mutation_error(None, err.to_string())),
+            };
+        }
         let mut attempt = 0u32;
         loop {
-            // A multipart body is a stream and cannot be cloned, so retrying is
-            // impossible for uploads. Send those exactly once instead of
-            // failing before the request leaves the process.
+            // Even safe methods cannot replay a streaming body.
             let this = match req.try_clone() {
                 Some(ok) => ok,
                 None => {
-                    return req.send().await.map_err(|err| ErrorBody {
+                    return self.client.execute(req).await.map_err(|err| ErrorBody {
                         code: "network_error",
                         message: format!("cannot send the request: {err}"),
                         status: None,
@@ -87,7 +109,7 @@ impl Ctx {
                     });
                 }
             };
-            match this.send().await {
+            match self.client.execute(this).await {
                 Ok(resp) => {
                     let status = resp.status().as_u16();
                     let retryable = status == 429 || status >= 500;
@@ -195,6 +217,16 @@ impl Ctx {
     }
 }
 
+fn unknown_mutation_error(status: Option<u16>, detail: String) -> ErrorBody {
+    ErrorBody {
+        code: "mutation_outcome_unknown",
+        message: "Mutation outcome is unknown; the request was sent at most once".into(),
+        status,
+        detail: Some(detail),
+        refs: None,
+    }
+}
+
 /// Retry wait. Respects `Retry-After`.
 fn backoff_ms(attempt: u32, headers: &reqwest::header::HeaderMap) -> u64 {
     if let Some(v) = headers.get("retry-after").and_then(|v| v.to_str().ok())
@@ -209,12 +241,42 @@ fn backoff_ms(attempt: u32, headers: &reqwest::header::HeaderMap) -> u64 {
 /// Build a failure `Output` from an `ErrorBody`, including hints.
 pub fn failure(command: &str, error: ErrorBody) -> Output {
     let mut hints = Vec::new();
-    if let Some(status) = error.status {
-        hints.extend(auth::hints_for_status(status));
-    }
-    if error.code == "auth_missing" {
-        hints.push("Set RBXOC_API_KEY".into());
-        hints.push("Run `rbxoc auth check` to inspect the credential state".into());
+    if error.code == "mutation_outcome_unknown" {
+        // Never pair an uncertain mutation with the generic 429/5xx retry advice.
+        hints.push("Inspect the target resource, operation receipt, or delivery logs to reconcile whether the mutation took effect".into());
+        hints.push("Do not repeat the mutation until its previous outcome is confirmed; automatic retries are disabled for mutations".into());
+    } else {
+        if let Some(status) = error.status {
+            hints.extend(auth::hints_for_status(status));
+        }
+        match error.code {
+            "auth_missing" => {
+                hints.push("Set RBXOC_API_KEY".into());
+                hints.push("Run `rbxoc auth check` to inspect the credential state".into());
+            }
+            "invalid_query" | "invalid_value" | "invalid_document" | "invalid_message" => {
+                hints.push(format!("Pass valid JSON for the input; run `rbxoc {command} --help` for argument details"));
+            }
+            "invalid_json" | "read_error" | "operation_id_missing" | "asset_id_missing" => {
+                hints.push("Inspect the provider response and verify the target state before repeating any mutation".into());
+            }
+            "payment_source_missing" | "invalid_payment_source" => {
+                hints.push("Pass --payment-source user or group only after confirming who pays the Robux fee".into());
+            }
+            _ => {}
+        }
+        if hints.is_empty() {
+            if error.code.contains("manifest")
+                || error.code.contains("lock")
+                || error.code.contains("registry")
+            {
+                hints.push("Inspect the manifest and lockfile with `rbxoc assets status --dir <project>`; correct the reported registry problem".into());
+            } else if error.code.contains("file") || error.code.contains("path") {
+                hints.push("Check the supplied file paths and read/write permissions against the reported error".into());
+            } else {
+                hints.push(format!("Run `rbxoc {command} --help` and correct the input described by the error before trying again"));
+            }
+        }
     }
     Output {
         ok: false,
@@ -352,5 +414,18 @@ mod tests {
         );
         assert!(!out.ok);
         assert!(!out.hints.is_empty());
+    }
+
+    #[test]
+    fn endpoint_auth_context_cannot_replace_unknown_mutation_guidance() {
+        let out = failure_for_endpoint(
+            "analytics metrics",
+            "analytics.metrics",
+            unknown_mutation_error(Some(503), "fixture response lost".into()),
+            &Auth::ApiKey("fixture-not-a-real-key".into()),
+        );
+        assert_eq!(out.error.unwrap().code, "mutation_outcome_unknown");
+        assert!(out.hints.iter().any(|hint| hint.contains("reconcile")));
+        assert!(!out.hints.iter().any(|hint| hint.contains("--retry")));
     }
 }

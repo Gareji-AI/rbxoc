@@ -5,7 +5,8 @@
 //   1. Every catalog entry with implemented:true has a CLI subcommand.
 //   2. Every implemented entry has a stable ID and a usable path.
 //   3. Unimplemented entries say why.
-//   4. Counts are reported so drift is visible.
+//   4. CLI endpoint commands and catalog entries match in both directions.
+//   5. Mutation classifications match the command contract.
 //
 // This is a source-level check. It does not call the Open Cloud API.
 
@@ -23,6 +24,55 @@ function fail(message) {
 
 function ok(message) {
 	console.log(`ok    ${message}`);
+}
+
+function readCli(binary, args, json = false) {
+	const result = spawnSync(binary, args, { encoding: "utf8" });
+	if (result.error || result.status !== 0) {
+		throw new Error(`${args.join(" ")}: ${result.error?.message ?? result.stderr ?? result.status}`);
+	}
+	return json ? JSON.parse(result.stdout) : result.stdout;
+}
+
+function commandLeaves(binary, prefix = []) {
+	const help = readCli(binary, [...prefix, "--help"]).replaceAll("\r", "");
+	const section = help.split("Commands:\n")[1]?.split("\n\n")[0];
+	if (!section) return [prefix.join(" ")];
+	const names = section.split("\n")
+		.map((line) => line.match(/^  ([a-z][a-z0-9-]*)(?:\s|$)/)?.[1])
+		.filter((name) => name && name !== "help");
+	return names.flatMap((name) => commandLeaves(binary, [...prefix, name]));
+}
+
+function checkCommandMapping(binary, entries) {
+	const commands = commandLeaves(binary).filter((command) =>
+		!command.startsWith("api ") && !command.startsWith("assets ") && command !== "analytics catalog");
+	const covered = new Set();
+	const readActions = new Set(["check", "get", "list", "status", "history", "logs", "operation",
+		"versions", "restart-forecast", "metrics", "draft", "revisions", "incidents", "image-id"]);
+	for (const command of commands) {
+		const id = command === "universe publish-message" ? "messaging.publish"
+			: command.replace("analytics alerts ", "analytics alert ").replaceAll(" ", ".");
+		const endpoint = entries.find((entry) => entry.id === id);
+		if (!endpoint?.implemented) {
+			fail(`CLI command ${command} lacks an implemented catalog entry (${id})`);
+			continue;
+		}
+		covered.add(id);
+		if (endpoint.mutating === readActions.has(command.split(" ").at(-1))) {
+			fail(`wrong mutation classification for ${command} (${id})`);
+		}
+	}
+	for (const entry of entries.filter((entry) => entry.implemented && entry.method !== "LOCAL")) {
+		if (!covered.has(entry.id)) fail(`implemented catalog entry ${entry.id} lacks a CLI command`);
+	}
+	const mutations = readCli(binary, ["api", "mutating"], true);
+	const expected = entries.filter((entry) => entry.implemented && entry.mutating).map((entry) => entry.id).sort();
+	const actual = (mutations.data ?? []).map((entry) => entry.id).sort();
+	if (!mutations.ok || JSON.stringify(expected) !== JSON.stringify(actual)) {
+		fail("api mutating does not expose every implemented mutation");
+	}
+	if (!process.exitCode) ok(`${commands.length} CLI endpoint commands match the catalog in both directions, including mutations`);
 }
 
 // --- Read the catalog from source ---------------------------------------
@@ -126,6 +176,11 @@ if (!fs.existsSync(binary)) {
 			}
 			for (const [domain, count] of Object.entries(byDomain).sort()) {
 				console.log(`  ${domain.padEnd(20)} ${count}`);
+			}
+			try {
+				checkCommandMapping(binary, fromCli);
+			} catch (error) {
+				fail(`command/catalog check: ${error.message}`);
 			}
 		}
 	}

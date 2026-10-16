@@ -19,26 +19,35 @@ The checker parses `src/catalog.rs` and the release binary, then asserts:
 - every unimplemented entry states why
 - no cookie-only endpoint is implemented
 - the binary reports the same entry count as the source
+- actual CLI endpoint commands map to implemented catalog entries, and vice versa
+- mutation classifications and `api mutating` cover every implemented mutation
+
+The command mapping is discovered recursively from CLI help. Local composite
+`assets` commands reuse the asset endpoints; catalog discovery and the local
+analytics metric list are excluded. Rust regression tests independently walk
+the clap command tree and prove that same-count substitutions cannot hide a
+missing command/endpoint mapping.
 
 ## Current state
 
-59 catalog entries, 55 implemented.
+63 catalog entries, 59 implemented.
 
 | Domain | Implemented | Notes |
 | --- | --- | --- |
 | `asset` | 9 | create/update/get/versions/rollback/archive/operation + the local ID registry + explicit offline Image ID fallback |
 | `config` | 7 | remote config and feature flags, draft/publish |
-| `analytics` | 6 | metrics query plus alert configurations |
+| `analytics` | 7 | metrics query, async operation results, and alert configurations |
 | `event` | 5 | virtual events v3 |
 | `ordered-datastore` | 5 | leaderboards |
 | `datastore` | 4 | standard DataStores |
 | `thumbnail` | 4 | experimental API |
 | `place` | 3 | publish, get, version history |
-| `server` | 3 | list, logs, restart |
+| `server` | 4 | list, logs, restart, read-only restart forecast |
 | `gamepass` | 3 | list/create/update |
 | `badge` | 2 | create/update |
 | `auth` | 1 | credential probe |
-| `devproduct` | 1 | list |
+| `devproduct` | 2 | list/create |
+| `universe` | 1 | metadata read |
 | `messaging` | 1 | cross-server publish |
 | `permissions` | 1 | asset permission grants |
 

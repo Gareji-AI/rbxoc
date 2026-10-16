@@ -13,30 +13,24 @@ use serde_json::{Value, json};
 use crate::ctx::{Ctx, failure, failure_for_endpoint, path_segment};
 use crate::output::{ErrorBody, Output};
 
-fn alerts_path(resource_type: &str, resource_id: &str) -> Result<String, ErrorBody> {
-    let resource_type = path_segment(resource_type)?;
+fn alerts_path(resource_id: &str) -> Result<String, ErrorBody> {
     let resource_id = path_segment(resource_id)?;
     Ok(format!(
-        "/analytics-alert-control-plane/v1/resource/{resource_type}/id/{resource_id}/alerts"
+        "/analytics-alert-control-plane/v1/resource/Universe/id/{resource_id}/alerts"
     ))
 }
 
-fn alert_path(resource_type: &str, resource_id: &str, alert_id: &str) -> Result<String, ErrorBody> {
+fn alert_path(resource_id: &str, alert_id: &str) -> Result<String, ErrorBody> {
     Ok(format!(
         "{}/{}",
-        alerts_path(resource_type, resource_id)?,
+        alerts_path(resource_id)?,
         path_segment(alert_id)?
     ))
 }
 
 /// List alert configurations for a resource.
-pub async fn list(
-    ctx: &Ctx,
-    resource_type: &str,
-    resource_id: &str,
-    firing_status: Option<&str>,
-) -> Output {
-    let path = match alerts_path(resource_type, resource_id) {
+pub async fn list(ctx: &Ctx, resource_id: &str, firing_status: Option<&str>) -> Output {
+    let path = match alerts_path(resource_id) {
         Ok(path) => path,
         Err(err) => return failure("analytics alerts list", err),
     };
@@ -73,12 +67,12 @@ fn count_alerts(data: &Value) -> usize {
 }
 
 /// Create an alert configuration from a JSON document.
-pub async fn create(ctx: &Ctx, resource_type: &str, resource_id: &str, document: &str) -> Output {
+pub async fn create(ctx: &Ctx, resource_id: &str, document: &str) -> Output {
     let body: Value = match serde_json::from_str(document) {
         Ok(v) => v,
         Err(e) => return invalid_document(e),
     };
-    let path = match alerts_path(resource_type, resource_id) {
+    let path = match alerts_path(resource_id) {
         Ok(path) => path,
         Err(err) => return failure("analytics alerts create", err),
     };
@@ -103,18 +97,12 @@ pub async fn create(ctx: &Ctx, resource_type: &str, resource_id: &str, document:
 }
 
 /// Update an alert configuration from a JSON document.
-pub async fn update(
-    ctx: &Ctx,
-    resource_type: &str,
-    resource_id: &str,
-    alert_id: &str,
-    document: &str,
-) -> Output {
+pub async fn update(ctx: &Ctx, resource_id: &str, alert_id: &str, document: &str) -> Output {
     let body: Value = match serde_json::from_str(document) {
         Ok(v) => v,
         Err(e) => return invalid_document(e),
     };
-    let path = match alert_path(resource_type, resource_id, alert_id) {
+    let path = match alert_path(resource_id, alert_id) {
         Ok(path) => path,
         Err(err) => return failure("analytics alerts update", err),
     };
@@ -139,8 +127,8 @@ pub async fn update(
 }
 
 /// Delete an alert configuration.
-pub async fn delete(ctx: &Ctx, resource_type: &str, resource_id: &str, alert_id: &str) -> Output {
-    let path = match alert_path(resource_type, resource_id, alert_id) {
+pub async fn delete(ctx: &Ctx, resource_id: &str, alert_id: &str) -> Output {
+    let path = match alert_path(resource_id, alert_id) {
         Ok(path) => path,
         Err(err) => return failure("analytics alerts delete", err),
     };
@@ -161,14 +149,8 @@ pub async fn delete(ctx: &Ctx, resource_type: &str, resource_id: &str, alert_id:
 }
 
 /// List alert incidents in a time window.
-pub async fn incidents(
-    ctx: &Ctx,
-    resource_type: &str,
-    resource_id: &str,
-    start_time: &str,
-    end_time: &str,
-) -> Output {
-    let path = match alerts_path(resource_type, resource_id) {
+pub async fn incidents(ctx: &Ctx, resource_id: &str, start_time: &str, end_time: &str) -> Output {
+    let path = match alerts_path(resource_id) {
         Ok(base) => format!("{base}/incidents"),
         Err(err) => return failure("analytics alerts incidents", err),
     };
@@ -235,8 +217,8 @@ mod tests {
     #[test]
     fn alert_path_is_resource_scoped() {
         assert_eq!(
-            alerts_path("universe", "123").unwrap(),
-            "/analytics-alert-control-plane/v1/resource/universe/id/123/alerts"
+            alerts_path("123").unwrap(),
+            "/analytics-alert-control-plane/v1/resource/Universe/id/123/alerts"
         );
     }
 

@@ -81,12 +81,24 @@ On failure:
 
 ### 3. Troubleshooting guidance
 
-Failures always carry `hints`. Each HTTP status maps to concrete next actions:
+Every failure carries a non-empty `hints` array, including local input,
+registry, file, and response-parsing errors. JSON and text output render the
+same failure object. HTTP failures also receive status-specific next actions:
 
 - `401` — reissue the API key, run `auth check`
 - `403` — check permissions and scopes, note when OAuth2 is required
-- `429` — exponential backoff, mention `--retry`
-- `5xx` — transient failure, retry later
+- `429` / `5xx` on replay-safe reads — bounded retry/backoff
+- `mutation_outcome_unknown` — reconcile the target state or receipt before
+  submitting again; never blindly repeat a mutation
+
+`--retry` defaults to `2` additional attempts, **only** for safe HTTP methods
+(GET, HEAD, OPTIONS, TRACE) after transport errors, 429, or 5xx. Other methods
+are sent at most once, including increments, messages, resource creation,
+paid badge creation, restarts, and read-only POST queries. A cloneable request
+body is not proof of idempotency. Uncertain mutation outcomes preserve the
+HTTP status (when known) and return reconciliation guidance rather than
+automatic retry advice. Asset sync retains its durable publication receipts
+and recovery flow.
 
 ### 4. Secret handling
 
@@ -349,14 +361,39 @@ diff-friendly.
 rbxoc thumbnail upload --universe-id 123 --files a.png b.png
 rbxoc thumbnail status --universe-id 123 --operation-ids ABC123
 rbxoc thumbnail list --universe-id 123
+rbxoc thumbnail delete --universe-id 123 --thumbnail-ids one,two
 ```
+
+Deletion repeats the `homepageThumbnailIds` query parameter once per ID;
+empty IDs fail locally. No JSON body is sent.
 
 ### Server logs
 
 ```bash
 rbxoc server list --universe-id 123 --place-id 456 --version 12
 rbxoc server logs --universe-id 123 --place-id 456 --version 12 --job-id <jobId> --limit 200
+rbxoc server restart-forecast --universe-id 123
+rbxoc server restart --universe-id 123 --dry-run
 ```
+
+`server restart --dry-run` calls the same read-only GET forecast endpoint as
+`restart-forecast`; it never sends a restart mutation. Without `--dry-run`,
+`server restart` requests an actual restart and is sent at most once.
+
+### Standard DataStores
+
+```bash
+rbxoc datastore set --universe-id 123 --store players --entry player_42 \
+  --value '{"coins":100}' --create
+```
+
+Values retain their JSON types: objects, arrays, strings, numbers, booleans,
+and null are not converted to strings. Quote JSON strings explicitly, for
+example `--value '"hello"'`. For both DataStore families, `set` updates an
+existing entry by default. `--create` also allows creation when missing;
+it is not a create-only guard against overwriting an existing entry.
+Standard DataStores send `allowMissing=true`; ordered DataStores send
+`allow_missing=true`. Without `--create`, the parameter is omitted.
 
 ### Leaderboards (Ordered DataStores)
 
@@ -403,6 +440,9 @@ rbxoc analytics alerts incidents --universe-id 123 --start-time 2026-10-01T00:00
 
 This API needs OAuth2 (`universe.analytics:read`); an API key cannot call it.
 
+Alert commands use the provider's case-sensitive `Universe` resource type
+automatically, for example `/analytics-alert-control-plane/v1/resource/Universe/id/123/alerts`.
+
 ### Monetization, badges, and events
 
 ```bash
@@ -416,7 +456,10 @@ rbxoc event create --universe-id 123 --document '{"title":"Winter","startTime":"
 ```
 
 `badge create` spends Robux, so it requires `--payment-source` and says so in
-its result. Alert and event bodies are provider-defined JSON, passed through
+its result. Only `user` (provider enum `1`) and `group` (`2`) are accepted;
+other values fail locally before any paid request. Badge creation uses
+multipart fields `name`, `description`, and numeric `paymentSourceType`.
+Alert and event bodies are provider-defined JSON, passed through
 verbatim rather than re-declared here.
 
 ### Asset permissions

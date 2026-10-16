@@ -42,7 +42,8 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     pub api_key_file: Option<std::path::PathBuf>,
 
-    /// Automatic retry count for 429 / 5xx.
+    /// Retry count for replay-safe reads (GET/HEAD/OPTIONS/TRACE) after transport,
+    /// 429, or 5xx failures. Other methods, including mutations, are sent once.
     #[arg(long, global = true, default_value_t = 2)]
     pub retry: u32,
 }
@@ -618,10 +619,10 @@ pub enum DatastoreCommand {
         entry: String,
         #[arg(long)]
         scope: Option<String>,
-        /// JSON string
+        /// JSON value (object, array, string, number, boolean, or null)
         #[arg(long)]
         value: String,
-        /// Allow creating a new entry
+        /// Create if missing; without this flag, update existing entries only
         #[arg(long)]
         create: bool,
     },
@@ -690,7 +691,7 @@ pub enum OrderedDatastoreCommand {
         /// Integer value for the entry
         #[arg(long, allow_hyphen_values = true)]
         value: i64,
-        /// Allow creating a new entry
+        /// Create if missing; without this flag, update existing entries only
         #[arg(long)]
         create: bool,
     },
@@ -1200,42 +1201,25 @@ impl Cli {
                         universe_id,
                         firing_status,
                     } => {
-                        cmd::alerts::list(
-                            &ctx,
-                            "universe",
-                            &universe_id.to_string(),
-                            firing_status.as_deref(),
-                        )
-                        .await
+                        cmd::alerts::list(&ctx, &universe_id.to_string(), firing_status.as_deref())
+                            .await
                     }
                     AlertCommand::Create {
                         universe_id,
                         document,
-                    } => {
-                        cmd::alerts::create(&ctx, "universe", &universe_id.to_string(), &document)
-                            .await
-                    }
+                    } => cmd::alerts::create(&ctx, &universe_id.to_string(), &document).await,
                     AlertCommand::Update {
                         universe_id,
                         alert_id,
                         document,
                     } => {
-                        cmd::alerts::update(
-                            &ctx,
-                            "universe",
-                            &universe_id.to_string(),
-                            &alert_id,
-                            &document,
-                        )
-                        .await
+                        cmd::alerts::update(&ctx, &universe_id.to_string(), &alert_id, &document)
+                            .await
                     }
                     AlertCommand::Delete {
                         universe_id,
                         alert_id,
-                    } => {
-                        cmd::alerts::delete(&ctx, "universe", &universe_id.to_string(), &alert_id)
-                            .await
-                    }
+                    } => cmd::alerts::delete(&ctx, &universe_id.to_string(), &alert_id).await,
                     AlertCommand::Incidents {
                         universe_id,
                         start_time,
@@ -1243,7 +1227,6 @@ impl Cli {
                     } => {
                         cmd::alerts::incidents(
                             &ctx,
-                            "universe",
                             &universe_id.to_string(),
                             &start_time,
                             &end_time,

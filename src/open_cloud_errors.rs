@@ -84,7 +84,10 @@ pub fn apply_endpoint_context(
     endpoint_id: &str,
     auth_kind: &str,
 ) -> ErrorBody {
-    if error.code == "feature_not_enrolled" {
+    if matches!(
+        error.code,
+        "feature_not_enrolled" | "mutation_outcome_unknown"
+    ) {
         return error;
     }
 
