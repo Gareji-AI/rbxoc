@@ -52,6 +52,7 @@ run = [
   "cargo test",
   "cargo build --release",
   "node scripts/check-coverage.mjs",
+  "node --test scripts/live-sweep.test.mjs",
 ]
 
 [tasks.similarity]

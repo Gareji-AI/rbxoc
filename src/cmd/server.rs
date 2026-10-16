@@ -10,7 +10,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, path_segment};
 use crate::output::Output;
 
 /// List game servers for a place version.
@@ -74,8 +74,12 @@ pub async fn logs(
     limit: usize,
     full: bool,
 ) -> Output {
+    let encoded_job = match path_segment(job_id) {
+        Ok(value) => value,
+        Err(err) => return failure("server logs", err),
+    };
     let path = format!(
-        "/server-management/v1/universes/{universe_id}/places/{place_id}/versions/{version_number}/game-servers/{job_id}/logs"
+        "/server-management/v1/universes/{universe_id}/places/{place_id}/versions/{version_number}/game-servers/{encoded_job}/logs"
     );
     match ctx.get_json(&path).await {
         Ok(data) => {

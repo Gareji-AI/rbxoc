@@ -23,9 +23,39 @@ use output::Format;
 
 #[tokio::main]
 async fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let format = cli.resolve_format();
-    let out = cli.run().await;
+    let (format, out) = match Cli::try_parse() {
+        Ok(cli) => (cli.resolve_format(), cli.run().await),
+        Err(err)
+            if matches!(
+                err.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            return if err.print().is_ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(70)
+            };
+        }
+        Err(err) => (
+            // Parsing has not produced a trustworthy format option yet. Usage
+            // failures always use the stable JSON envelope on stdout.
+            Format::Json,
+            ctx::failure(
+                "usage",
+                output::ErrorBody {
+                    code: "usage_error",
+                    message: "Invalid command-line arguments".into(),
+                    status: None,
+                    detail: Some(err.to_string()),
+                    refs: None,
+                },
+            )
+            .with_hints(vec![
+                "Run `rbxoc --help` or `rbxoc <command> --help`".into(),
+            ]),
+        ),
+    };
 
     // JSON is the stable machine-readable surface. text is for humans.
     match format {
@@ -45,7 +75,7 @@ async fn main() -> ExitCode {
         // Let callers distinguish missing credentials from other failures.
         let code = match out.error.as_ref().map(|e| e.code) {
             Some("auth_missing") => 2,
-            Some("unknown_endpoint") | Some("unknown_auth") | Some("unknown_kind") => 64,
+            Some("usage_error" | "unknown_endpoint" | "unknown_auth" | "unknown_kind") => 64,
             _ => 1,
         };
         ExitCode::from(code)

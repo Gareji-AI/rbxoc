@@ -118,7 +118,7 @@ pub struct Lockfile {
     /// Only successful publication receipts establish content freshness.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub publications: BTreeMap<String, PublicationReceipt>,
-    /// An entry without an operation ID is an uncertain create, never retryable.
+    /// An entry without an operation ID is an uncertain publication, never retryable.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pending: BTreeMap<String, PendingUpload>,
     /// Explicit offline Decal -> Image associations; original IDs stay intact.
@@ -145,6 +145,10 @@ pub struct PendingUpload {
     pub fingerprint: String,
     pub creator: Creator,
     pub asset_type: String,
+    /// Some(ID) means an in-place update of this exact registered asset.
+    /// Missing in v0.3 receipts, which always represent a create.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_asset_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation_id: Option<String>,
 }

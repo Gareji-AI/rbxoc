@@ -77,8 +77,12 @@ pub async fn operation(ctx: &Ctx, universe_id: u64, kind: &str, operation_id: &s
             );
         }
     };
+    let encoded_id = match crate::ctx::path_segment(operation_id) {
+        Ok(value) => value,
+        Err(err) => return failure("analytics operation", err),
+    };
     let path = format!(
-        "/analytics-query-api/v1/universes/{universe_id}/operations/{segment}/{operation_id}"
+        "/analytics-query-api/v1/universes/{universe_id}/operations/{segment}/{encoded_id}"
     );
     match ctx.get_json(&path).await {
         Ok(data) => {

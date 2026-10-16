@@ -13,18 +13,22 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, path_segment};
 use crate::output::{ErrorBody, Output};
 
-fn entries_path(universe_id: u64, repository: &str) -> String {
-    format!(
+fn entries_path(universe_id: u64, repository: &str) -> Result<String, ErrorBody> {
+    let repository = path_segment(repository)?;
+    Ok(format!(
         "/creator-configs-public-api/v1/configs/universes/{universe_id}/repositories/{repository}"
-    )
+    ))
 }
 
 /// Read the live, published values.
 pub async fn get(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
-    let path = format!("{}/full", entries_path(universe_id, repository));
+    let path = match entries_path(universe_id, repository) {
+        Ok(base) => format!("{base}/full"),
+        Err(err) => return failure("config get", err),
+    };
     match ctx.get_json(&path).await {
         Ok(data) => Output::success(
             "config get",
@@ -37,7 +41,10 @@ pub async fn get(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
 
 /// Read the current draft.
 pub async fn draft(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
-    let path = format!("{}/draft", entries_path(universe_id, repository));
+    let path = match entries_path(universe_id, repository) {
+        Ok(base) => format!("{base}/draft"),
+        Err(err) => return failure("config draft", err),
+    };
     match ctx.get_json(&path).await {
         Ok(data) => Output::success(
             "config draft",
@@ -54,7 +61,10 @@ pub async fn patch_draft(ctx: &Ctx, universe_id: u64, repository: &str, document
         Ok(v) => v,
         Err(e) => return invalid_document(e),
     };
-    let path = format!("{}/draft", entries_path(universe_id, repository));
+    let path = match entries_path(universe_id, repository) {
+        Ok(base) => format!("{base}/draft"),
+        Err(err) => return failure("config patch-draft", err),
+    };
     match ctx.send(ctx.client.patch(ctx.url(&path)).json(&body)).await {
         Ok(resp) => finish_write(resp, "config patch-draft", repository).await,
         Err(err) => failure("config patch-draft", err),
@@ -67,7 +77,10 @@ pub async fn overwrite(ctx: &Ctx, universe_id: u64, repository: &str, document: 
         Ok(v) => v,
         Err(e) => return invalid_document(e),
     };
-    let path = format!("{}/draft:overwrite", entries_path(universe_id, repository));
+    let path = match entries_path(universe_id, repository) {
+        Ok(base) => format!("{base}/draft:overwrite"),
+        Err(err) => return failure("config overwrite", err),
+    };
     match ctx.send(ctx.client.put(ctx.url(&path)).json(&body)).await {
         Ok(resp) => finish_write(resp, "config overwrite", repository).await,
         Err(err) => failure("config overwrite", err),
@@ -76,7 +89,10 @@ pub async fn overwrite(ctx: &Ctx, universe_id: u64, repository: &str, document: 
 
 /// Publish the draft so the game reads the new values.
 pub async fn publish(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
-    let path = format!("{}/publish", entries_path(universe_id, repository));
+    let path = match entries_path(universe_id, repository) {
+        Ok(base) => format!("{base}/publish"),
+        Err(err) => return failure("config publish", err),
+    };
     match ctx
         .send(ctx.client.post(ctx.url(&path)).json(&json!({})))
         .await
@@ -102,7 +118,10 @@ pub async fn publish(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
 
 /// List revisions.
 pub async fn revisions(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
-    let path = format!("{}/revisions", entries_path(universe_id, repository));
+    let path = match entries_path(universe_id, repository) {
+        Ok(base) => format!("{base}/revisions"),
+        Err(err) => return failure("config revisions", err),
+    };
     match ctx.get_json(&path).await {
         Ok(data) => {
             let count = data
@@ -122,10 +141,15 @@ pub async fn revisions(ctx: &Ctx, universe_id: u64, repository: &str) -> Output 
 
 /// Restore a previous revision into the draft.
 pub async fn restore(ctx: &Ctx, universe_id: u64, repository: &str, revision_id: &str) -> Output {
-    let path = format!(
-        "{}/revisions/{revision_id}/restore",
-        entries_path(universe_id, repository)
-    );
+    let path = match entries_path(universe_id, repository).and_then(|base| {
+        Ok(format!(
+            "{base}/revisions/{}/restore",
+            path_segment(revision_id)?
+        ))
+    }) {
+        Ok(path) => path,
+        Err(err) => return failure("config restore", err),
+    };
     match ctx
         .send(ctx.client.post(ctx.url(&path)).json(&json!({})))
         .await
@@ -186,7 +210,7 @@ mod tests {
 
     #[test]
     fn paths_are_universe_and_repository_scoped() {
-        let base = entries_path(1, "game");
+        let base = entries_path(1, "game").unwrap();
         assert_eq!(
             base,
             "/creator-configs-public-api/v1/configs/universes/1/repositories/game"
@@ -200,7 +224,17 @@ mod tests {
 
     #[test]
     fn restore_path_includes_the_revision() {
-        let path = format!("{}/revisions/r7/restore", entries_path(1, "game"));
+        let path = format!("{}/revisions/r7/restore", entries_path(1, "game").unwrap());
         assert!(path.ends_with("/repositories/game/revisions/r7/restore"));
+    }
+
+    #[test]
+    fn repository_is_one_encoded_segment() {
+        assert!(
+            entries_path(1, "a/b?c#d %")
+                .unwrap()
+                .ends_with("/a%2Fb%3Fc%23d%20%25")
+        );
+        assert!(entries_path(1, "..").is_err());
     }
 }

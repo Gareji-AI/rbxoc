@@ -1,6 +1,6 @@
 [package]
 name = "rbxoc"
-version = "0.3.4"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.99"
 description = "CLI for the Roblox Open Cloud API, designed for coding agents"
@@ -25,6 +25,8 @@ reqwest = { version = "0.12", default-features = false, features = [
     "multipart",
     "rustls-tls",
 ] }
+# Encode caller-supplied URL path segments without interpreting delimiters.
+percent-encoding = "2"
 # Async runtime. Some commands issue concurrent calls, so tokio is direct.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "time"] }
 # JSON. Required for the agent-facing output.

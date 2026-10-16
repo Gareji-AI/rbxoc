@@ -156,9 +156,12 @@ pub async fn status(ctx: &Ctx, universe_id: u64, operation_ids: &[String]) -> Ou
     }
     let joined = operation_ids.join(",");
     let path = format!(
-        "/thumbnail-personalization-api/v1/universes/{universe_id}/thumbnails/uploads/status?operationIds={joined}"
+        "/thumbnail-personalization-api/v1/universes/{universe_id}/thumbnails/uploads/status"
     );
-    match ctx.get_json(&path).await {
+    match ctx
+        .get_json_query(&path, &[("operationIds", joined.as_str())])
+        .await
+    {
         Ok(data) => Output::success(
             "thumbnail status",
             format!("Fetched status for {} operations", operation_ids.len()),

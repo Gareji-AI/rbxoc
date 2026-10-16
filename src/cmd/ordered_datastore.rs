@@ -10,8 +10,8 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure};
-use crate::output::Output;
+use crate::ctx::{Ctx, failure, path_segment};
+use crate::output::{ErrorBody, Output};
 
 /// Read entries, newest-first by value unless `ascending` is set.
 pub async fn list(
@@ -22,7 +22,10 @@ pub async fn list(
     ascending: bool,
     page_size: u32,
 ) -> Output {
-    let path = entries_path(universe_id, store, scope);
+    let path = match entries_path(universe_id, store, scope) {
+        Ok(path) => path,
+        Err(err) => return failure("ordered-datastore list", err),
+    };
     let query = format!(
         "?orderBy={}&maxPageSize={page_size}",
         if ascending { "asc" } else { "desc" }
@@ -47,7 +50,10 @@ pub async fn list(
 
 /// Read one entry.
 pub async fn get(ctx: &Ctx, universe_id: u64, store: &str, scope: &str, entry: &str) -> Output {
-    let path = entry_path(universe_id, store, scope, entry);
+    let path = match entry_path(universe_id, store, scope, entry) {
+        Ok(path) => path,
+        Err(err) => return failure("ordered-datastore get", err),
+    };
     match ctx.get_json(&path).await {
         Ok(data) => Output::success(
             "ordered-datastore get",
@@ -68,7 +74,10 @@ pub async fn set(
     value: i64,
     allow_missing: bool,
 ) -> Output {
-    let path = entry_path(universe_id, store, scope, entry);
+    let path = match entry_path(universe_id, store, scope, entry) {
+        Ok(path) => path,
+        Err(err) => return failure("ordered-datastore set", err),
+    };
     let body = json!({ "value": value });
     let mut req = ctx.client.patch(ctx.url(&path)).json(&body);
     if allow_missing {
@@ -95,7 +104,10 @@ pub async fn set(
 
 /// Delete an entry.
 pub async fn delete(ctx: &Ctx, universe_id: u64, store: &str, scope: &str, entry: &str) -> Output {
-    let path = entry_path(universe_id, store, scope, entry);
+    let path = match entry_path(universe_id, store, scope, entry) {
+        Ok(path) => path,
+        Err(err) => return failure("ordered-datastore delete", err),
+    };
     let req = ctx.client.delete(ctx.url(&path));
     match ctx.send_empty(req).await {
         Ok(_) => Output::success(
@@ -116,7 +128,10 @@ pub async fn increment(
     entry: &str,
     amount: i64,
 ) -> Output {
-    let path = format!("{}:increment", entry_path(universe_id, store, scope, entry));
+    let path = match entry_path(universe_id, store, scope, entry) {
+        Ok(path) => format!("{path}:increment"),
+        Err(err) => return failure("ordered-datastore increment", err),
+    };
     let body = json!({ "amount": amount });
     let req = ctx.client.post(ctx.url(&path)).json(&body);
     match ctx.send(req).await {
@@ -136,14 +151,25 @@ pub async fn increment(
     }
 }
 
-fn entries_path(universe_id: u64, store: &str, scope: &str) -> String {
-    format!(
+fn entries_path(universe_id: u64, store: &str, scope: &str) -> Result<String, ErrorBody> {
+    let store = path_segment(store)?;
+    let scope = path_segment(scope)?;
+    Ok(format!(
         "/ordered-data-stores/v1/universes/{universe_id}/orderedDataStores/{store}/scopes/{scope}/entries"
-    )
+    ))
 }
 
-fn entry_path(universe_id: u64, store: &str, scope: &str, entry: &str) -> String {
-    format!("{}/{entry}", entries_path(universe_id, store, scope))
+fn entry_path(
+    universe_id: u64,
+    store: &str,
+    scope: &str,
+    entry: &str,
+) -> Result<String, ErrorBody> {
+    let entry = path_segment(entry)?;
+    Ok(format!(
+        "{}/{entry}",
+        entries_path(universe_id, store, scope)?
+    ))
 }
 
 #[cfg(test)]
@@ -153,19 +179,32 @@ mod tests {
     #[test]
     fn entries_path_includes_the_required_scope() {
         assert_eq!(
-            entries_path(1, "board", "global"),
+            entries_path(1, "board", "global").unwrap(),
             "/ordered-data-stores/v1/universes/1/orderedDataStores/board/scopes/global/entries"
         );
     }
 
     #[test]
     fn entry_path_appends_the_name() {
-        assert!(entry_path(1, "board", "global", "player_42").ends_with("/entries/player_42"));
+        assert!(
+            entry_path(1, "board", "global", "player_42")
+                .unwrap()
+                .ends_with("/entries/player_42")
+        );
     }
 
     #[test]
     fn increment_uses_the_colon_verb() {
-        let path = format!("{}:increment", entry_path(1, "b", "s", "e"));
+        let path = format!("{}:increment", entry_path(1, "b", "s", "e").unwrap());
         assert!(path.ends_with("/entries/e:increment"));
+    }
+
+    #[test]
+    fn named_segments_do_not_change_the_route_or_verb() {
+        assert_eq!(
+            entry_path(1, "a/b", "?", "#:increment").unwrap(),
+            "/ordered-data-stores/v1/universes/1/orderedDataStores/a%2Fb/scopes/%3F/entries/%23%3Aincrement"
+        );
+        assert!(entry_path(1, "b", "..", "e").is_err());
     }
 }

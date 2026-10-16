@@ -1,4 +1,4 @@
-//! Upload missing manifest files, refresh the lockfile, and run codegen.
+//! Create missing assets or explicitly update changed Models with durable receipts.
 
 use std::path::Path;
 
@@ -11,11 +11,17 @@ use crate::output::{ErrorBody, Output};
 
 const COMMAND: &str = "assets sync";
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    CreateMissing,
+    UpdateChanged,
+}
+
 /// Explicit offline recovery of an operation ID learned from a saved response
 /// or Creator Dashboard. Never creates a publication or fabricates freshness.
 pub fn recover_operation(dir: &Path, path: &str, operation_id: &str) -> Output {
     const RECOVER: &str = "assets recover";
-    let result = (|| -> anyhow::Result<String> {
+    let result = (|| -> anyhow::Result<(String, bool)> {
         let _guard = assets::registry_guard(dir)?;
         let manifest = assets::load_manifest(dir)?;
         let mut lock = assets::load_lockfile(dir)?;
@@ -33,6 +39,13 @@ pub fn recover_operation(dir: &Path, path: &str, operation_id: &str) -> Output {
                 && pending.creator == manifest.creator,
             "{key}: pending upload belongs to different input bytes, preprocessing settings, or creator; restore originals first"
         );
+        let update = pending.target_asset_id.is_some();
+        if let Some(target) = pending.target_asset_id {
+            anyhow::ensure!(
+                lock.assets.get(&key) == Some(&target) && target > 0,
+                "{key}: registered ID no longer matches the pending update target"
+            );
+        }
         let id =
             asset::normalize_operation_id(operation_id).map_err(|e| anyhow::anyhow!(e.message))?;
         anyhow::ensure!(
@@ -41,11 +54,11 @@ pub fn recover_operation(dir: &Path, path: &str, operation_id: &str) -> Output {
         );
         pending.operation_id = Some(id.clone());
         assets::save_lockfile(dir, &lock)?;
-        Ok(id)
+        Ok((id, update))
     })();
     match result {
-        Ok(id) => Output::success(RECOVER, format!("Recorded operation {id} for {path}; no cloud writes"), Some(json!({"path": path, "operationId": id})))
-            .with_hints(vec!["Run sync with the same --path selection to poll this operation, not create a new asset. Only attach an operation known to belong to this exact source and creator.".into()]),
+        Ok((id, update)) => Output::success(RECOVER, format!("Recorded operation {id} for {path}; no cloud writes"), Some(json!({"path": path, "operationId": id, "update": update})))
+            .with_hints(vec![format!("Run sync {}with --path {path} to poll this operation, not submit it again. Only attach an operation known to belong to this exact source, creator and asset ID.", if update { "--update " } else { "" })]),
         Err(e) => failure(RECOVER, local_error("recovery_error", format!("{e:#}"))),
     }
 }
@@ -57,6 +70,24 @@ pub fn run_dry_run(dir: &Path, selection: &[String]) -> Output {
 
 /// Upload missing files, update the lockfile, and write generated source.
 pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
+    run_mode(ctx, dir, selection, Mode::CreateMissing).await
+}
+
+/// Explicitly update changed, receipt-backed Models without replacing IDs.
+pub async fn run_update(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
+    run_mode(ctx, dir, selection, Mode::UpdateChanged).await
+}
+
+async fn run_mode(ctx: &Ctx, dir: &Path, selection: &[String], mode: Mode) -> Output {
+    if mode == Mode::UpdateChanged && selection.is_empty() {
+        return failure(
+            COMMAND,
+            local_error(
+                "update_selection_required",
+                "--update requires at least one explicit --path".into(),
+            ),
+        );
+    }
     let _guard = match assets::registry_guard(dir) {
         Ok(guard) => guard,
         Err(e) => return registry_failure(e),
@@ -84,17 +115,13 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
         return registry_failure(e);
     }
 
-    let prepared = match preflight(dir, &manifest, &lock, &sources, &selected).await {
+    let prepared = match preflight(dir, &manifest, &lock, &sources, &selected, mode, true).await {
         Ok(prepared) => prepared,
         Err(err) => return failure(COMMAND, err),
     };
-    let freshness = match assets::freshness(&sources, &selected, &manifest, &lock) {
-        Ok(state) => state,
-        Err(e) => return registry_failure(e),
-    };
-
     let (user_id, group_id) = creator_ids(&manifest);
     let mut uploaded = 0usize;
+    let mut updated = 0usize;
     let mut resumed = 0usize;
     for item in prepared {
         let key = &item.key;
@@ -106,7 +133,7 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
                     local_error(
                         "source_changed",
                         format!(
-                            "{key}: source changed after preflight; no create was attempted for this file"
+                            "{key}: source changed after preflight; no publication was attempted for this file"
                         ),
                     ),
                 );
@@ -124,6 +151,7 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
                     fingerprint: item.fingerprint.clone(),
                     creator: manifest.creator.clone(),
                     asset_type: item.asset_type.clone(),
+                    target_asset_id: item.target_asset_id,
                     operation_id: None,
                 },
             );
@@ -136,18 +164,22 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
                 .file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or(key);
-            let op_id = match asset::start_create(
-                ctx,
-                item.upload.as_path(),
-                display_name,
-                "",
-                user_id,
-                group_id,
-                None,
-            )
-            .await
-            {
-                Ok((op_id, _)) => op_id,
+            let started = match item.target_asset_id {
+                Some(id) => asset::start_update(ctx, id, item.upload.as_path()).await,
+                None => asset::start_create(
+                    ctx,
+                    item.upload.as_path(),
+                    display_name,
+                    "",
+                    user_id,
+                    group_id,
+                    None,
+                )
+                .await
+                .map(|(id, _)| id),
+            };
+            let op_id = match started {
+                Ok(op_id) => op_id,
                 Err(err) => {
                     // An explicit 4xx rejection (except timeout) did not accept
                     // creation. Transport, 5xx, and invalid/lost response remain
@@ -166,7 +198,7 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
                         COMMAND,
                         local_error(
                             "publication_uncertain",
-                            format!("{key}: create outcome is unknown: {}", err.message),
+                            format!("{key}: publication outcome is unknown: {}", err.message),
                         ),
                     )
                     .with_hints(recovery_hints(key, None));
@@ -179,7 +211,11 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
             if let Err(e) = assets::save_lockfile(dir, &lock) {
                 return receipt_failure(key, Some(&op_id), e);
             }
-            uploaded += 1;
+            if item.target_asset_id.is_some() {
+                updated += 1;
+            } else {
+                uploaded += 1;
+            }
             op_id
         };
         let done = match asset::wait_for_operation(ctx, &op_id, 60, 2000).await {
@@ -194,6 +230,13 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
                 return source_failure(key, err).with_hints(recovery_hints(key, Some(&op_id)));
             }
         };
+        if let Some(target) = item.target_asset_id
+            && asset_id != target
+        {
+            return failure(COMMAND, local_error("asset_id_mismatch", format!(
+                "{key}: update receipt returned asset {asset_id}, expected {target}; original ID and pending operation preserved"
+            ))).with_hints(recovery_hints(key, Some(&op_id)));
+        }
         lock.assets.insert(key.clone(), asset_id);
         lock.publications.insert(
             key.clone(),
@@ -216,6 +259,10 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
         Ok(p) => p,
         Err(e) => return registry_failure(e),
     };
+    let freshness = match assets::freshness(&sources, &selected, &manifest, &lock) {
+        Ok(state) => state,
+        Err(e) => return registry_failure(e),
+    };
 
     let unresolved_images: Vec<_> = lock
         .assets
@@ -232,23 +279,25 @@ pub async fn run(ctx: &Ctx, dir: &Path, selection: &[String]) -> Output {
     Output::success(
         COMMAND,
         format!(
-            "Synced {uploaded} uploads; wrote {} ({} registered)",
+            "Synced {uploaded} uploads, {updated} updates; wrote {} ({} registered)",
             out_file.display(),
             lock.assets.len()
         ),
         Some(json!({
             "uploaded": uploaded,
+            "updated": updated,
             "resumed": resumed,
             "output": out_file.to_string_lossy(),
             "registered": lock.assets.len(),
             "missingAfter": assets::missing_ids(&paths, &lock),
             "selected": selected,
+            "current": freshness.current,
             "changed": freshness.changed,
             "unverified": freshness.unverified,
             "unresolvedImages": unresolved_images,
         })),
     )
-    .with_hints(vec!["Registered IDs were preserved. Changed or unverified existing files are not uploaded automatically.".into()])
+    .with_hints(vec!["Registered IDs were preserved. Updates require explicit --update with --path and a changed Model receipt; unverified files are never updated automatically.".into()])
     .with_hints((!unresolved_images.is_empty()).then(|| "Image uploads return Decal IDs, not resolved Image IDs. Preserve these receipts; resolve Decal.Texture in Studio, register --id DECAL_ID --image-id IMAGE_ID, then enable codegen.image_ids for image consumers. See docs/image-ids.md.".into()))
 }
 
@@ -258,6 +307,121 @@ struct Prepared {
     fingerprint: String,
     upload: preprocess::UploadFile,
     asset_type: String,
+    target_asset_id: Option<u64>,
+}
+
+/// Validate the complete update selection before any upload preparation or call.
+fn validate_updates(
+    manifest: &assets::Manifest,
+    lock: &assets::Lockfile,
+    sources: &std::collections::BTreeMap<String, assets::Source>,
+    selected: &[String],
+) -> Result<(), ErrorBody> {
+    if selected.is_empty() {
+        return Err(local_error(
+            "update_selection_required",
+            "--update requires at least one explicit --path".into(),
+        ));
+    }
+    let mut targets = std::collections::BTreeSet::new();
+    for key in selected {
+        let id = lock.assets.get(key).filter(|id| **id > 0).ok_or_else(|| {
+            local_error(
+                "asset_update_not_changed",
+                format!("{key}: --update refuses missing entries; use normal sync to create them"),
+            )
+        })?;
+        let receipt = lock.publications.get(key).filter(|r| r.asset_id == *id).ok_or_else(|| local_error(
+            "asset_update_not_changed", format!("{key}: --update refuses unverified entries; a successful publication receipt is required")
+        ))?;
+        if receipt.asset_type != "Model" {
+            return Err(local_error(
+                "asset_update_unsupported",
+                format!(
+                    "{key}: {} does not support in-place content updates; only Model is supported. Use an explicit replacement workflow, never an automatic create.",
+                    receipt.asset_type
+                ),
+            ));
+        }
+        if receipt.creator != manifest.creator {
+            return Err(local_error(
+                "update_creator_changed",
+                format!(
+                    "{key}: restore the original receipt's creator before updating its asset ID"
+                ),
+            ));
+        }
+        if !targets.insert(*id) {
+            return Err(local_error(
+                "update_target_collision",
+                format!(
+                    "{key}: more than one selected source targets asset {id}; select one source per asset ID"
+                ),
+            ));
+        }
+        if let Some(pending) = lock.pending.get(key) {
+            if pending.target_asset_id != Some(*id) {
+                return Err(local_error(
+                    "recovery_input_changed",
+                    format!("{key}: pending publication does not target the registered asset ID"),
+                ));
+            }
+        } else if receipt.fingerprint
+            == assets::fingerprint(&sources[key])
+                .map_err(|e| local_error("file_unreadable", format!("{key}: {e:#}")))?
+        {
+            return Err(local_error(
+                "asset_update_not_changed",
+                format!(
+                    "{key}: --update refuses current entries; source bytes or preprocessing must have changed"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Credential-free planning, including update eligibility/type/size checks.
+/// Unlike real preflight, this does not persist intent or touch output paths.
+pub async fn preview_update(dir: &Path, selection: &[String]) -> Output {
+    let result = async {
+        if selection.is_empty() {
+            return Err(local_error(
+                "update_selection_required",
+                "--update requires explicit --path".into(),
+            ));
+        }
+        let manifest = assets::load_manifest(dir)
+            .map_err(|e| local_error("registry_error", format!("{e:#}")))?;
+        let lock = assets::load_lockfile(dir)
+            .map_err(|e| local_error("registry_error", format!("{e:#}")))?;
+        let sources = assets::collect_sources(dir, &manifest)
+            .map_err(|e| local_error("registry_error", format!("{e:#}")))?;
+        let paths = sources.keys().cloned().collect::<Vec<_>>();
+        let selected = assets::select_paths(&paths, selection)
+            .map_err(|e| local_error("registry_error", format!("{e:#}")))?;
+        let prepared = preflight(
+            dir,
+            &manifest,
+            &lock,
+            &sources,
+            &selected,
+            Mode::UpdateChanged,
+            false,
+        )
+        .await?;
+        Ok(prepared.iter().map(|item| json!({
+            "path": item.key, "assetId": item.target_asset_id,
+            "action": if lock.pending.contains_key(&item.key) { "resume-update" } else { "update" },
+            "assetType": item.asset_type,
+        })).collect::<Vec<_>>())
+    }
+    .await;
+    match result {
+        Ok(updates) => Output::success(COMMAND, format!("Planned {} in-place Model updates; no cloud calls", updates.len()), Some(json!({"updates": updates, "dryRun": true})))
+            .with_hints(vec!["IDs remain unchanged. This checks local eligibility, type and size, not cloud state, output writability, moderation or delivery.".into()]),
+        Err(err) => failure(COMMAND, err),
+    }
 }
 
 /// Prepare the entire selection, one file in memory at a time. Converted files
@@ -268,7 +432,12 @@ async fn preflight(
     lock: &assets::Lockfile,
     sources: &std::collections::BTreeMap<String, assets::Source>,
     selected: &[String],
+    mode: Mode,
+    persist: bool,
 ) -> Result<Vec<Prepared>, ErrorBody> {
+    if mode == Mode::UpdateChanged {
+        validate_updates(manifest, lock, sources, selected)?;
+    }
     assets::render(manifest, lock).map_err(|e| local_error("registry_error", format!("{e:#}")))?;
     let mut prepared = Vec::new();
     for key in selected {
@@ -297,10 +466,20 @@ async fn preflight(
                 err.message = format!("{key}: {}", err.message);
                 err
             })?;
+        let target_asset_id = (mode == Mode::UpdateChanged).then(|| lock.assets[key]);
+        if mode == Mode::UpdateChanged && asset_type != "Model" {
+            return Err(local_error(
+                "asset_update_unsupported",
+                format!(
+                    "{key}: prepared {asset_type} content cannot update a Model; restore Model content or use explicit replacement"
+                ),
+            ));
+        }
         if let Some(pending) = lock.pending.get(key) {
             if pending.fingerprint != fingerprint
                 || pending.creator != manifest.creator
                 || pending.asset_type != asset_type
+                || pending.target_asset_id != target_asset_id
             {
                 return Err(local_error(
                     "recovery_input_changed",
@@ -313,7 +492,7 @@ async fn preflight(
                 return Err(local_error(
                     "publication_uncertain",
                     format!(
-                        "{key}: a prior create has no operation receipt; inspect Creator Dashboard, then use `assets recover --path {key} --operation-id ID` or register the known asset ID; do not blindly upload again"
+                        "{key}: a prior publication has no operation receipt; inspect Creator Dashboard, then use `assets recover --path {key} --operation-id ID` or explicitly register the known asset ID; do not blindly publish again"
                     ),
                 ));
             }
@@ -328,7 +507,7 @@ async fn preflight(
                     ));
                 }
             }
-            if lock.assets.contains_key(key) {
+            if lock.assets.contains_key(key) && mode == Mode::CreateMissing {
                 return Err(local_error(
                     "registry_error",
                     format!(
@@ -346,7 +525,7 @@ async fn preflight(
                 format!("{key}: source changed during preflight"),
             ));
         }
-        if !lock.assets.contains_key(key) {
+        if !lock.assets.contains_key(key) || mode == Mode::UpdateChanged {
             if manifest.codegen.image_ids && asset_type == "Decal" {
                 return Err(local_error(
                     "image_resolution_required",
@@ -361,18 +540,21 @@ async fn preflight(
                 fingerprint,
                 upload,
                 asset_type: asset_type.into(),
+                target_asset_id,
             });
         }
     }
     // Check local destination/receipt persistence before mutating the cloud.
-    assets::prepare_output_path(dir, manifest, sources)
-        .map_err(|e| local_error("registry_error", format!("{e:#}")))?;
-    assets::save_lockfile(dir, lock).map_err(|e| {
-        local_error(
-            "receipt_write_failed",
-            format!("cannot persist registry before uploads: {e:#}"),
-        )
-    })?;
+    if persist {
+        assets::prepare_output_path(dir, manifest, sources)
+            .map_err(|e| local_error("registry_error", format!("{e:#}")))?;
+        assets::save_lockfile(dir, lock).map_err(|e| {
+            local_error(
+                "receipt_write_failed",
+                format!("cannot persist registry before publication: {e:#}"),
+            )
+        })?;
+    }
     Ok(prepared)
 }
 
@@ -393,7 +575,7 @@ fn source_failure(key: &str, mut err: ErrorBody) -> Output {
 
 fn recovery_hints(key: &str, operation_id: Option<&str>) -> Vec<String> {
     let mut hints = vec![format!(
-        "Do not issue a new create for {key}. Keep the lockfile and restore original source/creator settings before retrying sync."
+        "Do not issue a new create or update for {key}. Keep the lockfile and restore original source/creator/target settings before retrying. For pending updates use sync --update --path {key}, selecting only unfinished paths."
     )];
     if let Some(id) = operation_id {
         hints.push(format!("Run `rbxoc asset operation --operation-id {id}`; sync will poll this existing operation on retry."));

@@ -67,10 +67,13 @@ On failure:
 ```json
 {
   "ok": false,
-  "command": "auth",
-  "summary": "no credentials found. Set RBXOC_API_KEY, or put an API key in ~/.rbxoc/api-key",
+  "command": "auth check",
+  "summary": "no credentials found. Set RBXOC_API_KEY, or create .rbxoc/api-key in this project (see `rbxoc auth check`)",
   "hints": ["Set RBXOC_API_KEY", "Run `rbxoc auth check` to inspect the credential state"],
-  "error": { "code": "auth_missing", "message": "..." }
+  "error": {
+    "code": "auth_missing",
+    "message": "no credentials found. Set RBXOC_API_KEY, or create .rbxoc/api-key in this project (see `rbxoc auth check`)"
+  }
 }
 ```
 
@@ -96,8 +99,13 @@ Lookup order:
 1. `--api-key` (discouraged; it lands in shell history)
 2. `RBXOC_API_KEY` environment variable
 3. `--api-key-file <path>`
-4. `.rbxoc/api-key`, walking up from the working directory and stopping at the
+4. `RBXOC_OAUTH_TOKEN` (non-empty; used if no API key above was selected)
+5. `.rbxoc/api-key`, walking up from the working directory and stopping at the
    first `.rbxoc` found
+6. `.rbxoc/oauth-token` in that same first directory, if it has no API key
+
+Empty environment values are skipped. An explicitly selected empty or unreadable
+key file is an error, not a reason to fall back to another project's credential.
 
 Place the key beside the project:
 
@@ -109,10 +117,8 @@ Add `.rbxoc/` to the project's `.gitignore`. There is no home-directory
 fallback, so a key never leaks from one repository into another, and a nested
 project with its own `.rbxoc` never inherits its parent's key.
 
-OAuth2 comes from `RBXOC_OAUTH_TOKEN` or `.rbxoc/oauth-token` in the same
-project-local directory.
-
-`rbxoc auth check` reports the resolved source path, so a wrong-project key is
+`rbxoc auth check` reports the exact selected file path, environment variable,
+or `--api-key` from the credential resolver itself, so a wrong-project key is
 immediate to spot. Output always masks the value (`abcd****`).
 
 ### 5. Exit codes
@@ -123,6 +129,13 @@ immediate to spot. Output always masks the value (`abcd****`).
 | 1 | runtime error (HTTP failure and similar) |
 | 2 | no credentials found |
 | 64 | bad arguments (unknown endpoint ID and similar) |
+| 70 | internal output serialization or help/version output failure |
+
+Unknown subcommands, missing arguments, invalid enum values, and invalid numeric
+arguments return `error.code = "usage_error"`, exit 64, and the standard JSON
+envelope on **stdout**, even with `--format text`. Diagnostics are in
+`error.detail`; stderr is not the machine-readable surface. `--help` and
+`--version` retain normal human-readable output and exit 0.
 
 ## Install
 
@@ -167,7 +180,7 @@ another game is obvious:
 {
   "ok": true,
   "summary": "Credentials work (api-key / abcd****)",
-  "data": { "source": "/work/my-game/.rbxoc" }
+  "data": { "source": "/work/my-game/.rbxoc/api-key" }
 }
 ```
 
@@ -262,6 +275,8 @@ rbxoc assets codegen
 rbxoc assets sync              # upload missing, refresh lock, codegen
 rbxoc assets sync --path assets/ui/button.png --path assets/sfx/hit.ogg
 rbxoc assets sync --dry-run     # registry + known-freshness check, not upload preflight
+rbxoc assets sync --update --path assets/models/tree.fbx --dry-run # plan a changed Model update
+rbxoc assets sync --update --path assets/models/tree.fbx # keep its ID, record fresh receipt
 rbxoc assets import-asphalt-lock --asphalt-lock asphalt.lock.toml --input Assets --write
 ```
 
@@ -277,8 +292,11 @@ generated keys fail without overwriting existing output.
 
 `assets status` distinguishes `current`, `changed`, and `unverified` entries.
 Only a successful sync receipt proves known freshness. Changed registered
-files are **not** automatically replaced, and legacy/manual registrations stay
-unverified. See [asset sync safety and recovery](docs/asset-sync-safety.md) for
+files are **not** automatically replaced. Explicit `--update --path` updates
+only changed, receipt-backed Models under their existing IDs; missing,
+unverified, current, and unsupported entries fail before any cloud mutation.
+Legacy/manual registrations stay unverified. See
+[asset sync safety and recovery](docs/asset-sync-safety.md) for
 dry-run limits, pending operations, and uncertain outcomes.
 
 Generated Luau from that registry:
@@ -352,6 +370,14 @@ rbxoc ordered-datastore list --universe-id 123 --store highscore --page-size 10
 
 Values are integers, and `--scope` defaults to `global`. Unlike standard
 DataStores, the scope segment is required, so it is always sent.
+
+Named URL segments (store, scope, entry, config repository/revision, topic,
+job, alert, and operation IDs) accept raw UTF-8. rbxoc percent-encodes each
+segment independently: `/`, `?`, `#`, spaces, `%`, and non-ASCII names cannot
+change the route. Do not pre-encode names (`%2F` means a literal percent-based
+name, not a slash). Empty names and the standalone names `.` and `..` fail
+locally with `invalid_path_segment` because URL parsers normalize dot segments.
+Roblox can still impose its own endpoint-specific naming constraints.
 
 ### Remote config and feature flags
 
@@ -467,17 +493,54 @@ The coverage checker asserts that the catalog and the binary agree: unique
 IDs, a path and summary for every implemented entry, a stated reason for every
 unimplemented one, and no cookie-only endpoint marked implemented.
 
-## Not verified
+## Verification status
 
-This repository **has not been exercised against the live API with a real key**. Only the implementation, compilation, and unit tests that avoid the network exist. Actual responses per endpoint are unverified.
+### Optional live sweep (maintainers only)
 
-Specifically unverified:
+Both `node scripts/live-sweep.mjs` and `node scripts/live-sweep-ext.mjs` use
+one shared case list. They default to **read-only**, with no committed target
+defaults. Select a small read-only probe with explicit environment values:
 
-- Place publishing with a real file
-- Asset upload processing
-- The thumbnail API (experimental, so the shape may change)
-- Analytics (requires OAuth2)
-- Fetching real game server logs
+```bash
+UNIVERSE_ID="$MY_TEST_UNIVERSE" RBXOC_SWEEP_CASES="universe get" node scripts/live-sweep.mjs
+```
+
+`RBXOC` can select a binary. Without it, the platform-specific release binary
+in this checkout is used. `RBXOC_SWEEP_CASES` is a comma-separated list of
+exact labels from `scripts/live-sweep-cases.mjs`. Without a selection, all
+read-only cases run, requiring every target they use (universe/place/asset IDs,
+server version/job ID, config repository, datastore name/scope/entry, and
+`ANALYTICS_QUERY`). Missing configuration aborts the **whole** plan before
+any child command. The script prints mode and targets before starting.
+
+Mutations require **exactly** `RBXOC_SWEEP_MUTATE=1` plus explicit targets,
+files, message/value bodies, and prices for selected cases. Selecting a
+mutating case without opt-in fails, rather than silently running it. Prefer
+a disposable test universe and a narrowly selected case; mutations can publish
+places, overwrite/delete data, grant permissions, send messages, and change
+game pass prices. No cloud rollback is promised. The obsolete unsupported
+`devproduct update` case was removed. Nonzero child exits fail the sweep.
+
+### Recorded evidence
+
+A real-key session on **2026-10-13** verified credential resolution and the
+universe read and virtual-event list endpoints. Real-key / fake-key / no-key
+control requests returned 200 / 401 / 403 respectively. See the
+[live verification report](docs/live-api-verification.md) for the recorded
+results and limits; a 400/404 response is not proof of a successful operation.
+
+| Area | Evidence |
+| --- | --- |
+| Auth probe, universe read, event list | Live-verified with the session's real API key |
+| Registry, codegen, type inference, catalog | Offline-verified; no cloud call required |
+| Thumbnails, server management, game passes, developer products, standard/ordered DataStores | Implemented; the session reached 401/403 because its key lacked scopes, not successful operation verification |
+| Asset uploads/updates, place publishing, real server logs, OAuth2 analytics, paid product creation | Live behavior remains unverified |
+
+Offline fixtures test publication safety and recovery, including stable-ID
+Model updates; they do **not** establish live moderation, latest-version
+delivery, or Roblox platform guarantees. CI runs the coverage checker after
+the release build. Use `rbxoc api list` for current endpoint counts rather
+than interpreting historical report counts as current coverage.
 
 ## License
 
