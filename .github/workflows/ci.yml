@@ -37,6 +37,9 @@ jobs:
       - name: Coverage contract
         run: node scripts/check-coverage.mjs
 
+      - name: Live sweep safety (offline)
+        run: node --test scripts/live-sweep.test.mjs
+
       # Verify the CLI contract in CI too. Only credential-free paths here.
       - name: Catalog contract
         run: |
