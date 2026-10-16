@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, path_segment};
 use crate::output::{ErrorBody, Output};
 
 /// Fetch a universe. Also doubles as a connectivity probe.
@@ -42,7 +42,11 @@ pub async fn publish_message(ctx: &Ctx, universe_id: u64, topic: &str, message: 
             );
         }
     };
-    let path = format!("/messaging-service/v1/universes/{universe_id}/topics/{topic}");
+    let encoded_topic = match path_segment(topic) {
+        Ok(value) => value,
+        Err(err) => return failure("universe publish-message", err),
+    };
+    let path = format!("/messaging-service/v1/universes/{universe_id}/topics/{encoded_topic}");
     let body = json!({ "message": parsed.to_string() });
     let req = ctx.client.post(ctx.url(&path)).json(&body);
     match ctx.send(req).await {

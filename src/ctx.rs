@@ -10,6 +10,28 @@ use crate::auth::{self, Auth};
 use crate::open_cloud_errors;
 use crate::output::{ErrorBody, Output};
 
+/// One named URL segment, encoded exactly once from its raw UTF-8 value.
+/// Reject empty/dot-only segments: URL parsers normalize these structurally,
+/// including percent-encoded dots. All other bytes outside RFC 3986 unreserved
+/// characters are encoded; literal percent signs are not pre-encoded input.
+pub fn path_segment(value: &str) -> Result<String, ErrorBody> {
+    if matches!(value, "" | "." | "..") {
+        return Err(ErrorBody {
+            code: "invalid_path_segment",
+            message: "Named URL segments must not be empty, '.' or '..'".into(),
+            status: None,
+            detail: None,
+            refs: None,
+        });
+    }
+    const ENCODE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~');
+    Ok(percent_encoding::utf8_percent_encode(value, ENCODE).to_string())
+}
+
 /// Execution context.
 pub struct Ctx {
     pub client: reqwest::Client,
@@ -103,6 +125,18 @@ impl Ctx {
     /// GET that expects JSON.
     pub async fn get_json(&self, path: &str) -> Result<Value, ErrorBody> {
         let resp = self.send(self.client.get(self.url(path))).await?;
+        self.json_or_error(resp).await
+    }
+
+    /// GET with query values encoded independently of the route.
+    pub async fn get_json_query(
+        &self,
+        path: &str,
+        query: &[(&str, &str)],
+    ) -> Result<Value, ErrorBody> {
+        let resp = self
+            .send(self.client.get(self.url(path)).query(query))
+            .await?;
         self.json_or_error(resp).await
     }
 
@@ -202,6 +236,33 @@ pub fn failure_for_endpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_segments_preserve_request_structure() {
+        for (raw, expected) in [
+            ("/", "%2F"),
+            ("?", "%3F"),
+            ("#", "%23"),
+            (" ", "%20"),
+            ("%", "%25"),
+            ("日本語", "%E6%97%A5%E6%9C%AC%E8%AA%9E"),
+            ("a/../b?x=1#frag", "a%2F..%2Fb%3Fx%3D1%23frag"),
+            ("name-._~", "name-._~"),
+            ("%2F", "%252F"),
+        ] {
+            let segment = path_segment(raw).unwrap();
+            assert_eq!(segment, expected);
+            let url =
+                reqwest::Url::parse(&format!("https://example.invalid/entries/{segment}/tail"))
+                    .unwrap();
+            assert_eq!(url.path(), format!("/entries/{expected}/tail"));
+            assert_eq!(url.query(), None);
+            assert_eq!(url.fragment(), None);
+        }
+        for raw in ["", ".", ".."] {
+            assert_eq!(path_segment(raw).unwrap_err().code, "invalid_path_segment");
+        }
+    }
 
     #[test]
     fn backoff_grows_and_caps() {

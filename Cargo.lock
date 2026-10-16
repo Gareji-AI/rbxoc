@@ -1417,6 +1417,7 @@ dependencies = [
  "clap",
  "glob",
  "image",
+ "percent-encoding",
  "rbx_binary",
  "rbx_xml",
  "reqwest",

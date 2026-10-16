@@ -557,7 +557,10 @@ pub(crate) async fn wait_for_operation(
     max_attempts: u32,
     pause_ms: u64,
 ) -> Result<Value, ErrorBody> {
-    let path = format!("/assets/v1/operations/{operation_id}");
+    let path = format!(
+        "/assets/v1/operations/{}",
+        crate::ctx::path_segment(operation_id)?
+    );
     for attempt in 0..max_attempts {
         let data = ctx.get_json(&path).await?;
         let done = data.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -711,7 +714,10 @@ fn parse_texture_id(texture: &str) -> Option<u64> {
 
 /// Check an operation's status.
 pub async fn operation(ctx: &Ctx, operation_id: &str) -> Output {
-    let path = format!("/assets/v1/operations/{operation_id}");
+    let path = match crate::ctx::path_segment(operation_id) {
+        Ok(value) => format!("/assets/v1/operations/{value}"),
+        Err(err) => return failure("asset operation", err),
+    };
     match ctx.get_json(&path).await {
         Ok(data) => {
             let done = data.get("done").and_then(|v| v.as_bool()).unwrap_or(false);

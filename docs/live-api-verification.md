@@ -36,8 +36,8 @@
 
 | コマンド | 結果 |
 | --- | --- |
-| `api list` | 58 endpoints (54 implemented) |
-| `api mutating` | 30 mutating operations |
+| `api list` | Historical catalog check; run `rbxoc api list` for current counts |
+| `api mutating` | Historical discovery check; run `rbxoc api mutating` for current counts |
 | `api show place.publish` | 詳細表示 |
 | `analytics catalog` | 指標一覧（ローカル） |
 | `auth check` | 認証解決と疎通 |

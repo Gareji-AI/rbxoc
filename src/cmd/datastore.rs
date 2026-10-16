@@ -5,7 +5,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, path_segment};
 use crate::output::{ErrorBody, Output};
 
 /// Read an entry.
@@ -16,7 +16,10 @@ pub async fn get(
     entry: &str,
     scope: Option<&str>,
 ) -> Output {
-    let path = entry_path(universe_id, store, scope, entry);
+    let path = match entry_path(universe_id, store, scope, entry) {
+        Ok(path) => path,
+        Err(err) => return failure("datastore get", err),
+    };
     match ctx.get_json(&path).await {
         Ok(data) => Output::success(
             "datastore get",
@@ -53,7 +56,10 @@ pub async fn set(
             );
         }
     };
-    let path = entry_path(universe_id, store, scope, entry);
+    let path = match entry_path(universe_id, store, scope, entry) {
+        Ok(path) => path,
+        Err(err) => return failure("datastore set", err),
+    };
     // The value must be wrapped as a JSON string.
     let body = json!({ "value": parsed.to_string() });
     let mut req = ctx.client.patch(ctx.url(&path)).json(&body);
@@ -88,7 +94,10 @@ pub async fn delete(
     entry: &str,
     scope: Option<&str>,
 ) -> Output {
-    let path = entry_path(universe_id, store, scope, entry);
+    let path = match entry_path(universe_id, store, scope, entry) {
+        Ok(path) => path,
+        Err(err) => return failure("datastore delete", err),
+    };
     let req = ctx.client.delete(ctx.url(&path));
     match ctx.send_empty(req).await {
         Ok(_) => Output::success(
@@ -102,8 +111,12 @@ pub async fn delete(
 
 /// List entries.
 pub async fn list(ctx: &Ctx, universe_id: u64, store: &str, max_page_size: u32) -> Output {
+    let encoded_store = match path_segment(store) {
+        Ok(value) => value,
+        Err(err) => return failure("datastore list", err),
+    };
     let path = format!(
-        "/cloud/v2/universes/{universe_id}/data-stores/{store}/entries?maxPageSize={max_page_size}"
+        "/cloud/v2/universes/{universe_id}/data-stores/{encoded_store}/entries?maxPageSize={max_page_size}"
     );
     match ctx.get_json(&path).await {
         Ok(data) => {
@@ -122,15 +135,25 @@ pub async fn list(ctx: &Ctx, universe_id: u64, store: &str, max_page_size: u32) 
     }
 }
 
-fn entry_path(universe_id: u64, store: &str, scope: Option<&str>, entry: &str) -> String {
-    match scope {
-        Some(s) => format!(
-            "/cloud/v2/universes/{universe_id}/data-stores/{store}/scopes/{s}/entries/{entry}"
-        ),
+fn entry_path(
+    universe_id: u64,
+    store: &str,
+    scope: Option<&str>,
+    entry: &str,
+) -> Result<String, ErrorBody> {
+    let store = path_segment(store)?;
+    let entry = path_segment(entry)?;
+    Ok(match scope {
+        Some(s) => {
+            let s = path_segment(s)?;
+            format!(
+                "/cloud/v2/universes/{universe_id}/data-stores/{store}/scopes/{s}/entries/{entry}"
+            )
+        }
         None => {
             format!("/cloud/v2/universes/{universe_id}/data-stores/{store}/entries/{entry}")
         }
-    }
+    })
 }
 
 #[cfg(test)]
@@ -140,7 +163,7 @@ mod tests {
     #[test]
     fn path_without_scope() {
         assert_eq!(
-            entry_path(1, "s", None, "e"),
+            entry_path(1, "s", None, "e").unwrap(),
             "/cloud/v2/universes/1/data-stores/s/entries/e"
         );
     }
@@ -148,8 +171,17 @@ mod tests {
     #[test]
     fn path_with_scope() {
         assert_eq!(
-            entry_path(1, "s", Some("g"), "e"),
+            entry_path(1, "s", Some("g"), "e").unwrap(),
             "/cloud/v2/universes/1/data-stores/s/scopes/g/entries/e"
         );
+    }
+
+    #[test]
+    fn all_named_segments_are_encoded() {
+        assert_eq!(
+            entry_path(1, "a/b", Some("?"), "# %日本").unwrap(),
+            "/cloud/v2/universes/1/data-stores/a%2Fb/scopes/%3F/entries/%23%20%25%E6%97%A5%E6%9C%AC"
+        );
+        assert!(entry_path(1, "..", None, "e").is_err());
     }
 }
