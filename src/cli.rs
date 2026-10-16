@@ -345,6 +345,9 @@ pub enum AssetsCommand {
         /// Exact normalized manifest/lock key to sync; repeat for multiple files
         #[arg(long = "path")]
         paths: Vec<String>,
+        /// Update only selected changed, receipt-backed Models, preserving IDs
+        #[arg(long, requires = "paths")]
+        update: bool,
         /// Registry/freshness check only, not full upload preflight (no uploads)
         #[arg(long)]
         dry_run: bool,
@@ -951,10 +954,20 @@ impl Cli {
             if let AssetsCommand::Sync {
                 dir,
                 paths,
-                dry_run: true,
+                dry_run,
+                update,
             } = &args.command
             {
-                return cmd::assets_sync::run_dry_run(dir, paths);
+                if *update {
+                    // Eligibility and unsupported content fail locally, even
+                    // without credentials, before constructing an HTTP context.
+                    let plan = cmd::assets_sync::preview_update(dir, paths).await;
+                    if !plan.ok || *dry_run {
+                        return plan;
+                    }
+                } else if *dry_run {
+                    return cmd::assets_sync::run_dry_run(dir, paths);
+                }
             }
             if !matches!(args.command, AssetsCommand::Sync { .. }) {
                 return run_assets(&args.command).await;
@@ -1046,7 +1059,14 @@ impl Cli {
                     dir,
                     paths,
                     dry_run: false,
-                } => cmd::assets_sync::run(&ctx, &dir, &paths).await,
+                    update,
+                } => {
+                    if update {
+                        cmd::assets_sync::run_update(&ctx, &dir, &paths).await
+                    } else {
+                        cmd::assets_sync::run(&ctx, &dir, &paths).await
+                    }
+                }
                 _ => unreachable!("handled above"),
             },
             Command::Place(args) => match args.command {
@@ -2269,6 +2289,7 @@ output_path = "generated"
                     id: 7,
                 },
                 asset_type: "Decal".into(),
+                target_asset_id: None,
                 operation_id: Some("op1".into()),
             },
         );

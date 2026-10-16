@@ -102,9 +102,9 @@ pub const ENDPOINTS: &[Endpoint] = &[
         summary: "Update an asset's content and metadata",
         implemented: true,
         auth: &[ApiKey, OAuth],
-        scopes: &["asset:write"],
+        scopes: &["asset:read", "asset:write"],
         mutating: true,
-        note: "Only Models can replace the content body. Icons and previews must be Image assets.",
+        note: "Only Models can replace the content body. Use assets sync --update --path for receipt-backed changed Models under stable IDs. Content-only updates omit metadata updateMask. Icons and previews must be Image assets.",
     },
     Endpoint {
         id: "asset.get",
@@ -170,7 +170,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[],
         scopes: &[],
         mutating: true,
-        note: "Local registry + sync. Exact repeatable sync --path selection, full local upload preflight, durable per-file receipts, recover, changed/unverified status. Dry-run is a registry/known-freshness check only. Register --image-id and codegen.image_ids are explicit offline Image reference options.",
+        note: "Local registry + sync. Exact repeatable sync --path selection, full local publication preflight, durable per-file receipts and recovery. Default sync creates missing files. Explicit --update --path updates only changed receipt-backed Models in place; its dry-run plans local updates without credentials. Normal dry-run checks registry/known freshness only. Register --image-id and codegen.image_ids are explicit offline Image reference options.",
     },
     Endpoint {
         id: "asset.image-id",

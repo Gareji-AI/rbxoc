@@ -180,7 +180,7 @@ another game is obvious:
 {
   "ok": true,
   "summary": "Credentials work (api-key / abcd****)",
-  "data": { "source": "/work/my-game/.rbxoc" }
+  "data": { "source": "/work/my-game/.rbxoc/api-key" }
 }
 ```
 
@@ -275,6 +275,8 @@ rbxoc assets codegen
 rbxoc assets sync              # upload missing, refresh lock, codegen
 rbxoc assets sync --path assets/ui/button.png --path assets/sfx/hit.ogg
 rbxoc assets sync --dry-run     # registry + known-freshness check, not upload preflight
+rbxoc assets sync --update --path assets/models/tree.fbx --dry-run # plan a changed Model update
+rbxoc assets sync --update --path assets/models/tree.fbx # keep its ID, record fresh receipt
 rbxoc assets import-asphalt-lock --asphalt-lock asphalt.lock.toml --input Assets --write
 ```
 
@@ -290,8 +292,11 @@ generated keys fail without overwriting existing output.
 
 `assets status` distinguishes `current`, `changed`, and `unverified` entries.
 Only a successful sync receipt proves known freshness. Changed registered
-files are **not** automatically replaced, and legacy/manual registrations stay
-unverified. See [asset sync safety and recovery](docs/asset-sync-safety.md) for
+files are **not** automatically replaced. Explicit `--update --path` updates
+only changed, receipt-backed Models under their existing IDs; missing,
+unverified, current, and unsupported entries fail before any cloud mutation.
+Legacy/manual registrations stay unverified. See
+[asset sync safety and recovery](docs/asset-sync-safety.md) for
 dry-run limits, pending operations, and uncertain outcomes.
 
 Generated Luau from that registry:
@@ -489,6 +494,34 @@ IDs, a path and summary for every implemented entry, a stated reason for every
 unimplemented one, and no cookie-only endpoint marked implemented.
 
 ## Verification status
+
+### Optional live sweep (maintainers only)
+
+Both `node scripts/live-sweep.mjs` and `node scripts/live-sweep-ext.mjs` use
+one shared case list. They default to **read-only**, with no committed target
+defaults. Select a small read-only probe with explicit environment values:
+
+```bash
+UNIVERSE_ID="$MY_TEST_UNIVERSE" RBXOC_SWEEP_CASES="universe get" node scripts/live-sweep.mjs
+```
+
+`RBXOC` can select a binary. Without it, the platform-specific release binary
+in this checkout is used. `RBXOC_SWEEP_CASES` is a comma-separated list of
+exact labels from `scripts/live-sweep-cases.mjs`. Without a selection, all
+read-only cases run, requiring every target they use (universe/place/asset IDs,
+server version/job ID, config repository, datastore name/scope/entry, and
+`ANALYTICS_QUERY`). Missing configuration aborts the **whole** plan before
+any child command. The script prints mode and targets before starting.
+
+Mutations require **exactly** `RBXOC_SWEEP_MUTATE=1` plus explicit targets,
+files, message/value bodies, and prices for selected cases. Selecting a
+mutating case without opt-in fails, rather than silently running it. Prefer
+a disposable test universe and a narrowly selected case; mutations can publish
+places, overwrite/delete data, grant permissions, send messages, and change
+game pass prices. No cloud rollback is promised. The obsolete unsupported
+`devproduct update` case was removed. Nonzero child exits fail the sweep.
+
+### Recorded evidence
 
 A real-key session on **2026-10-13** verified credential resolution and the
 universe read and virtual-event list endpoints. Real-key / fake-key / no-key

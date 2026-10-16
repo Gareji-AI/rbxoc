@@ -1,8 +1,8 @@
 # rbxoc 実 API 検証レポート
 
 検証日: 2026-10-13
-認証: `C:/Users/Keisu/Projects/OSS/roblox-ts-ai-native-template/.env` の `RBXOC_API_KEY`
-対象 universe: `5154434305`（アカウント自身のもの）
+認証: maintainer-owned consumer project のローカル `.env` にある `RBXOC_API_KEY`
+対象 universe: maintainer-owned universe（本番 ID は省略）
 実行経路: `.env` → `mise [env]` → `RBXOC_API_KEY` → `rbxoc` → Open Cloud
 
 ## キーの実効権限（実測）
@@ -41,8 +41,8 @@
 | `api show place.publish` | 詳細表示 |
 | `analytics catalog` | 指標一覧（ローカル） |
 | `auth check` | 認証解決と疎通 |
-| `universe get --universe-id 5154434305` | `utuwhhelhk's Place` |
-| `event list --universe-id 5154434305` | 0 件（正常） |
+| `universe get --universe-id <maintainer-universe>` | Universe metadata returned |
+| `event list --universe-id <maintainer-universe>` | 0 件（正常） |
 | `assets init/status/register/codegen` | ローカル完結 |
 | `assets codegen --check` | 未登録で exit 1、登録後 exit 0 |
 | `asset create --dry-run` | 種別判定のみ |

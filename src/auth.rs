@@ -14,8 +14,10 @@
 //! 1. `--api-key` (agents should avoid it; it lands in shell history)
 //! 2. `RBXOC_API_KEY` environment variable
 //! 3. the file given by `--api-key-file`
-//! 4. `.rbxoc/api-key` walking up from the working directory, stopping at the
+//! 4. non-empty `RBXOC_OAUTH_TOKEN`
+//! 5. `.rbxoc/api-key` walking up from the working directory, stopping at the
 //!    first `.rbxoc` found. This keeps one key per project.
+//! 6. `.rbxoc/oauth-token` in that same first directory, if it has no API key.
 //!
 //! OAuth2 comes from `RBXOC_OAUTH_TOKEN` or `.rbxoc/oauth-token` in the same
 //! project-local directory. There is deliberately no home-directory fallback:

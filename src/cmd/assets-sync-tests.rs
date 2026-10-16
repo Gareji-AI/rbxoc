@@ -10,6 +10,58 @@ use std::sync::{
 };
 use std::thread::JoinHandle;
 
+#[path = "assets-update-tests.rs"]
+mod update_tests;
+
+#[tokio::test]
+async fn named_segments_stay_encoded_in_actual_http_request_targets() {
+    let server = MockServer::new(|_, _, _| (200, json!({})));
+    let ctx = server.ctx();
+    let raw = "a/b?# %日本";
+    let encoded = "a%2Fb%3F%23%20%25%E6%97%A5%E6%9C%AC";
+    assert!(
+        crate::cmd::datastore::get(&ctx, 1, raw, raw, Some(raw))
+            .await
+            .ok
+    );
+    assert!(
+        crate::cmd::ordered_datastore::increment(&ctx, 1, raw, raw, raw, 1)
+            .await
+            .ok
+    );
+    assert!(crate::cmd::config::restore(&ctx, 1, raw, raw).await.ok);
+    assert!(
+        crate::cmd::universe::publish_message(&ctx, 1, raw, "{}")
+            .await
+            .ok
+    );
+    assert!(
+        crate::cmd::server::logs(&ctx, 1, 2, 3, raw, 1, false)
+            .await
+            .ok
+    );
+    assert!(
+        crate::cmd::alerts::update(&ctx, "universe", "1", raw, "{}")
+            .await
+            .ok
+    );
+    assert!(
+        crate::cmd::analytics::operation(&ctx, 1, "metrics", raw)
+            .await
+            .ok
+    );
+    assert!(crate::cmd::asset::operation(&ctx, raw).await.ok);
+    let requests = server.requests.lock().unwrap();
+    assert_eq!(requests.len(), 8);
+    for request in requests.iter() {
+        let target = request.lines().next().unwrap();
+        assert!(target.contains(encoded), "{target}");
+        assert!(!target.contains('?'), "{target}");
+        assert!(!target.contains('#'), "{target}");
+    }
+    assert!(requests[1].contains(&format!("/{encoded}:increment ")));
+}
+
 struct MockServer {
     url: String,
     requests: Arc<Mutex<Vec<String>>>,
@@ -186,6 +238,7 @@ fn pending(dir: &Path, key: &str, operation: Option<&str>) {
             fingerprint: assets::fingerprint(&sources[key]).unwrap(),
             creator: manifest.creator,
             asset_type: "Decal".into(),
+            target_asset_id: None,
             operation_id: operation.map(str::to_string),
         },
     );

@@ -73,3 +73,49 @@ fn auth_check_handles_unicode_and_reports_the_exact_file() {
     assert!(json["summary"].as_str().unwrap().contains("日本語a****"));
     assert!(!String::from_utf8(out.stdout).unwrap().contains("abcdefgh"));
 }
+
+#[test]
+fn update_requires_explicit_paths_before_any_authentication() {
+    let out = run(&["assets", "sync", "--update"]);
+    assert_eq!(out.status.code(), Some(64));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["error"]["code"], "usage_error");
+}
+
+#[test]
+fn update_eligibility_and_dry_run_are_credential_free() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("assets")).unwrap();
+    std::fs::write(
+        dir.path().join("assets/model.fbx"),
+        b"synthetic changed Model fixture",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("rbxoc.assets.toml"), "[creator]\ntype = 'group'\nid = 7\n[codegen]\noutput_path = 'generated'\n[inputs.main]\npath = 'assets/*'\n").unwrap();
+    let args = [
+        "assets",
+        "sync",
+        "--dir",
+        dir.path().to_str().unwrap(),
+        "--update",
+        "--path",
+        "assets/model.fbx",
+    ];
+    let missing = run(&args);
+    let json: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(json["error"]["code"], "asset_update_not_changed");
+    // A synthetic historical receipt, not a claim about any real asset.
+    let lock = "version = 1\n[assets]\n'assets/model.fbx' = 501\n[publications.'assets/model.fbx']\nasset_id = 501\nfingerprint = 'previous-published-fixture'\nasset_type = 'Model'\n[publications.'assets/model.fbx'.creator]\ntype = 'group'\nid = 7\n";
+    std::fs::write(dir.path().join("rbxoc.assets.lock.toml"), lock).unwrap();
+    let mut preview_args = args.to_vec();
+    preview_args.push("--dry-run");
+    let out = run(&preview_args);
+    assert!(out.status.success(), "{out:?}");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["data"]["updates"][0]["assetId"], 501);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("rbxoc.assets.lock.toml")).unwrap(),
+        lock
+    );
+    assert!(!dir.path().join("generated").exists());
+}

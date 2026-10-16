@@ -550,6 +550,34 @@ pub(crate) async fn start_create(
     Ok((op_id, asset_type))
 }
 
+/// Start a content-only in-place Model update. No name/description changes and
+/// no automatic retry; the registry owns intent, operation and completion receipts.
+pub(crate) async fn start_update(
+    ctx: &Ctx,
+    asset_id: u64,
+    file: &std::path::Path,
+) -> Result<String, ErrorBody> {
+    let (asset_type, content_type, _) = resolve_asset_type(file, None, CMD_UPDATE).await?;
+    if asset_id == 0 || !is_updateable_body(&asset_type) {
+        return Err(ErrorBody {
+            code: "asset_update_unsupported",
+            message: "In-place content updates require a positive registered Model asset ID".into(),
+            status: None,
+            detail: None,
+            refs: None,
+        });
+    }
+    // Roblox's documented content-only update carries only assetId and omits
+    // updateMask (which selects metadata fields, not the content body).
+    let request = json!({ "assetId": asset_id.to_string() });
+    let form = build_multipart(&request, file, content_type, CMD_UPDATE).await?;
+    let req = ctx
+        .client
+        .patch(ctx.url(&format!("/assets/v1/assets/{asset_id}")))
+        .multipart(form);
+    start_operation(ctx, req, CMD_UPDATE).await
+}
+
 /// Poll until the operation completes or times out.
 pub(crate) async fn wait_for_operation(
     ctx: &Ctx,
@@ -626,7 +654,7 @@ async fn start_operation(
     req: reqwest::RequestBuilder,
     _command: &str,
 ) -> Result<String, ErrorBody> {
-    let resp = ctx.send(req).await?;
+    let resp = ctx.send_once(req).await?;
     if !resp.status().is_success() {
         return Err(crate::auth::error_from_response(resp).await);
     }
@@ -651,7 +679,8 @@ pub fn normalize_operation_id(path: &str) -> Result<String, ErrorBody> {
     {
         return Err(ErrorBody {
             code: "operation_id_missing",
-            message: "create response has no valid operation ID; outcome may be uncertain".into(),
+            message: "publication response has no valid operation ID; outcome may be uncertain"
+                .into(),
             status: None,
             detail: None,
             refs: None,

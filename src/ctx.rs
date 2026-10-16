@@ -128,6 +128,24 @@ impl Ctx {
         self.json_or_error(resp).await
     }
 
+    /// Publication start requests have uncertain outcomes after transport/5xx
+    /// failures. Never retry them, even if a future body becomes cloneable.
+    pub async fn send_once(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, ErrorBody> {
+        self.apply_auth(req).send().await.map_err(|err| ErrorBody {
+            code: "network_error",
+            message: format!("cannot send the request: {err}"),
+            status: None,
+            detail: Some(
+                "Publication request sent at most once; reconcile its receipt before retrying"
+                    .into(),
+            ),
+            refs: None,
+        })
+    }
+
     /// GET with query values encoded independently of the route.
     pub async fn get_json_query(
         &self,

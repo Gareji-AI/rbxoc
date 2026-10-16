@@ -1,6 +1,7 @@
 # Asset sync: selection, freshness, and recovery
 
-`assets sync` creates missing assets. It does not silently replace existing
+`assets sync` creates missing assets by default. Explicit `--update --path`
+updates changed registered Models in place. Neither mode silently replaces existing
 IDs, delete successful uploads as rollback, or promise a cloud transaction.
 
 ## Select exactly what can be published
@@ -24,6 +25,61 @@ cloud write. Codegen still includes **all registered entries**, including
 orphaned entries, and omits unselected missing entries. The creator and
 unrelated registry records are preserved. Two different source files cannot
 share a normalized manifest key.
+
+## Update changed Models without changing IDs
+
+```bash
+rbxoc assets sync --dir ./art --update --path models/tree.fbx --dry-run
+rbxoc assets sync --dir ./art --update --path models/tree.fbx
+rbxoc assets status --dir ./art
+```
+
+`--update` requires one or more explicit `--path` values. Every selected entry
+must have a positive registered ID and a successful **Model** publication receipt
+for that same ID and creator. Its source/preprocessing fingerprint must have
+changed. Missing, unverified, and current entries are rejected locally, not
+created or silently skipped. A creator change is not permission to update an
+old creator's asset: restore the receipt's creator first. Two selected sources
+may not target the same ID. New bytes must still infer as Model; Decal, Image,
+Audio, Video and Animation updates are refused before the first cloud mutation.
+
+The whole selection is validated/preprocessed before the first PATCH. Only
+content is updated, not the display name or description. A completed operation
+must return the **same asset ID**; a different/missing ID preserves the old ID
+and pending receipt and fails. The new fingerprint is committed only after a
+successful matching receipt; `assets status` then reports `current`. Codegen
+keeps all registered IDs. No unselected file is updated or uploaded.
+
+`--update --dry-run` needs no credentials, lists `updates` with path, asset ID,
+type and `update`/`resume-update` action, and validates local eligibility,
+preprocessing, type and size. It does not write the lockfile or generated output,
+check destination writability, or prove cloud permissions/moderation/delivery.
+This differs from the default registry-only dry-run below.
+
+Interrupted updates use the same intent → operation → completion receipts as
+creates, with a `target_asset_id` that must keep matching the registered ID.
+Keep original bytes/settings/creator/target while recovering. A known operation
+is polled, never blindly PATCHed again. An unknown operation outcome blocks
+automatic retry, even with `--retry`. After a partial batch, select **only the
+unfinished paths** when resuming; successfully updated paths are now `current`
+and intentionally fail a new `--update` selection.
+
+```bash
+# If an update response was lost, attach only its independently known operation.
+rbxoc assets recover --dir ./art --path models/tree.fbx --operation-id OPERATION_ID
+rbxoc assets sync --dir ./art --update --path models/tree.fbx
+```
+
+Plain sync never resumes a pending update as a create. Standalone `asset update`
+does not maintain registry receipts; use this scoped workflow when freshness
+must remain known. Live in-place FBX-derived Model updates, moderation, and
+`LoadAssetAsync` latest-version delivery remain **unverified**; local HTTP
+fixtures prove CLI safety/recovery, not Roblox platform behavior.
+
+The request follows Roblox's [Assets API content-only update sample](https://github.com/Roblox/creator-docs/blob/main/content/en-us/reference/cloud/assets/v1.json):
+PATCH the existing asset path with multipart `request` containing `assetId` and
+`fileContent`, without a metadata `updateMask`. Asset type is inferred locally
+to enforce Model-only eligibility, not submitted as a metadata update.
 
 ## Full local preflight before publication
 
@@ -69,9 +125,11 @@ with unverified entries, but explicitly reports them as unverified, never as
 current. Fingerprints are written only after successful operation receipts;
 sync never accepts edited local bytes as proof that an old ID was republished.
 
-Changed files are reported without re-uploading or changing their IDs. Use an
-explicit `asset update` for supported Model content, or an explicit create and
-register replacement. A manual registration clears freshness proof, so the
+Default sync reports changed files without re-uploading or changing their IDs.
+Use `assets sync --update --path` for receipt-backed changed Models, or an
+explicit create and register replacement for other types. A standalone
+`asset update` does not refresh the registry receipt. Manual registration clears
+freshness proof, so the
 entry stays unverified until there is a matching successful sync receipt.
 This is publication freshness, not a general build cache.
 
@@ -79,7 +137,9 @@ This is publication freshness, not a general build cache.
 
 The lockfile retains its version-1 `assets` map and adds optional `pending`
 and `publications` tables. Receipts contain only source fingerprints, creator,
-asset type, operation ID, and returned asset ID, never API keys or tokens.
+asset type, operation ID, returned asset ID, and (for updates) target asset ID,
+never API keys or tokens. Older pending receipts without `target_asset_id`
+remain create receipts, preserving version-1 lockfile compatibility.
 Commit successful receipts with the lockfile. Do not delete pending records to
 make a failed command appear clean.
 
@@ -109,9 +169,9 @@ stale operation from being attached to different content.
 
 ## Uncertain outcomes need explicit reconciliation
 
-If a create response is lost, malformed, or lacks an operation ID, sync leaves
+If a create or update response is lost, malformed, or lacks an operation ID, sync leaves
 an intent with unknown outcome and returns `publication_uncertain`. It refuses
-another create on retry. A 5xx response may also have an uncertain outcome.
+another create or update on retry. A 5xx response may also have an uncertain outcome.
 An explicit non-timeout 4xx rejection clears its unaccepted intent safely.
 
 Inspect Creator Dashboard or your saved response, then choose the applicable
