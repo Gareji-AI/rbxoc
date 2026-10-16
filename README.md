@@ -469,14 +469,9 @@ mise's `self_update.auto` and `tool_update.global_auto` are **global-only settin
 mise WARN  self_update.auto in non-global config .../mise.toml is ignored for security reasons
 ```
 
-Tool updates therefore stay inside the project:
-
-```bash
-mise run update-tools            # check for newer versions
-mise run update-tools -- --apply # rewrite and run mise install
-```
-
-`mise latest <tool>` resolves the stable version. (`ls-remote` also returns aliases like nightly / beta / stable, so it cannot be used alone.)
+Tool updates therefore stay inside the project and arrive as Renovate pull
+requests (`renovate.json`): the `rust` pin and `cargo:similarity-rs` in
+`mise.toml`, plus the Cargo dependency graph and GitHub Actions in CI.
 
 ## Development
 
