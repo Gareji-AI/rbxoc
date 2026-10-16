@@ -15,7 +15,8 @@ rust = "1.99.0"
 
 # Do not add automatic updates here.
 # self_update.auto and tool_update.global_auto are global-only settings, and
-# mise rejects them in this file. Update tools with `mise run update-tools`.
+# mise rejects them in this file. Tool versions are updated by Renovate
+# (see renovate.json).
 
 [tasks.build]
 description = "Build the release binary"
@@ -32,10 +33,6 @@ run = [
 [tasks.install-local]
 description = "Build and install into ~/.local/bin"
 run = "cargo install --path . --locked"
-
-[tasks.update-tools]
-description = "Update mise.toml tools to the latest versions (--apply to write)"
-run = "node scripts/update-tools.mjs"
 
 [tasks.demo]
 description = "Try the catalog output that needs no credentials"
