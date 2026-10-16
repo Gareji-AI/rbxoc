@@ -1611,24 +1611,11 @@ async fn run_auth(
     command: &AuthCommand,
 ) -> Output {
     let AuthCommand::Check { universe_id } = command;
-    let auth = match auth::resolve(api_key, api_key_file) {
+    let auth::ResolvedAuth { auth, source } = match auth::resolve_with_source(api_key, api_key_file)
+    {
         Ok(a) => a,
         Err(e) => {
             return failure("auth check", auth::missing_auth_error(format!("{e:#}")));
-        }
-    };
-
-    // Report where the credential came from, so a wrong-project key is obvious.
-    let source = if api_key.is_some() {
-        "--api-key".to_string()
-    } else if std::env::var("RBXOC_API_KEY").is_ok() {
-        "RBXOC_API_KEY".to_string()
-    } else if std::env::var("RBXOC_OAUTH_TOKEN").is_ok() {
-        "RBXOC_OAUTH_TOKEN".to_string()
-    } else {
-        match auth::find_credential_dir() {
-            Some(dir) => dir.to_string_lossy().to_string(),
-            None => "(none)".to_string(),
         }
     };
 

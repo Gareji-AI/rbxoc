@@ -34,6 +34,9 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
+      - name: Coverage contract
+        run: node scripts/check-coverage.mjs
+
       # Verify the CLI contract in CI too. Only credential-free paths here.
       - name: Catalog contract
         run: |
@@ -58,3 +61,12 @@ jobs:
           code=$?
           set -e
           test "$code" -eq 64 || { echo "expected exit 64, got $code"; exit 1; }
+
+      - name: Usage error JSON and exit code
+        run: |
+          set +e
+          ./target/release/rbxoc datastore get > usage-error.json
+          code=$?
+          set -e
+          test "$code" -eq 64 || { echo "expected exit 64, got $code"; exit 1; }
+          node -e 'const out = JSON.parse(require("fs").readFileSync("usage-error.json", "utf8")); if (out.ok !== false || out.error.code !== "usage_error") process.exit(1)'
