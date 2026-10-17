@@ -238,15 +238,20 @@ async fn unknown_update_outcome_is_never_reissued_even_with_retry_enabled() {
         });
         let mut ctx = server.ctx();
         ctx.retry = 3;
+        let mut original_clue = None;
         for _ in 0..2 {
-            assert_eq!(
-                run_update(&ctx, dir.path(), &selection())
-                    .await
-                    .error
-                    .unwrap()
-                    .code,
-                "publication_uncertain"
-            );
+            let out = run_update(&ctx, dir.path(), &selection()).await;
+            assert_eq!(out.error.as_ref().unwrap().code, "publication_uncertain");
+            let clue = out.data.as_ref().unwrap()["pendingPublications"][0].clone();
+            assert_eq!(clue["path"], KEY);
+            assert_eq!(clue["targetAssetId"], ID);
+            assert_eq!(clue["assetType"], "Model");
+            assert!(clue["displayName"].is_null()); // Content updates never send a new name.
+            assert!(clue["requestedAt"].as_str().is_some());
+            if let Some(original) = &original_clue {
+                assert_eq!(&clue, original);
+            }
+            original_clue = Some(clue);
         }
         assert_eq!(updates(&server), 1);
         let lock = assets::load_lockfile(dir.path()).unwrap();
@@ -453,6 +458,11 @@ async fn partial_batch_commits_each_update_and_resumes_only_unfinished_paths() {
     });
     let both = vec![KEY.into(), other.into()];
     assert!(!run_update(&server.ctx(), dir.path(), &both).await.ok);
+    let lock = assets::load_lockfile(dir.path()).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("generated/assets.luau")).unwrap(),
+        assets::render(&assets::load_manifest(dir.path()).unwrap(), &lock).unwrap()
+    );
     let count = server.requests.lock().unwrap().len();
     assert_eq!(
         run_update(&server.ctx(), dir.path(), &both)

@@ -63,6 +63,37 @@ pub fn format_for(path: &std::path::Path) -> Option<ModelFormat> {
     }
 }
 
+/// Advisory chosen from one reported failure, not a documented provider limit.
+const XML_ANIMATION_WARNING_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Call only after resolving the asset type from the original model body.
+pub fn large_xml_animation_warning(
+    path: &std::path::Path,
+    asset_type: &str,
+    bytes: u64,
+) -> Option<String> {
+    (format_for(path) == Some(ModelFormat::Xml)
+        && asset_type == "Animation"
+        && bytes >= XML_ANIMATION_WARNING_BYTES)
+        .then(|| format!(
+            "{}: large XML Animation ({bytes} bytes, 2 MiB advisory threshold, not a Roblox limit). One such upload reportedly failed with HTTP 500; the cause is unconfirmed. Consider exporting binary .rbxm in Studio and verifying poses before a new upload. No conversion is performed. Reconcile existing pending receipts with their original bytes; do not retry an uncertain publication with a converted file.",
+            path.display()
+        ))
+}
+
+/// Best-effort, read-only advisory for registry dry-run. This deliberately does
+/// not turn that command into full upload preflight or guess malformed types.
+pub fn inspect_large_xml_animation(path: &std::path::Path) -> Option<String> {
+    if format_for(path) != Some(ModelFormat::Xml)
+        || std::fs::metadata(path).ok()?.len() < XML_ANIMATION_WARNING_BYTES
+    {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    let root = classify(&bytes, ModelFormat::Xml).ok()?;
+    large_xml_animation_warning(path, root.kind().asset_type(), bytes.len() as u64)
+}
+
 /// Parse the file and classify it.
 ///
 /// Errors carry the reason so the caller can surface it instead of silently
@@ -136,6 +167,27 @@ mod tests {
 
     fn classify_xml(xml: &str) -> ModelKind {
         classify(xml.as_bytes(), ModelFormat::Xml).unwrap().kind()
+    }
+
+    #[test]
+    fn large_xml_advisory_does_not_apply_to_binary_models_or_small_animations() {
+        use std::path::Path;
+        for (path, kind, bytes, expected) in [
+            ("a.rbxm", "Animation", 3 * 1024 * 1024, false),
+            ("a.rbxmx", "Model", 3 * 1024 * 1024, false),
+            (
+                "a.rbxmx",
+                "Animation",
+                XML_ANIMATION_WARNING_BYTES - 1,
+                false,
+            ),
+            ("a.RBXMX", "Animation", XML_ANIMATION_WARNING_BYTES, true),
+        ] {
+            assert_eq!(
+                large_xml_animation_warning(Path::new(path), kind, bytes).is_some(),
+                expected
+            );
+        }
     }
 
     #[test]

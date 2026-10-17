@@ -1,7 +1,7 @@
 //! Thumbnail replacement.
 //!
 //! `thumbnail-personalization-api` is experimental. Expect the schema to
-//! change without notice. Needs an API key or OAuth
+//! change without notice. Needs an API key
 //! (`universe.thumbnail:write`).
 //!
 //! Uploads are asynchronous. Pass the returned operationIds to
@@ -93,8 +93,20 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
                 let err = crate::auth::error_from_response(resp).await;
                 return failure(COMMAND, err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure(COMMAND, err),
+            };
             let ops = extract_operation_ids(&data);
+            if ops.is_empty() {
+                return failure(COMMAND, ErrorBody {
+                    code: "operation_id_missing",
+                    message: "Thumbnail upload response contains no usable operation IDs".into(),
+                    status: None,
+                    detail: Some("Inspect existing thumbnails and the response before repeating this upload".into()),
+                    refs: None,
+                });
+            }
             let mut out = Output::success(
                 COMMAND,
                 format!(
@@ -123,13 +135,22 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
 /// several locations are checked.
 fn extract_operation_ids(data: &Value) -> Vec<String> {
     let mut ids = Vec::new();
+    if let Some(map) = data.get("fileToOperationIdDict").and_then(Value::as_object) {
+        for value in map.values().filter_map(Value::as_str) {
+            if let Some(id) = usable_operation_id(value) {
+                ids.push(id);
+            }
+        }
+    }
     for key in ["operationIds", "operations", "paths"] {
         if let Some(arr) = data.get(key).and_then(|v| v.as_array()) {
             for item in arr {
-                if let Some(s) = item.as_str() {
-                    ids.push(s.strip_prefix("operations/").unwrap_or(s).to_string());
-                } else if let Some(s) = item.get("path").and_then(|v| v.as_str()) {
-                    ids.push(s.strip_prefix("operations/").unwrap_or(s).to_string());
+                if let Some(raw) = item
+                    .as_str()
+                    .or_else(|| item.get("path").and_then(Value::as_str))
+                    && let Some(id) = usable_operation_id(raw)
+                {
+                    ids.push(id);
                 }
             }
         }
@@ -137,6 +158,11 @@ fn extract_operation_ids(data: &Value) -> Vec<String> {
     ids.sort();
     ids.dedup();
     ids
+}
+
+fn usable_operation_id(raw: &str) -> Option<String> {
+    let id = raw.strip_prefix("operations/").unwrap_or(raw);
+    (!id.trim().is_empty()).then(|| id.to_string())
 }
 
 /// Check upload processing status.
@@ -154,14 +180,14 @@ pub async fn status(ctx: &Ctx, universe_id: u64, operation_ids: &[String]) -> Ou
             },
         );
     }
-    let joined = operation_ids.join(",");
+    let query: Vec<_> = operation_ids
+        .iter()
+        .map(|id| ("operationIds", id.as_str()))
+        .collect();
     let path = format!(
         "/thumbnail-personalization-api/v1/universes/{universe_id}/thumbnails/uploads/status"
     );
-    match ctx
-        .get_json_query(&path, &[("operationIds", joined.as_str())])
-        .await
-    {
+    match ctx.get_json_query(&path, &query).await {
         Ok(data) => Output::success(
             "thumbnail status",
             format!("Fetched status for {} operations", operation_ids.len()),

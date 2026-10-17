@@ -95,7 +95,10 @@ pub fn apply_endpoint_context(
         return error;
     };
 
-    if auth_kind == "api-key" && endpoint.auth == [catalog::AuthKind::OAuth] {
+    if matches!(error.status, Some(401 | 403))
+        && auth_kind == "api-key"
+        && endpoint.auth == [catalog::AuthKind::OAuth]
+    {
         error.code = "auth_oauth_required";
         if error.message.starts_with("Open Cloud returned HTTP") {
             error.message = format!(
@@ -255,9 +258,9 @@ mod tests {
     }
 
     #[test]
-    fn apply_endpoint_context_flags_oauth_only_catalog_entry() {
+    fn api_key_supported_analytics_is_not_reclassified_as_oauth_required() {
         let err = build_error_body(403, "{}", None);
         let err = apply_endpoint_context(err, "analytics.metrics", "api-key");
-        assert_eq!(err.code, "auth_oauth_required");
+        assert_eq!(err.code, "http_403");
     }
 }

@@ -7,7 +7,7 @@
 //! `legacy-universe.badge:manage-and-spend-robux`. The catalog marks this so
 //! an agent asks before acting.
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::ctx::{Ctx, failure};
 use crate::output::{ErrorBody, Output};
@@ -68,7 +68,10 @@ pub async fn create(
                 let err = crate::auth::error_from_response(resp).await;
                 return failure(COMMAND, err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure(COMMAND, err),
+            };
             Output::success(COMMAND, format!("Created badge {name}"), Some(data))
                 .with_hints(vec!["Creating a badge spends Robux".into()])
         }
@@ -117,7 +120,10 @@ pub async fn update(
                 let err = crate::auth::error_from_response(resp).await;
                 return failure(COMMAND, err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure(COMMAND, err),
+            };
             Output::success(COMMAND, format!("Updated badge {badge_id}"), Some(data))
         }
         Err(err) => failure(COMMAND, err),

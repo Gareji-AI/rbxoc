@@ -1,7 +1,7 @@
 //! Analytics queries.
 //!
-//! `analytics-query-api` is OAuth2-only (`universe.analytics:read`). Unlike
-//! most areas, an API key cannot call it. Not covered by rbxcloud.
+//! `analytics-query-api` supports API keys and OAuth2
+//! (`universe.analytics:read`). Not covered by rbxcloud.
 //!
 //! Queries may be asynchronous and return an operation to poll.
 
@@ -42,7 +42,12 @@ pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
                 let err = crate::auth::error_from_response(resp).await;
                 return failure_for_endpoint(COMMAND, "analytics.metrics", err, &ctx.auth);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => {
+                    return failure_for_endpoint(COMMAND, "analytics.metrics", err, &ctx.auth);
+                }
+            };
             let mut out =
                 Output::success(COMMAND, "Accepted the metrics query", Some(data.clone()));
             // Asynchronous queries return an operation.
@@ -129,6 +134,6 @@ pub async fn catalog() -> Output {
     )
     .with_hints(vec![
         "Confirm exact metric names in the Creator Dashboard analytics view".into(),
-        "This API requires OAuth2 (universe.analytics:read)".into(),
+        "API keys and OAuth2 are supported; enable universe.analytics:read (see `rbxoc api show analytics.metrics`)".into(),
     ])
 }

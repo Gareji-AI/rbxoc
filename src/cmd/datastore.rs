@@ -70,7 +70,10 @@ pub async fn set(
                 let err = crate::auth::error_from_response(resp).await;
                 return failure("datastore set", err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure("datastore set", err),
+            };
             Output::success(
                 "datastore set",
                 format!("Wrote {store}/{entry}"),

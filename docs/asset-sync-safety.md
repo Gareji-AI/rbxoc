@@ -108,6 +108,9 @@ There is no all-or-nothing guarantee and no destructive rollback.
 It is a **registry and known-freshness check**, not full preprocessing/upload
 preflight or remote verification. It uses the same selection as real sync:
 unselected missing or stale paths do not fail a scoped check.
+It also performs a best-effort read-only advisory check on XML Animations at
+least 2 MiB. That threshold is not a Roblox limit or a proven HTTP 500 cause;
+no binary conversion or source/fingerprint changes are made. See README.
 
 `assets status` and dry-run report:
 
@@ -137,7 +140,8 @@ This is publication freshness, not a general build cache.
 
 The lockfile retains its version-1 `assets` map and adds optional `pending`
 and `publications` tables. Receipts contain only source fingerprints, creator,
-asset type, operation ID, returned asset ID, and (for updates) target asset ID,
+asset type, operation ID, returned asset ID, the exact create display name,
+local UTC request-intent time, and (for updates) target asset ID,
 never API keys or tokens. Older pending receipts without `target_asset_id`
 remain create receipts, preserving version-1 lockfile compatibility.
 Commit successful receipts with the lockfile. Do not delete pending records to
@@ -163,6 +167,17 @@ operation and never creates another asset for it. Poll failures/timeouts leave
 the operation receipt intact. Failed operations also remain recorded; retrying
 polls them rather than silently issuing a replacement create.
 
+On any post-preflight sync failure, codegen is refreshed from the **durable
+on-disk lockfile** before returning the original failure. Completed A and other
+registered IDs are usable even if B is uncertain; pending creates are not emitted.
+Pending updates retain their already registered target IDs, not a new freshness
+claim. `data.partialSync` lists the output path and registered map after a
+successful refresh. Codegen failure adds a hint without hiding the publication
+error or dropping receipts. Repair local output/receipt storage, then run
+`rbxoc assets codegen` to regenerate without publishing. A failed completion
+receipt save must never cause an unsaved in-memory ID to appear in generated code.
+Preflight failures still leave existing generated output untouched.
+
 Recovery rejects changed bytes, preprocessing settings, asset type, or creator.
 Restore the original source/configuration before resuming. This prevents a
 stale operation from being attached to different content.
@@ -173,6 +188,22 @@ If a create or update response is lost, malformed, or lacks an operation ID, syn
 an intent with unknown outcome and returns `publication_uncertain`. It refuses
 another create or update on retry. A 5xx response may also have an uncertain outcome.
 An explicit non-timeout 4xx rejection clears its unaccepted intent safely.
+
+`publication_uncertain` includes `data.pendingPublications` with each selected
+uncertain intent's lock key, `displayName`, `assetType`, `creator`, `requestedAt`,
+`fingerprint`, `targetAssetId`, and `operationId`. New intent receipts persist
+`display_name` and RFC 3339 UTC `requested_at` **before** the mutation. The name
+is the exact source stem sent for create, not a converted temporary filename.
+Content-only updates send no new display name and report it as null. Request
+time is local intent time, not proof the provider received or accepted a request.
+These values remain stable across retries/restarts. Older pending receipts remain
+compatible; missing name/time stays null rather than being invented from the
+current file or clock. Fingerprints are local identity clues, not cloud evidence.
+
+Use these clues to narrow a manual Creator Dashboard inspection, then verify the
+actual asset/operation independently. rbxoc does not implement creator-wide asset
+search or automatic name/time reconciliation. No description marker is added:
+create descriptions stay unchanged, and Dashboard description search is unproven.
 
 Inspect Creator Dashboard or your saved response, then choose the applicable
 reconciliation. Do not guess an operation ID or asset ID:

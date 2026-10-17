@@ -83,7 +83,7 @@ pub async fn infer_asset_from_file(
     match model::classify(&bytes, format) {
         Ok(root) => {
             let kind = root.kind();
-            let note = if kind == ModelKind::Animation {
+            let mut note = if kind == ModelKind::Animation {
                 Some(format!(
                     "{} has class {}, so it uploads as Animation",
                     file.display(),
@@ -92,6 +92,13 @@ pub async fn infer_asset_from_file(
             } else {
                 None
             };
+            if let Some(warning) =
+                model::large_xml_animation_warning(file, kind.asset_type(), bytes.len() as u64)
+                && let Some(note) = &mut note
+            {
+                note.push_str(". ");
+                note.push_str(&warning);
+            }
             Ok((kind.asset_type(), "model/x-rbxm", note))
         }
         Err(e) => Err(ErrorBody {
@@ -156,70 +163,196 @@ pub async fn create(
 pub async fn update(
     ctx: &Ctx,
     asset_id: u64,
-    file: &std::path::Path,
+    file: Option<&std::path::Path>,
     asset_type: Option<&str>,
     display_name: Option<&str>,
     description: Option<&str>,
-    icon_file: Option<&std::path::Path>,
-    preview_file: Option<&std::path::Path>,
+    icon: Option<&str>,
+    previews: &[String],
 ) -> Output {
-    let (resolved_type, content_type, type_note) =
-        match resolve_asset_type(file, asset_type, CMD_UPDATE).await {
-            Ok((t, ct, note)) => (t, ct, note),
-            Err(err) => return failure(CMD_UPDATE, err),
-        };
-
-    if !is_updateable_body(&resolved_type) {
-        return failure(
-            CMD_UPDATE,
-            ErrorBody {
-                code: "asset_update_unsupported",
-                message: format!("{resolved_type} cannot replace its content body; only Model can"),
-                status: None,
-                detail: Some(
-                    "To change metadata only, pass --display-name / --description and omit --file"
-                        .into(),
-                ),
-
-                refs: None,
-            },
-        );
-    }
-
-    let mut request = json!({ "assetType": resolved_type, "assetId": asset_id.to_string() });
-    if let Some(n) = display_name {
-        request["displayName"] = json!(n);
-    }
-    if let Some(d) = description {
-        request["description"] = json!(d);
-    }
-
-    let mut form = match build_multipart(&request, file, content_type, CMD_UPDATE).await {
-        Ok(f) => f,
+    let plan = match plan_update(
+        asset_id,
+        file,
+        asset_type,
+        display_name,
+        description,
+        icon,
+        previews,
+    )
+    .await
+    {
+        Ok(plan) => plan,
         Err(err) => return failure(CMD_UPDATE, err),
     };
-
-    // Icons and previews ride in the same request as Image assets.
-    if let Some(icon) = icon_file
-        && let Err(err) = add_image_part(&mut form, icon, "icon", CMD_UPDATE).await
-    {
-        return failure(CMD_UPDATE, err);
+    let form = match (file, plan.content_type) {
+        (Some(file), Some(content_type)) => {
+            match build_multipart(&plan.request, file, content_type, CMD_UPDATE).await {
+                Ok(form) => form,
+                Err(err) => return failure(CMD_UPDATE, err),
+            }
+        }
+        _ => reqwest::multipart::Form::new().text("request", plan.request.to_string()),
+    };
+    let mut req = ctx
+        .client
+        .patch(ctx.url(&format!("/assets/v1/assets/{asset_id}")));
+    if !plan.mask.is_empty() {
+        req = req.query(&[("updateMask", &plan.mask)]);
     }
-    if let Some(preview) = preview_file
-        && let Err(err) = add_image_part(&mut form, preview, "preview", CMD_UPDATE).await
-    {
-        return failure(CMD_UPDATE, err);
+    let req = req.multipart(form);
+    if file.is_some() {
+        return submit_operation(ctx, req, CMD_UPDATE, &plan.asset_type, plan.type_note).await;
     }
+    let data = match ctx.send(req).await {
+        Ok(resp) => match ctx.json_or_error(resp).await {
+            Ok(data) => data,
+            Err(err) => return failure(CMD_UPDATE, err),
+        },
+        Err(err) => return failure(CMD_UPDATE, err),
+    };
+    if data
+        .get("path")
+        .and_then(Value::as_str)
+        .is_some_and(|path| path.starts_with("operations/"))
+    {
+        return operation_output(data, CMD_UPDATE, "asset", None);
+    }
+    // Metadata-only examples return the updated fields directly. Do not
+    // invent an operation receipt or interpret an empty object as success.
+    let valid_field = |field: &str, value: &Value| match field {
+        "previews" => value.is_array(),
+        _ => value.is_string(),
+    };
+    let has_metadata = plan.mask.split(',').any(|field| {
+        data.get(field)
+            .is_some_and(|value| valid_field(field, value))
+    });
+    let malformed_metadata = plan.mask.split(',').any(|field| {
+        data.get(field)
+            .is_some_and(|value| !valid_field(field, value))
+    });
+    let target = format!("assets/{asset_id}");
+    let has_path = data.get("path").and_then(Value::as_str) == Some(target.as_str());
+    let wrong_path = data.get("path").is_some() && !has_path;
+    let wrong_id = data.get("assetId").is_some_and(|id| {
+        id.as_u64()
+            .or_else(|| id.as_str().and_then(|s| s.parse().ok()))
+            != Some(asset_id)
+    });
+    let has_error = data.get("error").is_some_and(|error| !error.is_null());
+    if (!has_metadata && !has_path) || wrong_path || wrong_id || has_error || malformed_metadata {
+        return failure(CMD_UPDATE, ErrorBody {
+            code: "invalid_asset_response",
+            message: "Metadata update response has no updated fields or matching asset resource".into(),
+            status: None,
+            detail: Some("Inspect the target asset before repeating the update; it was sent at most once".into()),
+            refs: None,
+        });
+    }
+    Output::success(
+        CMD_UPDATE,
+        format!("Updated metadata for asset {asset_id}"),
+        Some(data),
+    )
+}
 
-    let update_mask = build_update_mask(
+struct UpdatePlan {
+    request: Value,
+    mask: String,
+    asset_type: String,
+    content_type: Option<&'static str>,
+    type_note: Option<String>,
+}
+
+fn image_resource(resource: &str) -> bool {
+    resource.strip_prefix("assets/").is_some_and(|id| {
+        !id.is_empty()
+            && id.bytes().all(|b| b.is_ascii_digit())
+            && id.parse::<u64>().is_ok_and(|id| id > 0)
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn plan_update(
+    asset_id: u64,
+    file: Option<&std::path::Path>,
+    asset_type: Option<&str>,
+    display_name: Option<&str>,
+    description: Option<&str>,
+    icon: Option<&str>,
+    previews: &[String],
+) -> Result<UpdatePlan, ErrorBody> {
+    let invalid = |code, message: &str| ErrorBody {
+        code,
+        message: message.into(),
+        status: None,
+        detail: None,
+        refs: None,
+    };
+    if asset_id == 0 {
+        return Err(invalid("invalid_asset_id", "--asset-id must be positive"));
+    }
+    if icon.is_some_and(|value| !image_resource(value))
+        || previews.iter().any(|value| !image_resource(value))
+    {
+        return Err(invalid(
+            "invalid_image_resource",
+            "--icon and --preview require existing Image resources like assets/123, not local files or Decal IDs",
+        ));
+    }
+    if file.is_none() && asset_type.is_some() {
+        return Err(invalid(
+            "asset_type_requires_file",
+            "--asset-type applies only to content updates with --file",
+        ));
+    }
+    let (asset_type, content_type, type_note) = if let Some(file) = file {
+        let (kind, content_type, note) = resolve_asset_type(file, asset_type, CMD_UPDATE).await?;
+        if !is_updateable_body(&kind) {
+            return Err(invalid(
+                "asset_update_unsupported",
+                "Only Model content can be replaced; omit --file for a metadata-only update",
+            ));
+        }
+        (kind, Some(content_type), note)
+    } else {
+        ("asset".into(), None, None)
+    };
+    let mask = build_update_mask(
         display_name.is_some(),
         description.is_some(),
-        icon_file.is_some(),
-        preview_file.is_some(),
+        icon.is_some(),
+        !previews.is_empty(),
     );
-    let url = format!("/assets/v1/assets/{asset_id}?updateMask={update_mask}");
-    let req = ctx.client.patch(ctx.url(&url)).multipart(form);
-    submit_operation(ctx, req, CMD_UPDATE, &resolved_type, type_note).await
+    if file.is_none() && mask.is_empty() {
+        return Err(invalid(
+            "nothing_to_update",
+            "Provide --file or at least one metadata field",
+        ));
+    }
+    let mut request = json!({"assetId": asset_id.to_string()});
+    if let Some(name) = display_name {
+        request["displayName"] = json!(name);
+    }
+    if let Some(description) = description {
+        request["description"] = json!(description);
+    }
+    if let Some(icon) = icon {
+        request["icon"] = json!(icon);
+    }
+    if !previews.is_empty() {
+        request["previews"] = previews
+            .iter()
+            .map(|asset| json!({"asset": asset}))
+            .collect();
+    }
+    Ok(UpdatePlan {
+        request,
+        mask,
+        asset_type,
+        content_type,
+        type_note,
+    })
 }
 
 /// Creator target for uploads. Exactly one of userId or groupId is required.
@@ -282,7 +415,7 @@ async fn resolve_asset_type(
 }
 
 fn build_update_mask(name: bool, desc: bool, icon: bool, preview: bool) -> String {
-    let mut parts: Vec<&str> = vec!["assetType", "assetId"];
+    let mut parts: Vec<&str> = Vec::new();
     if name {
         parts.push("displayName");
     }
@@ -293,7 +426,7 @@ fn build_update_mask(name: bool, desc: bool, icon: bool, preview: bool) -> Strin
         parts.push("icon");
     }
     if preview {
-        parts.push("preview");
+        parts.push("previews");
     }
     parts.join(",")
 }
@@ -354,48 +487,6 @@ async fn build_multipart(
         .part("fileContent", part))
 }
 
-async fn add_image_part(
-    form: &mut reqwest::multipart::Form,
-    file: &std::path::Path,
-    field: &str,
-    command: &str,
-) -> Result<(), ErrorBody> {
-    let bytes = tokio::fs::read(file).await.map_err(|e| ErrorBody {
-        code: "file_unreadable",
-        message: format!("cannot read the image: {}", file.display()),
-        status: None,
-        detail: Some(e.to_string()),
-
-        refs: None,
-    })?;
-    let name = file
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("image.png")
-        .to_string();
-    let lower = name.to_ascii_lowercase();
-    let ct = if lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
-        "image/jpeg"
-    } else {
-        "image/png"
-    };
-    let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name(name)
-        .mime_str(ct)
-        .map_err(|e| ErrorBody {
-            code: "mime_invalid",
-            message: format!("invalid content-type: {e}"),
-            status: None,
-            detail: Some(format!("{command} could not build the image part")),
-
-            refs: None,
-        })?;
-    // Form has no push API; take it and rebuild.
-    let taken = std::mem::replace(form, reqwest::multipart::Form::new());
-    *form = taken.part(field.to_string(), part);
-    Ok(())
-}
-
 /// Shared handling for endpoints that return an Operation.
 async fn submit_operation(
     ctx: &Ctx,
@@ -404,52 +495,54 @@ async fn submit_operation(
     asset_type: &str,
     type_note: Option<String>,
 ) -> Output {
-    match ctx.send(req).await {
-        Ok(resp) => {
-            if !resp.status().is_success() {
-                let err = crate::auth::error_from_response(resp).await;
-                return failure(command, err);
-            }
-            match resp.json::<Value>().await {
-                Ok(data) => {
-                    let op = data
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("(unknown)");
-                    let op_id = op.strip_prefix("operations/").unwrap_or(op);
-                    Output::success(
-                        command,
-                        format!("Accepted the {asset_type} operation (operation {op_id})"),
-                        Some(json!({ "operationId": op_id, "assetType": asset_type, "response": data })),
-                    )
-                    .with_hints(
-                        type_note
-                            .into_iter()
-                            .chain([
-                                format!(
-                                    "Run `rbxoc asset operation --operation-id {op_id}` to check completion"
-                                ),
-                                "Processing is asynchronous; it is not immediate".into(),
-                            ])
-                            .chain((asset_type == "Decal").then(|| "The completed assetId is a Decal ID, not a resolved Image ID. For ImageLabel/ImageButton, see `asset image-id` and docs/image-ids.md. Do not re-upload to resolve it.".into()))
-                            .collect::<Vec<_>>(),
-                    )
-                }
-                Err(e) => failure(
-                    command,
-                    ErrorBody {
-                        code: "invalid_json",
-                        message: format!("cannot parse the response: {e}"),
-                        status: None,
-                        detail: None,
+    let data = match ctx.send(req).await {
+        Ok(resp) => match ctx.json_or_error(resp).await {
+            Ok(data) => data,
+            Err(err) => return failure(command, err),
+        },
+        Err(err) => return failure(command, err),
+    };
+    operation_output(data, command, asset_type, type_note)
+}
 
-                        refs: None,
-                    },
-                ),
-            }
-        }
-        Err(err) => failure(command, err),
+fn operation_output(
+    data: Value,
+    command: &str,
+    asset_type: &str,
+    type_note: Option<String>,
+) -> Output {
+    let op = data.get("path").and_then(Value::as_str).unwrap_or("");
+    let op_id = match normalize_operation_id(op) {
+        Ok(id) => id,
+        Err(err) => return failure(command, err),
+    };
+    if let Some(error) = data.get("error").filter(|error| !error.is_null()) {
+        let mut out = failure(
+            command,
+            ErrorBody {
+                code: "operation_failed",
+                message: format!("Operation {op_id} failed"),
+                status: None,
+                detail: Some(error.to_string()),
+                refs: None,
+            },
+        );
+        out.data = Some(json!({"operationId": op_id, "assetType": asset_type, "response": data}));
+        return out.with_hints(type_note.into_iter().chain([format!(
+            "Inspect `rbxoc asset operation --operation-id {op_id}` and the existing asset before starting another upload; do not blindly repeat the mutation"
+        )]));
     }
+    Output::success(
+        command,
+        format!("Accepted the {asset_type} operation (operation {op_id})"),
+        Some(json!({"operationId": op_id, "assetType": asset_type, "response": data})),
+    ).with_hints(type_note.into_iter()
+        .chain([
+            format!("Run `rbxoc asset operation --operation-id {op_id}` to check completion"),
+            "Processing is asynchronous; it is not immediate".into(),
+        ])
+        .chain((asset_type == "Decal").then(|| "The completed assetId is a Decal ID, not a resolved Image ID. For ImageLabel/ImageButton, see `asset image-id` and docs/image-ids.md. Do not re-upload to resolve it.".into()))
+    )
 }
 
 /// Fetch asset metadata.
@@ -480,8 +573,8 @@ pub async fn versions(ctx: &Ctx, asset_id: u64, max_page_size: u32) -> Output {
     match ctx.get_json(&path).await {
         Ok(data) => {
             let count = data
-                .get("assetVersions")
-                .and_then(|v| v.as_array())
+                .as_array()
+                .or_else(|| data.get("assetVersions").and_then(Value::as_array))
                 .map(|a| a.len())
                 .unwrap_or(0);
             Output::success(
@@ -496,10 +589,48 @@ pub async fn versions(ctx: &Ctx, asset_id: u64, max_page_size: u32) -> Output {
 
 /// Roll an asset back to a given version.
 pub async fn rollback(ctx: &Ctx, asset_id: u64, version: u64) -> Output {
+    const COMMAND: &str = "asset rollback";
     let path = format!("/assets/v1/assets/{asset_id}/versions:rollback");
-    let body = json!({ "assetVersion": version.to_string() });
-    let req = ctx.client.post(ctx.url(&path)).json(&body);
-    submit_operation(ctx, req, "asset rollback", "asset", None).await
+    // Follow the formal multipart request schema (the embedded JSON curl
+    // sample in OpenAPI currently disagrees). The resource uses the same
+    // asset ID as the route; a bare version number is not a resource path.
+    let form = reqwest::multipart::Form::new().text(
+        "assetVersion",
+        format!("assets/{asset_id}/versions/{version}"),
+    );
+    let req = ctx.client.post(ctx.url(&path)).multipart(form);
+    let data = match ctx.send(req).await {
+        Ok(resp) => match ctx.json_or_error(resp).await {
+            Ok(data) => data,
+            Err(err) => return failure(COMMAND, err),
+        },
+        Err(err) => return failure(COMMAND, err),
+    };
+    let prefix = format!("assets/{asset_id}/versions/");
+    if !data
+        .get("path")
+        .and_then(Value::as_str)
+        .is_some_and(|path| {
+            path.strip_prefix(&prefix)
+                .is_some_and(|version| version.parse::<u64>().is_ok_and(|v| v > 0))
+        })
+    {
+        return failure(COMMAND, ErrorBody {
+            code: "invalid_asset_version",
+            message: "Rollback response is missing an AssetVersion resource for the target asset".into(),
+            status: None,
+            detail: Some("Inspect the asset's versions before repeating the rollback; it was sent at most once".into()),
+            refs: None,
+        });
+    }
+    Output::success(
+        COMMAND,
+        format!("Rolled asset {asset_id} back to version {version}"),
+        Some(data),
+    )
+    .with_hints([format!(
+        "Run `rbxoc asset versions --asset-id {asset_id}` to inspect the versions"
+    )])
 }
 
 /// Archive an asset.
@@ -750,6 +881,22 @@ pub async fn operation(ctx: &Ctx, operation_id: &str) -> Output {
     match ctx.get_json(&path).await {
         Ok(data) => {
             let done = data.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
+            if let Some(error) = data.get("error").filter(|error| !error.is_null()) {
+                return failure(
+                    "asset operation",
+                    ErrorBody {
+                        code: "operation_failed",
+                        message: format!("Operation {operation_id} failed"),
+                        status: None,
+                        detail: Some(error.to_string()),
+                        refs: None,
+                    },
+                )
+                .with_hints([
+                    "Inspect the operation error and existing asset before starting another upload"
+                        .into(),
+                ]);
+            }
             let state = if done { "completed" } else { "still running" };
             let mut out = Output::success(
                 "asset operation",
@@ -821,66 +968,67 @@ pub async fn preview_create(
 /// Report how an update would be classified, without uploading.
 #[allow(clippy::too_many_arguments)]
 pub async fn preview_update(
-    file: &std::path::Path,
+    file: Option<&std::path::Path>,
     asset_id: u64,
     asset_type: Option<&str>,
     display_name: Option<&str>,
     description: Option<&str>,
-    icon: Option<&std::path::Path>,
-    preview: Option<&std::path::Path>,
+    icon: Option<&str>,
+    previews: &[String],
 ) -> Output {
     const COMMAND: &str = "asset update (dry-run)";
-    let (resolved_type, content_type, type_note) =
-        match resolve_asset_type(file, asset_type, COMMAND).await {
-            Ok(v) => v,
-            Err(err) => return failure(COMMAND, err),
-        };
-
-    // Non-Model bodies cannot be replaced, so report that before uploading.
-    if !is_updateable_body(&resolved_type) {
-        return failure(
-            COMMAND,
-            ErrorBody {
-                code: "asset_update_unsupported",
-                message: format!("{resolved_type} cannot replace its content body; only Model can"),
-                status: None,
-                detail: Some(
-                    "Metadata-only updates omit --file; content updates need a Model".into(),
-                ),
-
-                refs: None,
-            },
-        );
-    }
-
-    let size = tokio::fs::metadata(file)
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
-    let mask = build_update_mask(
-        display_name.is_some(),
-        description.is_some(),
-        icon.is_some(),
-        preview.is_some(),
-    );
+    let plan = match plan_update(
+        asset_id,
+        file,
+        asset_type,
+        display_name,
+        description,
+        icon,
+        previews,
+    )
+    .await
+    {
+        Ok(plan) => plan,
+        Err(err) => return failure(COMMAND, err),
+    };
+    let size = if let Some(file) = file {
+        match tokio::fs::metadata(file).await {
+            Ok(metadata) => metadata.len(),
+            Err(err) => {
+                return failure(
+                    COMMAND,
+                    ErrorBody {
+                        code: "file_unreadable",
+                        message: format!("Cannot read {}", file.display()),
+                        status: None,
+                        detail: Some(err.to_string()),
+                        refs: None,
+                    },
+                );
+            }
+        }
+    } else {
+        0
+    };
     let mut hints = vec![
         "Drop --dry-run to update for real".into(),
         "Set RBXOC_API_KEY before updating".into(),
+        "Icon/preview references must already be Image assets; icons must be square. This plan does not verify their type, ownership or dimensions.".into(),
     ];
-    if let Some(note) = &type_note {
+    if let Some(note) = &plan.type_note {
         hints.insert(0, note.clone());
     }
-
     Output::success(
         COMMAND,
-        format!("{resolved_type} would be updated as {content_type}"),
-        Some(serde_json::json!({
-            "assetId": asset_id,
-            "assetType": resolved_type,
-            "contentType": content_type,
-            "bytes": size,
-            "updateMask": mask,
-            "resolutionNote": type_note,
+        if file.is_some() {
+            "Model content would be updated"
+        } else {
+            "Asset metadata would be updated without a file"
+        },
+        Some(json!({
+            "assetId": asset_id, "assetType": plan.asset_type, "contentType": plan.content_type,
+            "bytes": size, "updateMask": plan.mask, "request": plan.request,
+            "resolutionNote": plan.type_note,
         })),
     )
     .with_hints(hints)
@@ -957,13 +1105,10 @@ mod tests {
 
     #[test]
     fn update_mask_is_minimal() {
-        assert_eq!(
-            build_update_mask(false, false, false, false),
-            "assetType,assetId"
-        );
+        assert_eq!(build_update_mask(false, false, false, false), "");
         assert_eq!(
             build_update_mask(true, true, true, true),
-            "assetType,assetId,displayName,description,icon,preview"
+            "displayName,description,icon,previews"
         );
     }
 

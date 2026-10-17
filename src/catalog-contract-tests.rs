@@ -106,3 +106,144 @@ fn command_catalog_contract_detects_drift_even_when_counts_match() {
             .any(|error| error.contains("nonexistent.command"))
     );
 }
+
+/// Independent security/scope excerpts from the official OpenAPI snapshot.
+/// The fixture retains the provider fields rather than copying catalog values.
+fn auth_contract_errors(entries: &[catalog::Endpoint]) -> Vec<String> {
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/openapi-auth-contract.json")).unwrap();
+    let mut errors = Vec::new();
+    let mut covered = BTreeSet::new();
+    for operation in snapshot["operations"].as_array().unwrap() {
+        let id = operation["catalogId"].as_str().unwrap();
+        covered.insert(id);
+        let Some(entry) = entries.iter().find(|entry| entry.id == id) else {
+            errors.push(format!("{id}: catalog entry missing"));
+            continue;
+        };
+        let security = operation["security"].as_array().unwrap();
+        let mut auth = BTreeSet::new();
+        let mut scopes = BTreeSet::new();
+        for alternative in security {
+            if alternative.get("roblox-api-key").is_some() {
+                auth.insert("api-key");
+            }
+            if let Some(oauth) = alternative.get("roblox-oauth2") {
+                auth.insert("oauth");
+                scopes.extend(
+                    oauth
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|v| v.as_str().unwrap()),
+                );
+            }
+            // Cookie alternatives and an empty anonymous alternative are not
+            // credential families implemented by this authenticated CLI.
+        }
+        scopes.extend(
+            operation["x-roblox-scopes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|scope| scope["name"].as_str().unwrap()),
+        );
+        let actual_auth: BTreeSet<_> = entry
+            .auth
+            .iter()
+            .map(|kind| match kind {
+                catalog::AuthKind::ApiKey => "api-key",
+                catalog::AuthKind::OAuth => "oauth",
+                catalog::AuthKind::LegacyCookie => "legacy-cookie",
+            })
+            .collect();
+        if actual_auth != auth {
+            errors.push(format!("{id}: auth {actual_auth:?} != OpenAPI {auth:?}"));
+        }
+        let actual_scopes: BTreeSet<_> = entry.scopes.iter().copied().collect();
+        if actual_scopes != scopes {
+            errors.push(format!(
+                "{id}: scopes {actual_scopes:?} != OpenAPI {scopes:?}"
+            ));
+        }
+        if entry.method != operation["method"].as_str().unwrap() {
+            errors.push(format!("{id}: method differs from snapshot"));
+        }
+        let actual_path = entry
+            .path
+            .replace("/resource/Universe/", "/resource/{resourceType}/");
+        let expected_path = operation["path"]
+            .as_str()
+            .unwrap()
+            .replace("/operations/metrics/", "/operations/{kind}/")
+            .replace("/operations/dimension-values/", "/operations/{kind}/");
+        if path_shape(&actual_path) != path_shape(&expected_path) {
+            errors.push(format!("{id}: route differs from official operation"));
+        }
+    }
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.implemented && entry.method != "LOCAL")
+    {
+        if !covered.contains(entry.id) {
+            errors.push(format!("{}: no official auth/permission fixture", entry.id));
+        }
+    }
+    errors
+}
+
+fn path_shape(path: &str) -> String {
+    let mut output = String::new();
+    let mut parameter = false;
+    for c in path.chars() {
+        match c {
+            '{' => {
+                parameter = true;
+                output.push_str("{}");
+            }
+            '}' => parameter = false,
+            _ if !parameter => output.push(c),
+            _ => (),
+        }
+    }
+    output
+}
+
+#[test]
+fn catalog_auth_and_permissions_match_official_operations() {
+    let errors = auth_contract_errors(catalog::ENDPOINTS);
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+#[test]
+fn analytics_catalog_note_does_not_contradict_supported_credentials() {
+    let entry = catalog::ENDPOINTS
+        .iter()
+        .find(|e| e.id == "analytics.metrics")
+        .unwrap();
+    assert!(entry.auth.contains(&catalog::AuthKind::ApiKey));
+    assert!(!entry.note.contains("not an API key"), "{}", entry.note);
+    assert!(entry.note.contains("API keys and OAuth2"), "{}", entry.note);
+}
+
+#[test]
+fn auth_contract_detects_credential_and_scope_drift() {
+    let mut entries = catalog::ENDPOINTS.to_vec();
+    let endpoint = entries
+        .iter_mut()
+        .find(|e| e.id == "analytics.metrics")
+        .unwrap();
+    endpoint.auth = &[catalog::AuthKind::LegacyCookie];
+    endpoint.scopes = &["invented:permission"];
+    let errors = auth_contract_errors(&entries);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.starts_with("analytics.metrics: auth"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.starts_with("analytics.metrics: scopes"))
+    );
+}

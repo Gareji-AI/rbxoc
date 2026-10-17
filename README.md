@@ -223,8 +223,21 @@ rbxoc place history --place-id 456
 rbxoc asset create --file model.fbx --display-name "My Model" --user-id 789
 rbxoc asset operation --operation-id ABC123
 rbxoc asset update --asset-id 2205400862 --file v2.fbx
+rbxoc asset update --asset-id 2205400862 --display-name "Renamed Model" --description "New description"
+rbxoc asset update --asset-id 2205400862 --icon assets/123 --preview assets/456,assets/789 --dry-run
 rbxoc asset rollback --asset-id 2205400862 --version 1
 ```
+
+`asset update` replaces content only for Models. Omit `--file` for metadata-only
+updates; metadata may also accompany a Model content update. `--icon` and
+`--preview` take existing **Image** resources (`assets/123`), not local files
+or Decal IDs. Repeat `--preview` or separate references with commas to replace
+the preview list. Icons must be square. Dry-run validates the local plan without
+credentials or requests; it cannot verify remote type, ownership, or dimensions.
+Content-only updates omit `updateMask`; metadata masks select only supplied fields.
+The official metadata-only examples omit `fileContent` even though the formal
+multipart schema marks it required. These builders follow those examples and are
+covered by offline wire tests, not live provider verification.
 
 Supported formats (20 MB per request): `.fbx` `.gltf` `.glb` `.rbxm` `.rbxmx` (Model), `.png` `.jpeg` `.bmp` `.tga` (Decal image uploads), `.mp3` `.ogg` `.wav` `.flac`, `.mp4` `.mov`.
 
@@ -274,6 +287,16 @@ the classification can be checked before spending an upload. Pass
 
 A malformed model file fails with `model_parse_failed` instead of guessing, so
 a broken export does not silently land as the wrong asset type.
+
+XML Animations at least **2 MiB** receive an advisory in `asset create --dry-run`
+and `assets sync --dry-run`, also retained in sync success/failure hints. One
+large XML Animation reportedly failed with HTTP 500 while its equivalent binary
+export worked; the cause is unconfirmed. This threshold is **not a Roblox limit**
+and smaller files are not guaranteed to upload. Consider exporting `.rbxm` in
+Studio and checking poses before a new upload. rbxoc does not convert files or
+change their fingerprints. Never replace the source of an uncertain publication
+and retry: reconcile its pending receipt with the original bytes first.
+Registry dry-run still does not perform full preprocessing/upload preflight.
 
 For 3D models, `.fbx` / `.gltf` / `.glb` upload as `Model` containing
 MeshParts. Roblox does not expose importer settings through Open Cloud, so
@@ -444,7 +467,10 @@ rbxoc analytics alerts list --universe-id 123
 rbxoc analytics alerts incidents --universe-id 123 --start-time 2026-10-01T00:00:00Z --end-time 2026-10-08T00:00:00Z
 ```
 
-This API needs OAuth2 (`universe.analytics:read`); an API key cannot call it.
+The current contract supports API keys and OAuth2 for analytics queries and
+operation reads. Both need the documented `universe.analytics:read` permission.
+See `rbxoc api show analytics.metrics`; contract support is not evidence that a
+particular account/key is enrolled or that a query has been live-verified.
 
 Alert commands use the provider's case-sensitive `Universe` resource type
 automatically, for example `/analytics-alert-control-plane/v1/resource/Universe/id/123/alerts`.
@@ -475,6 +501,12 @@ rbxoc permissions grant --asset-id 111 --asset-id 222 \
   --subject-type group --subject-id 999 --action use
 ```
 
+HTTP 200 can still contain per-asset grant failures. `permission_grant_failed`
+preserves `successAssetIds` and the original `response.errors`; a missing or
+malformed completion receipt returns `invalid_permissions_response`. Only a
+complete confirmed batch reports success. Inspect existing permissions before
+retrying individual failures, never blindly replay the whole batch.
+
 ### Discover everything
 
 ```bash
@@ -495,7 +527,12 @@ Open Cloud has three auth families. This CLI excludes cookies.
 | OAuth2 bearer | ✅ | Analytics, alerts, and similar |
 | legacy cookie | ✗ | browser-session derived, unsuited to automation |
 
-**Note**: some areas are OAuth2-only. Analytics queries need `universe.analytics:read` and cannot be called with an API key. Check the `auth` field of `rbxoc api show <id>`.
+Authentication is operation-specific. The 2026-10-17 contract supports both
+API keys and OAuth2 for analytics, server reads, messaging, assets, configs,
+events, badges and monetization. Thumbnail, asset-permission, standard/ordered
+DataStore, place-publish and place-history operations advertise API keys only
+after excluding unsupported cookies. Check `auth` and `scopes` in
+`rbxoc api show <id>` rather than reusing another endpoint's permission names.
 
 ## Toolchain
 
@@ -578,7 +615,7 @@ results and limits; a 400/404 response is not proof of a successful operation.
 | Auth probe, universe read, event list | Live-verified with the session's real API key |
 | Registry, codegen, type inference, catalog | Offline-verified; no cloud call required |
 | Thumbnails, server management, game passes, developer products, standard/ordered DataStores | Implemented; the session reached 401/403 because its key lacked scopes, not successful operation verification |
-| Asset uploads/updates, place publishing, real server logs, OAuth2 analytics, paid product creation | Live behavior remains unverified |
+| Asset uploads/updates, place publishing, real server logs, analytics with either credential family, paid product creation | Live behavior remains unverified |
 
 Offline fixtures test publication safety and recovery, including stable-ID
 Model updates; they do **not** establish live moderation, latest-version

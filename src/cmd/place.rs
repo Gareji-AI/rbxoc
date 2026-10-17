@@ -50,14 +50,28 @@ pub async fn publish(
                 let err = crate::auth::error_from_response(resp).await;
                 return failure(COMMAND, err);
             }
-            let body = resp.text().await.unwrap_or_default();
-            // The response is the version number itself, not JSON.
-            let version: Option<u64> = body.trim().parse().ok();
-            let action = if published { "published" } else { "saved" };
-            let summary = match version {
-                Some(v) => format!("Place {action} (version {v})"),
-                None => format!("Place {action}"),
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure(COMMAND, err),
             };
+            // Current response is {"versionNumber": N}; also preserve the
+            // historical numeric response without inventing a missing version.
+            let version = data
+                .get("versionNumber")
+                .unwrap_or(&data)
+                .as_u64()
+                .filter(|v| *v > 0);
+            let Some(version) = version else {
+                return failure(COMMAND, crate::output::ErrorBody {
+                    code: "version_number_missing",
+                    message: "Place publish response has no valid versionNumber".into(),
+                    status: None,
+                    detail: Some("Inspect place history before repeating this mutation; the request was sent at most once".into()),
+                    refs: None,
+                });
+            };
+            let action = if published { "published" } else { "saved" };
+            let summary = format!("Place {action} (version {version})");
             let mut hints =
                 vec!["Run `rbxoc place history --place-id <id>` to inspect the history".into()];
             if !published {
@@ -97,11 +111,15 @@ pub async fn get(ctx: &Ctx, universe_id: u64, place_id: u64) -> Output {
 
 /// Fetch a place's version history.
 pub async fn history(ctx: &Ctx, place_id: u64, limit: u32) -> Output {
-    let path = format!("/place-version-history-api/v1/{place_id}/history?limit={limit}");
-    match ctx.get_json(&path).await {
+    let path = format!("/place-version-history-api/v1/{place_id}/history");
+    match ctx
+        .get_json_query(&path, &[("pageSize", &limit.to_string())])
+        .await
+    {
         Ok(data) => {
             let count = data
-                .get("versions")
+                .get("placeVersions")
+                .or_else(|| data.get("versions"))
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);

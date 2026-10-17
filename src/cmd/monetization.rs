@@ -300,19 +300,37 @@ async fn submit_multipart(
                 let err = crate::auth::error_from_response(resp).await;
                 return failure(command, err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = if resp.status() == reqwest::StatusCode::NO_CONTENT && method == "PATCH" {
+                Value::Null
+            } else {
+                match ctx.json_or_error(resp).await {
+                    Ok(data) => data,
+                    Err(err) => return failure(command, err),
+                }
+            };
             // The id comes back as a number for monetization resources, but
             // some endpoints return a string. Accept either, then fall back to
             // the id in the URL when the body is empty (PATCH).
             let id = ["gamePassId", "productId", "developerProductId", "id"]
                 .iter()
-                .find_map(|k| data.get(*k))
-                .map(|v| match v {
-                    serde_json::Value::String(s) => s.clone(),
-                    other => other.to_string(),
+                .filter_map(|k| data.get(*k))
+                .find_map(|value| {
+                    value
+                        .as_u64()
+                        .or_else(|| value.as_str().and_then(|s| s.parse::<u64>().ok()))
+                        .filter(|id| *id > 0)
+                        .map(|id| id.to_string())
                 })
-                .or_else(|| known_id.clone())
-                .unwrap_or_else(|| "(unknown)".to_string());
+                .or_else(|| known_id.clone());
+            let Some(id) = id else {
+                return failure(command, ErrorBody {
+                    code: "resource_id_missing",
+                    message: "Creation response contains no valid resource ID; outcome may be uncertain".into(),
+                    status: None,
+                    detail: Some("Inspect existing passes/products on Creator Dashboard before repeating creation".into()),
+                    refs: None,
+                });
+            };
             Output::success(
                 command,
                 format!("{command} succeeded (id {id})"),

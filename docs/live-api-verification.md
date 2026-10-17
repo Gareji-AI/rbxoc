@@ -95,25 +95,39 @@ hint   : Areas that require OAuth2 need `RBXOC_OAUTH_TOKEN` instead
 hint   : Run `rbxoc api show <id>` to see the scopes an endpoint needs
 ```
 
-## 全機能を試すために追加するスコープ
+## Current permission guidance (2026-10-17 contract)
 
-Creator Dashboard のキー編集で以下を有効化する。
+The original probes above remain historical evidence. Current auth/permissions
+come from the operation-specific official OpenAPI snapshot, not the previous
+OAuth-only analytics assumption. Use `rbxoc api show <id>` before an explicitly
+approved live check; this table is not permission to enable every capability.
 
 | スコープ | 使えるようになるコマンド |
 | --- | --- |
 | `universe-places:write` | `place publish` |
-| `asset:write` | `asset create`, `asset update`, `asset rollback`, `asset archive` |
+| `universe.place:read` | `place history` |
+| `asset:read` and `asset:write` | `asset create`, `asset update`, `asset rollback`, `asset archive` |
 | `universe.thumbnail:read` / `:write` | `thumbnail list/status`, `thumbnail upload/delete` |
-| `universe-datastores.control:read` / `:write` | `datastore *`, `ordered-datastore *` |
+| `universe-datastores.objects:read` / `:update` / `:delete` / `:list` | `datastore get/set/delete/list`, respectively |
+| `universe.ordered-data-store.scope.entry:read` / `:write` | Ordered DataStore read/write operations |
 | `game-pass:read` / `:write` | `gamepass *` |
 | `developer-product:read` / `:write` | `devproduct *` |
+| `universe:read` | `server list`, `server logs`, `server restart-forecast` |
 | `universe:write` | `server restart` |
-| `universe.analytics:read` | `analytics metrics`（OAuth2 必須） |
+| `universe-messaging-service:publish` | `universe publish-message` |
+| `legacy-universe.badge:manage-and-spend-robux` | `badge create`; also required with `legacy-universe.badge:write` for `badge update` |
+| `universe.analytics:read` | `analytics metrics/operation` (API key or OAuth2) |
+| `universe.analytics.alert:read` / `:write` | Alert reads/writes; feature enrollment may still be required |
+
+Thumbnail, asset-permission, standard/ordered DataStore and place publish/history
+operations currently list API-key auth only after excluding cookies. Server
+reads and messaging list API-key and OAuth alternatives. No live calls were
+made to establish these updated contract facts.
 
 ## 未検証
 
 - 実アップロード（`asset create` の本番実行）
 - `place publish` の実ファイル送信
 - 実サーバーログ取得
-- `analytics metrics`（OAuth2 が必要）
+- `analytics metrics` with either API-key or OAuth2 auth
 - 課金商品の作成

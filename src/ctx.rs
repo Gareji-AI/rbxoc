@@ -203,9 +203,8 @@ impl Ctx {
 
             refs: None,
         })?;
-        if text.trim().is_empty() {
-            return Ok(Value::Null);
-        }
+        // This helper requires a JSON success body. Documented no-body
+        // operations use send_empty instead; an empty 200 is not valid JSON.
         serde_json::from_str(&text).map_err(|e| ErrorBody {
             code: "invalid_json",
             message: format!("the response is not JSON: {e}"),
@@ -241,7 +240,10 @@ fn backoff_ms(attempt: u32, headers: &reqwest::header::HeaderMap) -> u64 {
 /// Build a failure `Output` from an `ErrorBody`, including hints.
 pub fn failure(command: &str, error: ErrorBody) -> Output {
     let mut hints = Vec::new();
-    if error.code == "mutation_outcome_unknown" {
+    if matches!(
+        error.code,
+        "mutation_outcome_unknown" | "publication_uncertain"
+    ) {
         // Never pair an uncertain mutation with the generic 429/5xx retry advice.
         hints.push("Inspect the target resource, operation receipt, or delivery logs to reconcile whether the mutation took effect".into());
         hints.push("Do not repeat the mutation until its previous outcome is confirmed; automatic retries are disabled for mutations".into());
