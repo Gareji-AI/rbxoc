@@ -93,8 +93,20 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
                 let err = crate::auth::error_from_response(resp).await;
                 return failure(COMMAND, err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure(COMMAND, err),
+            };
             let ops = extract_operation_ids(&data);
+            if ops.is_empty() {
+                return failure(COMMAND, ErrorBody {
+                    code: "operation_id_missing",
+                    message: "Thumbnail upload response contains no usable operation IDs".into(),
+                    status: None,
+                    detail: Some("Inspect existing thumbnails and the response before repeating this upload".into()),
+                    refs: None,
+                });
+            }
             let mut out = Output::success(
                 COMMAND,
                 format!(
@@ -123,6 +135,14 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
 /// several locations are checked.
 fn extract_operation_ids(data: &Value) -> Vec<String> {
     let mut ids = Vec::new();
+    if let Some(map) = data.get("fileToOperationIdDict").and_then(Value::as_object) {
+        for value in map.values().filter_map(Value::as_str) {
+            let id = value.strip_prefix("operations/").unwrap_or(value);
+            if !id.trim().is_empty() {
+                ids.push(id.to_string());
+            }
+        }
+    }
     for key in ["operationIds", "operations", "paths"] {
         if let Some(arr) = data.get(key).and_then(|v| v.as_array()) {
             for item in arr {

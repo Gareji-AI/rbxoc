@@ -66,7 +66,7 @@ pub async fn patch_draft(ctx: &Ctx, universe_id: u64, repository: &str, document
         Err(err) => return failure("config patch-draft", err),
     };
     match ctx.send(ctx.client.patch(ctx.url(&path)).json(&body)).await {
-        Ok(resp) => finish_write(resp, "config patch-draft", repository).await,
+        Ok(resp) => finish_write(ctx, resp, "config patch-draft", repository).await,
         Err(err) => failure("config patch-draft", err),
     }
 }
@@ -82,7 +82,7 @@ pub async fn overwrite(ctx: &Ctx, universe_id: u64, repository: &str, document: 
         Err(err) => return failure("config overwrite", err),
     };
     match ctx.send(ctx.client.put(ctx.url(&path)).json(&body)).await {
-        Ok(resp) => finish_write(resp, "config overwrite", repository).await,
+        Ok(resp) => finish_write(ctx, resp, "config overwrite", repository).await,
         Err(err) => failure("config overwrite", err),
     }
 }
@@ -102,7 +102,10 @@ pub async fn publish(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
                 let err = crate::auth::error_from_response(resp).await;
                 return failure("config publish", err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure("config publish", err),
+            };
             Output::success(
                 "config publish",
                 format!("Published the draft for {repository}"),
@@ -159,7 +162,10 @@ pub async fn restore(ctx: &Ctx, universe_id: u64, repository: &str, revision_id:
                 let err = crate::auth::error_from_response(resp).await;
                 return failure("config restore", err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure("config restore", err),
+            };
             Output::success(
                 "config restore",
                 format!("Staged a revert to revision {revision_id}"),
@@ -188,12 +194,20 @@ fn invalid_document(e: serde_json::Error) -> Output {
 }
 
 /// Shared tail for draft writes.
-async fn finish_write(resp: reqwest::Response, command: &str, repository: &str) -> Output {
+async fn finish_write(
+    ctx: &Ctx,
+    resp: reqwest::Response,
+    command: &str,
+    repository: &str,
+) -> Output {
     if !resp.status().is_success() {
         let err = crate::auth::error_from_response(resp).await;
         return failure(command, err);
     }
-    let data: Value = resp.json().await.unwrap_or(Value::Null);
+    let data = match ctx.json_or_error(resp).await {
+        Ok(data) => data,
+        Err(err) => return failure(command, err),
+    };
     Output::success(
         command,
         format!("Updated the draft for {repository}"),

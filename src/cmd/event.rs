@@ -51,7 +51,7 @@ pub async fn create(ctx: &Ctx, universe_id: u64, document: &str) -> Output {
     };
     let path = events_path(universe_id);
     match ctx.send(ctx.client.post(ctx.url(&path)).json(&body)).await {
-        Ok(resp) => finish(resp, "event create", "Created the game event").await,
+        Ok(resp) => finish(ctx, resp, "event create", "Created the game event").await,
         Err(err) => failure("event create", err),
     }
 }
@@ -64,7 +64,7 @@ pub async fn update(ctx: &Ctx, event_id: u64, document: &str) -> Output {
     };
     let path = format!("/virtual-events/v3/game-events/{event_id}");
     match ctx.send(ctx.client.patch(ctx.url(&path)).json(&body)).await {
-        Ok(resp) => finish(resp, "event update", "Updated the game event").await,
+        Ok(resp) => finish(ctx, resp, "event update", "Updated the game event").await,
         Err(err) => failure("event update", err),
     }
 }
@@ -97,12 +97,15 @@ fn invalid_document(e: serde_json::Error) -> Output {
     )
 }
 
-async fn finish(resp: reqwest::Response, command: &str, ok_message: &str) -> Output {
+async fn finish(ctx: &Ctx, resp: reqwest::Response, command: &str, ok_message: &str) -> Output {
     if !resp.status().is_success() {
         let err = crate::auth::error_from_response(resp).await;
         return failure(command, err);
     }
-    let data: Value = resp.json().await.unwrap_or(Value::Null);
+    let data = match ctx.json_or_error(resp).await {
+        Ok(data) => data,
+        Err(err) => return failure(command, err),
+    };
     Output::success(command, ok_message.to_string(), Some(data))
 }
 

@@ -160,8 +160,8 @@ pub async fn incidents(ctx: &Ctx, resource_id: &str, start_time: &str, end_time:
     {
         Ok(data) => {
             let count = data
-                .get("incidents")
-                .and_then(|v| v.as_array())
+                .as_array()
+                .or_else(|| data.get("incidents").and_then(Value::as_array))
                 .map(|a| a.len())
                 .unwrap_or(0);
             Output::success(
@@ -206,7 +206,10 @@ async fn finish(
         let err = crate::auth::error_from_response(resp).await;
         return failure_for_endpoint(command, endpoint_id, err, &ctx.auth);
     }
-    let data: Value = resp.json().await.unwrap_or(Value::Null);
+    let data = match ctx.json_or_error(resp).await {
+        Ok(data) => data,
+        Err(err) => return failure_for_endpoint(command, endpoint_id, err, &ctx.auth),
+    };
     Output::success(command, ok_message.to_string(), Some(data))
 }
 

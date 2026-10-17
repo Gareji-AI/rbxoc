@@ -42,7 +42,12 @@ pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
                 let err = crate::auth::error_from_response(resp).await;
                 return failure_for_endpoint(COMMAND, "analytics.metrics", err, &ctx.auth);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => {
+                    return failure_for_endpoint(COMMAND, "analytics.metrics", err, &ctx.auth);
+                }
+            };
             let mut out =
                 Output::success(COMMAND, "Accepted the metrics query", Some(data.clone()));
             // Asynchronous queries return an operation.

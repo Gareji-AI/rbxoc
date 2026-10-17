@@ -203,9 +203,8 @@ impl Ctx {
 
             refs: None,
         })?;
-        if text.trim().is_empty() {
-            return Ok(Value::Null);
-        }
+        // This helper requires a JSON success body. Documented no-body
+        // operations use send_empty instead; an empty 200 is not valid JSON.
         serde_json::from_str(&text).map_err(|e| ErrorBody {
             code: "invalid_json",
             message: format!("the response is not JSON: {e}"),

@@ -8,7 +8,7 @@
 //! `/ordered-data-stores/v1/universes/{universeId}/orderedDataStores/{store}/scopes/{scope}/entries`.
 //! The scope segment is required, unlike the standard DataStore v2 paths.
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::ctx::{Ctx, failure, path_segment};
 use crate::output::{ErrorBody, Output};
@@ -90,7 +90,10 @@ pub async fn set(
                 let err = crate::auth::error_from_response(resp).await;
                 return failure("ordered-datastore set", err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure("ordered-datastore set", err),
+            };
             Output::success(
                 "ordered-datastore set",
                 format!("Set {store}/{entry} to {value}"),
@@ -139,7 +142,10 @@ pub async fn increment(
                 let err = crate::auth::error_from_response(resp).await;
                 return failure("ordered-datastore increment", err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure("ordered-datastore increment", err),
+            };
             Output::success(
                 "ordered-datastore increment",
                 format!("Incremented {store}/{entry} by {amount}"),

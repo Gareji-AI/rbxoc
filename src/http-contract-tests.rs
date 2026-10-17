@@ -586,6 +586,201 @@ async fn rollback_rejects_missing_or_wrong_asset_version_receipts() {
 }
 
 #[tokio::test]
+async fn documented_thumbnail_file_operation_map_is_preserved() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("thumb.png");
+    std::fs::write(&file, "synthetic image bytes").unwrap();
+    let server = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({
+                "fileToOperationIdDict": {"thumb.png": "op-1", "other.png": "op-2"}
+            }),
+        )
+    });
+    let out = cmd::thumbnail::upload(&server.ctx(), 123, &[file]).await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(out.data.unwrap()["operationIds"], json!(["op-1", "op-2"]));
+    assert!(out.hints.iter().any(|h| h.contains("op-1")));
+}
+
+#[tokio::test]
+async fn documented_game_server_logs_preserve_entries_and_limit() {
+    let server = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({
+                "gameServerLogs": [{"message": "hello"}, {"message": "world"}]
+            }),
+        )
+    });
+    let out = cmd::server::logs(&server.ctx(), 123, 456, 7, "fixture-job", 1, false).await;
+    assert!(out.ok, "{out:?}");
+    let data = out.data.unwrap();
+    assert_eq!(data["total"], 2);
+    assert_eq!(data["shown"], 1);
+    assert_eq!(data["entries"], json!([{"message": "hello"}]));
+    assert!(!out.hints.is_empty());
+}
+
+#[tokio::test]
+async fn completed_asset_operation_errors_are_not_success() {
+    let server = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({
+                "done": true, "error": {"code": 3, "message": "rejected"}
+            }),
+        )
+    });
+    let out = cmd::asset::operation(&server.ctx(), "op-1").await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(out.error.unwrap().code, "operation_failed");
+    assert!(!out.hints.is_empty());
+}
+
+#[tokio::test]
+async fn asset_submissions_reject_missing_and_malformed_operation_receipts() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("model.fbx");
+    std::fs::write(&model, "synthetic model").unwrap();
+    for body in [
+        json!({}),
+        json!({"path": ""}),
+        json!({"path": "operations/"}),
+        json!({"path": "operations/a/b"}),
+    ] {
+        let server = Server::new(move |_| Reply::Json(200, body.clone()));
+        for out in [
+            cmd::asset::create(&server.ctx(), &model, "Model", "", Some(123), None, None).await,
+            cmd::asset::update(&server.ctx(), 456, &model, None, None, None, None, None).await,
+        ] {
+            assert!(!out.ok, "{out:?}");
+            assert_eq!(out.error.unwrap().code, "operation_id_missing");
+            assert!(!out.hints.is_empty());
+        }
+        assert_eq!(server.captured().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn documented_collection_shapes_have_truthful_summaries() {
+    let server = Server::new(|count| {
+        Reply::Json(
+            200,
+            match count {
+                1 => json!({"placeVersions": [{"versionNumber": 7}, {"versionNumber": 6}]}),
+                2 => json!([{"path": "assets/123/versions/7"}]),
+                3 => json!([{"id": "fixture-1"}, {"id": "fixture-2"}]),
+                _ => unreachable!(),
+            },
+        )
+    });
+    for (out, summary) in [
+        (
+            cmd::place::history(&server.ctx(), 456, 20).await,
+            "Fetched 2 versions",
+        ),
+        (
+            cmd::asset::versions(&server.ctx(), 123, 20).await,
+            "Fetched 1 versions",
+        ),
+        (
+            cmd::alerts::incidents(&server.ctx(), "123", "start", "end").await,
+            "Fetched 2 incidents",
+        ),
+    ] {
+        assert!(out.ok, "{out:?}");
+        assert!(out.summary.starts_with(summary), "{out:?}");
+    }
+}
+
+#[tokio::test]
+async fn place_publish_parses_the_documented_version_number_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("fixture.rbxlx");
+    std::fs::write(&file, "synthetic place bytes").unwrap();
+    let server = Server::new(|_| Reply::Json(200, json!({"versionNumber": 7})));
+    let out = cmd::place::publish(&server.ctx(), 123, 456, &file, false).await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(out.data.unwrap()["version"], 7);
+    assert!(out.summary.contains("version 7"));
+}
+
+#[tokio::test]
+async fn required_json_mutations_reject_malformed_and_empty_success_bodies() {
+    for body in ["not json", ""] {
+        let server = Server::new(move |_| Reply::Raw(200, body.into()));
+        let mut ctx = server.ctx();
+        ctx.auth = Auth::OAuth("synthetic-oauth-token".into());
+        for out in [
+            cmd::event::create(&ctx, 123, "{}").await,
+            cmd::event::update(&ctx, 456, "{}").await,
+            cmd::badge::create(&ctx, 123, "Fixture", "", Some("user")).await,
+            cmd::badge::update(&ctx, 456, Some("Fixture"), None, None).await,
+            cmd::datastore::set(&ctx, 123, "store", "entry", None, "1", false).await,
+            cmd::ordered_datastore::set(&ctx, 123, "store", "global", "entry", 1, false).await,
+            cmd::ordered_datastore::increment(&ctx, 123, "store", "global", "entry", 1).await,
+            cmd::server::restart(&ctx, 123, false).await,
+            cmd::config::patch_draft(&ctx, 123, "repo", "{}").await,
+            cmd::config::overwrite(&ctx, 123, "repo", "{}").await,
+            cmd::config::publish(&ctx, 123, "repo").await,
+            cmd::config::restore(&ctx, 123, "repo", "rev").await,
+            cmd::alerts::create(&ctx, "123", "{}").await,
+            cmd::alerts::update(&ctx, "123", "456", "{}").await,
+            cmd::analytics::metrics(&ctx, 123, "{}").await,
+            cmd::permissions::grant(&ctx, &[456], "user", 123, "use").await,
+            cmd::monetization::gamepass_create(&ctx, 123, "Fixture", None, None, None).await,
+            cmd::monetization::devproduct_create(&ctx, 123, "Fixture", None, None, None).await,
+        ] {
+            assert!(!out.ok, "{} accepted malformed required JSON", out.command);
+            assert_eq!(out.error.as_ref().unwrap().code, "invalid_json", "{out:?}");
+            assert!(!out.hints.is_empty());
+        }
+        assert_eq!(server.captured().len(), 18);
+    }
+}
+
+#[tokio::test]
+async fn documented_no_content_mutations_remain_successful() {
+    let server = Server::new(|_| Reply::Raw(204, String::new()));
+    let ctx = server.ctx();
+    for out in [
+        cmd::event::delete(&ctx, 123).await,
+        cmd::alerts::delete(&ctx, "123", "456").await,
+        cmd::datastore::delete(&ctx, 123, "store", "entry", None).await,
+        cmd::ordered_datastore::delete(&ctx, 123, "store", "global", "entry").await,
+        cmd::monetization::gamepass_update(&ctx, 123, 456, Some("Fixture"), None, None, None).await,
+    ] {
+        assert!(out.ok, "{out:?}");
+    }
+    assert_eq!(server.captured().len(), 5);
+}
+
+#[tokio::test]
+async fn product_creates_never_report_unknown_successful_ids() {
+    for body in [
+        json!({}),
+        json!({"id": false}),
+        json!({"productId": 0}),
+        json!({"gamePassId": ""}),
+    ] {
+        let server = Server::new(move |_| Reply::Json(200, body.clone()));
+        for out in [
+            cmd::monetization::gamepass_create(&server.ctx(), 123, "Fixture", None, None, None)
+                .await,
+            cmd::monetization::devproduct_create(&server.ctx(), 123, "Fixture", None, None, None)
+                .await,
+        ] {
+            assert!(!out.ok, "{out:?}");
+            assert_eq!(out.error.unwrap().code, "resource_id_missing");
+            assert!(!out.hints.is_empty());
+        }
+        assert_eq!(server.captured().len(), 2);
+    }
+}
+
+#[tokio::test]
 async fn local_and_http_failures_have_actionable_hints_in_both_formats() {
     let server = Server::success();
     let ctx = server.ctx();

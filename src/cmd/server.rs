@@ -114,7 +114,14 @@ pub async fn logs(
 
 /// Pull log entries out. The response shape is not fixed, so find the array.
 fn extract_log_entries(data: &Value) -> Vec<Value> {
-    for key in ["logs", "entries", "messages", "items", "data"] {
+    for key in [
+        "gameServerLogs",
+        "logs",
+        "entries",
+        "messages",
+        "items",
+        "data",
+    ] {
         if let Some(arr) = data.get(key).and_then(|v| v.as_array()) {
             return arr.clone();
         }
@@ -143,7 +150,10 @@ pub async fn restart(ctx: &Ctx, universe_id: u64, dry_run: bool) -> Output {
                 let err = crate::auth::error_from_response(resp).await;
                 return failure("server restart", err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure("server restart", err),
+            };
             Output::success("server restart", "Requested a server restart", Some(data))
         }
         Err(err) => failure("server restart", err),

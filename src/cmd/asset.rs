@@ -412,11 +412,11 @@ async fn submit_operation(
             }
             match resp.json::<Value>().await {
                 Ok(data) => {
-                    let op = data
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("(unknown)");
-                    let op_id = op.strip_prefix("operations/").unwrap_or(op);
+                    let op = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    let op_id = match normalize_operation_id(op) {
+                        Ok(id) => id,
+                        Err(err) => return failure(command, err),
+                    };
                     Output::success(
                         command,
                         format!("Accepted the {asset_type} operation (operation {op_id})"),
@@ -480,8 +480,8 @@ pub async fn versions(ctx: &Ctx, asset_id: u64, max_page_size: u32) -> Output {
     match ctx.get_json(&path).await {
         Ok(data) => {
             let count = data
-                .get("assetVersions")
-                .and_then(|v| v.as_array())
+                .as_array()
+                .or_else(|| data.get("assetVersions").and_then(Value::as_array))
                 .map(|a| a.len())
                 .unwrap_or(0);
             Output::success(
@@ -788,6 +788,22 @@ pub async fn operation(ctx: &Ctx, operation_id: &str) -> Output {
     match ctx.get_json(&path).await {
         Ok(data) => {
             let done = data.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
+            if let Some(error) = data.get("error").filter(|error| !error.is_null()) {
+                return failure(
+                    "asset operation",
+                    ErrorBody {
+                        code: "operation_failed",
+                        message: format!("Operation {operation_id} failed"),
+                        status: None,
+                        detail: Some(error.to_string()),
+                        refs: None,
+                    },
+                )
+                .with_hints([
+                    "Inspect the operation error and existing asset before starting another upload"
+                        .into(),
+                ]);
+            }
             let state = if done { "completed" } else { "still running" };
             let mut out = Output::success(
                 "asset operation",

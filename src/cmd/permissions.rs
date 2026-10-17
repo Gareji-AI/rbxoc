@@ -4,7 +4,7 @@
 //! Used to grant a user or group access to assets, which matters when a group
 //! collaborates on a place and the assets live under one account.
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::ctx::{Ctx, failure};
 use crate::output::{ErrorBody, Output};
@@ -92,7 +92,10 @@ pub async fn grant(
                 let err = crate::auth::error_from_response(resp).await;
                 return failure(COMMAND, err);
             }
-            let data: Value = resp.json().await.unwrap_or(Value::Null);
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => return failure(COMMAND, err),
+            };
             Output::success(
                 COMMAND,
                 format!(
