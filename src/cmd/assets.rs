@@ -145,6 +145,12 @@ pub struct PendingUpload {
     pub fingerprint: String,
     pub creator: Creator,
     pub asset_type: String,
+    /// Exact create display name; absent for content-only updates and legacy receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    /// Local UTC intent time recorded before the request, not provider acceptance time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_at: Option<String>,
     /// Some(ID) means an in-place update of this exact registered asset.
     /// Missing in v0.3 receipts, which always represent a create.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -234,6 +234,8 @@ fn pending(dir: &Path, key: &str, operation: Option<&str>) {
             fingerprint: assets::fingerprint(&sources[key]).unwrap(),
             creator: manifest.creator,
             asset_type: "Decal".into(),
+            display_name: None,
+            requested_at: None,
             target_asset_id: None,
             operation_id: operation.map(str::to_string),
         },
@@ -652,6 +654,85 @@ async fn changed_registered_image_is_reported_not_replaced() {
         assets::load_lockfile(dir.path()).unwrap().assets["assets/a.png"],
         101
     );
+}
+
+#[tokio::test]
+async fn publication_uncertain_clues_are_durable_before_send_and_stable_on_retry() {
+    for response in [
+        (500, json!({"message": "uncertain fixture"})),
+        (200, json!({})),
+    ] {
+        let dir = fixture();
+        png(dir.path(), "a.png");
+        let root = dir.path().to_path_buf();
+        let seen = Arc::new(Mutex::new(String::new()));
+        let intent_at_send = seen.clone();
+        let server = MockServer::new(move |request, _, _| {
+            assert!(request.starts_with("POST "));
+            *intent_at_send.lock().unwrap() =
+                std::fs::read_to_string(root.join(assets::LOCKFILE_NAME)).unwrap();
+            response.clone()
+        });
+        let mut ctx = server.ctx();
+        ctx.retry = 3;
+        let out = run(&ctx, dir.path(), &[]).await;
+        assert_eq!(out.error.as_ref().unwrap().code, "publication_uncertain");
+        let clues = out.data.as_ref().unwrap()["pendingPublications"]
+            .as_array()
+            .expect("uncertainty must include structured dashboard clues");
+        assert_eq!(clues.len(), 1);
+        let clue = &clues[0];
+        assert_eq!(clue["path"], "assets/a.png");
+        assert_eq!(clue["displayName"], "a"); // Original stem, never a temporary PNG name.
+        assert_eq!(clue["creator"], json!({"type": "group", "id": 7}));
+        assert_eq!(clue["assetType"], "Decal");
+        assert!(clue["targetAssetId"].is_null());
+        assert!(clue["operationId"].is_null());
+        let requested_at = clue["requestedAt"].as_str().unwrap();
+        assert_eq!(requested_at.as_bytes()[10], b'T');
+        assert!(requested_at.ends_with('Z'));
+        let at_send: toml::Value = toml::from_str(&seen.lock().unwrap()).unwrap();
+        let receipt = &at_send["pending"]["assets/a.png"];
+        assert_eq!(receipt["display_name"].as_str().unwrap(), "a");
+        assert_eq!(receipt["requested_at"].as_str().unwrap(), requested_at);
+        assert_eq!(
+            receipt["fingerprint"].as_str().unwrap(),
+            clue["fingerprint"].as_str().unwrap()
+        );
+        assert!(out.render_text().contains(requested_at));
+        assert!(!out.render_text().contains("fixture-not-a-real-key"));
+        assert!(server.requests.lock().unwrap()[0].contains("\"description\":\"\""));
+        let retry = run(&ctx, dir.path(), &[]).await;
+        assert_eq!(retry.error.as_ref().unwrap().code, "publication_uncertain");
+        assert_eq!(
+            retry.data.as_ref().unwrap()["pendingPublications"],
+            out.data.as_ref().unwrap()["pendingPublications"]
+        );
+        assert_eq!(server.creates(), 1);
+    }
+}
+
+#[tokio::test]
+async fn publication_uncertain_legacy_clues_remain_unknown_not_invented() {
+    let dir = fixture();
+    png(dir.path(), "a.png");
+    pending(dir.path(), "assets/a.png", None);
+    let before = std::fs::read_to_string(dir.path().join(assets::LOCKFILE_NAME)).unwrap();
+    assert!(!before.contains("display_name"));
+    assert!(!before.contains("requested_at"));
+    let server = MockServer::success();
+    let out = run(&server.ctx(), dir.path(), &[]).await;
+    assert_eq!(out.error.as_ref().unwrap().code, "publication_uncertain");
+    let clue = &out.data.as_ref().unwrap()["pendingPublications"][0];
+    assert_eq!(clue["path"], "assets/a.png");
+    assert!(clue["displayName"].is_null());
+    assert!(clue["requestedAt"].is_null());
+    assert_eq!(clue["creator"]["id"], 7);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(assets::LOCKFILE_NAME)).unwrap(),
+        before
+    );
+    assert!(server.requests.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

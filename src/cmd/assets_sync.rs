@@ -117,7 +117,7 @@ async fn run_mode(ctx: &Ctx, dir: &Path, selection: &[String], mode: Mode) -> Ou
 
     let prepared = match preflight(dir, &manifest, &lock, &sources, &selected, mode, true).await {
         Ok(prepared) => prepared,
-        Err(err) => return failure(COMMAND, err),
+        Err(err) => return with_publication_clues(failure(COMMAND, err), &lock, &selected),
     };
     let warnings = prepared
         .iter()
@@ -150,12 +150,22 @@ async fn run_mode(ctx: &Ctx, dir: &Path, selection: &[String], mode: Mode) -> Ou
                 // Preflight already rejected uncertain or mismatched receipts.
                 pending.operation_id.clone().expect("validated operation")
             } else {
+                let display_name = item
+                    .source.path.file_stem().and_then(|s| s.to_str()).unwrap_or(key).to_string();
+                let requested_at = match time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                {
+                    Ok(timestamp) => timestamp,
+                    Err(error) => return registry_failure(error.into()),
+                };
                 lock.pending.insert(
                     key.clone(),
                     assets::PendingUpload {
                         fingerprint: item.fingerprint.clone(),
                         creator: manifest.creator.clone(),
                         asset_type: item.asset_type.clone(),
+                        display_name: item.target_asset_id.is_none().then(|| display_name.clone()),
+                        requested_at: Some(requested_at),
                         target_asset_id: item.target_asset_id,
                         operation_id: None,
                     },
@@ -163,18 +173,12 @@ async fn run_mode(ctx: &Ctx, dir: &Path, selection: &[String], mode: Mode) -> Ou
                 if let Err(e) = assets::save_lockfile(dir, &lock) {
                     return receipt_failure(key, None, e);
                 }
-                let display_name = item
-                    .source
-                    .path
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(key);
                 let started = match item.target_asset_id {
                     Some(id) => asset::start_update(ctx, id, item.upload.as_path()).await,
                     None => asset::start_create(
                         ctx,
                         item.upload.as_path(),
-                        display_name,
+                        &display_name,
                         "",
                         user_id,
                         group_id,
@@ -311,7 +315,42 @@ async fn run_mode(ctx: &Ctx, dir: &Path, selection: &[String], mode: Mode) -> Ou
     } else {
         refresh_partial_codegen(outcome, dir, &manifest)
     };
-    outcome.with_hints(warnings)
+    with_publication_clues(outcome, &lock, &selected).with_hints(warnings)
+}
+
+/// Human reconciliation clues are copied from the saved intent, never guessed
+/// from today's source name/time or used to authorize a duplicate publication.
+fn with_publication_clues(
+    mut outcome: Output,
+    lock: &assets::Lockfile,
+    selected: &[String],
+) -> Output {
+    if !outcome
+        .error
+        .as_ref()
+        .is_some_and(|error| error.code == "publication_uncertain")
+    {
+        return outcome;
+    }
+    let clues = selected
+        .iter()
+        .filter_map(|key| {
+            let pending = lock.pending.get(key)?;
+            if pending.operation_id.is_some() {
+                return None;
+            }
+            Some(json!({
+                "path": key, "displayName": pending.display_name, "assetType": pending.asset_type,
+                "creator": pending.creator, "requestedAt": pending.requested_at,
+                "fingerprint": pending.fingerprint, "targetAssetId": pending.target_asset_id,
+                "operationId": pending.operation_id,
+            }))
+        })
+        .collect::<Vec<_>>();
+    outcome.data.get_or_insert_with(|| json!({}))["pendingPublications"] = json!(clues);
+    outcome.with_hints([
+        "Use pendingPublications to match name, creator, type and local UTC request time in Creator Dashboard. Fingerprints identify local inputs, not remote proof. Legacy missing name/time remains null; content-only updates send no new display name. Never guess an asset/operation ID or publish again based on these clues alone.".into()
+    ])
 }
 
 /// Preserve the publication error and generate only from receipts that actually

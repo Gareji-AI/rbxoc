@@ -240,7 +240,10 @@ fn backoff_ms(attempt: u32, headers: &reqwest::header::HeaderMap) -> u64 {
 /// Build a failure `Output` from an `ErrorBody`, including hints.
 pub fn failure(command: &str, error: ErrorBody) -> Output {
     let mut hints = Vec::new();
-    if error.code == "mutation_outcome_unknown" {
+    if matches!(
+        error.code,
+        "mutation_outcome_unknown" | "publication_uncertain"
+    ) {
         // Never pair an uncertain mutation with the generic 429/5xx retry advice.
         hints.push("Inspect the target resource, operation receipt, or delivery logs to reconcile whether the mutation took effect".into());
         hints.push("Do not repeat the mutation until its previous outcome is confirmed; automatic retries are disabled for mutations".into());

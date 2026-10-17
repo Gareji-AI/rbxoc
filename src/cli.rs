@@ -2277,6 +2277,8 @@ output_path = "generated"
                     id: 7,
                 },
                 asset_type: "Decal".into(),
+                display_name: None,
+                requested_at: None,
                 target_asset_id: None,
                 operation_id: Some("op1".into()),
             },
