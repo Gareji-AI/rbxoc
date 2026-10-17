@@ -3,7 +3,7 @@
 [![CI](https://github.com/eiei114/rbxoc/actions/workflows/ci.yml/badge.svg)](https://github.com/eiei114/rbxoc/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/rbxoc.svg)](https://crates.io/crates/rbxoc)
 [![Crates.io downloads](https://img.shields.io/crates/d/rbxoc.svg)](https://crates.io/crates/rbxoc)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 A Rust CLI for the Roblox Open Cloud API, **designed for coding agents**.
 
@@ -582,4 +582,8 @@ than interpreting historical report counts as current coverage.
 
 ## License
 
-MIT
+Copyright (c) 2026 eiei114.
+
+Licensed under either [MIT](LICENSE) or [Apache-2.0](license-apache), at your
+option. Unless explicitly stated otherwise, contributions are made under the
+same dual license.
