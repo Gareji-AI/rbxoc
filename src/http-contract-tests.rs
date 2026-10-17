@@ -527,6 +527,65 @@ async fn place_history_uses_documented_page_size_query() {
 }
 
 #[tokio::test]
+async fn rollback_sends_full_version_resource_as_documented_multipart_form() {
+    let server = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({
+                "path": "assets/123/versions/7", "published": false
+            }),
+        )
+    });
+    let out = cmd::asset::rollback(&server.ctx(), 123, 7).await;
+    assert!(out.ok, "{out:?}");
+    let requests = server.captured();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.target, "/assets/v1/assets/123/versions:rollback");
+    assert!(
+        request
+            .header("content-type")
+            .unwrap()
+            .starts_with("multipart/form-data; boundary=")
+    );
+    assert!(
+        request
+            .body
+            .contains("name=\"assetVersion\"\r\n\r\nassets/123/versions/7\r\n")
+    );
+    assert_eq!(request.body.matches("Content-Disposition:").count(), 1);
+    assert_eq!(out.data.as_ref().unwrap()["path"], "assets/123/versions/7");
+    assert!(!out.summary.contains("operation"));
+}
+
+#[tokio::test]
+async fn rollback_does_not_retry_an_uncertain_mutation() {
+    let server = Server::new(|_| Reply::Json(503, json!({"message": "fixture unavailable"})));
+    let out = cmd::asset::rollback(&server.ctx(), 123, 7).await;
+    assert!(!out.ok);
+    assert_eq!(out.error.unwrap().code, "mutation_outcome_unknown");
+    assert!(!out.hints.is_empty());
+    assert_eq!(server.captured().len(), 1);
+}
+
+#[tokio::test]
+async fn rollback_rejects_missing_or_wrong_asset_version_receipts() {
+    for body in [
+        json!({}),
+        json!({"path": "assets/456/versions/7"}),
+        json!({"path": "assets/123/versions/nope"}),
+    ] {
+        let server = Server::new(move |_| Reply::Json(200, body.clone()));
+        let out = cmd::asset::rollback(&server.ctx(), 123, 7).await;
+        assert!(!out.ok);
+        assert_eq!(out.error.unwrap().code, "invalid_asset_version");
+        assert!(!out.hints.is_empty());
+        assert_eq!(server.captured().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn local_and_http_failures_have_actionable_hints_in_both_formats() {
     let server = Server::success();
     let ctx = server.ctx();

@@ -74,6 +74,15 @@ that, so it is not covered there.
 | Asset upload | yes | yes |
 | DataStore v2 | yes | yes |
 
+## Rollback wire contract
+
+`asset rollback` follows the formal OpenAPI `multipart/form-data` request
+schema: the `assetVersion` field is the complete
+`assets/{assetId}/versions/{versionNumber}` resource. The embedded JSON curl
+sample currently conflicts with that schema. The command parses the documented
+AssetVersion response, not an asynchronous Operation. Offline wire tests cover
+this choice and send-once failures; they are not live provider verification.
+
 ## Deliberately out of scope
 
 | Area | Why |

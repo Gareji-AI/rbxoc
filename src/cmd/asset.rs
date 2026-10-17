@@ -496,10 +496,48 @@ pub async fn versions(ctx: &Ctx, asset_id: u64, max_page_size: u32) -> Output {
 
 /// Roll an asset back to a given version.
 pub async fn rollback(ctx: &Ctx, asset_id: u64, version: u64) -> Output {
+    const COMMAND: &str = "asset rollback";
     let path = format!("/assets/v1/assets/{asset_id}/versions:rollback");
-    let body = json!({ "assetVersion": version.to_string() });
-    let req = ctx.client.post(ctx.url(&path)).json(&body);
-    submit_operation(ctx, req, "asset rollback", "asset", None).await
+    // Follow the formal multipart request schema (the embedded JSON curl
+    // sample in OpenAPI currently disagrees). The resource uses the same
+    // asset ID as the route; a bare version number is not a resource path.
+    let form = reqwest::multipart::Form::new().text(
+        "assetVersion",
+        format!("assets/{asset_id}/versions/{version}"),
+    );
+    let req = ctx.client.post(ctx.url(&path)).multipart(form);
+    let data = match ctx.send(req).await {
+        Ok(resp) => match ctx.json_or_error(resp).await {
+            Ok(data) => data,
+            Err(err) => return failure(COMMAND, err),
+        },
+        Err(err) => return failure(COMMAND, err),
+    };
+    let prefix = format!("assets/{asset_id}/versions/");
+    if !data
+        .get("path")
+        .and_then(Value::as_str)
+        .is_some_and(|path| {
+            path.strip_prefix(&prefix)
+                .is_some_and(|version| version.parse::<u64>().is_ok_and(|v| v > 0))
+        })
+    {
+        return failure(COMMAND, ErrorBody {
+            code: "invalid_asset_version",
+            message: "Rollback response is missing an AssetVersion resource for the target asset".into(),
+            status: None,
+            detail: Some("Inspect the asset's versions before repeating the rollback; it was sent at most once".into()),
+            refs: None,
+        });
+    }
+    Output::success(
+        COMMAND,
+        format!("Rolled asset {asset_id} back to version {version}"),
+        Some(data),
+    )
+    .with_hints([format!(
+        "Run `rbxoc asset versions --asset-id {asset_id}` to inspect the versions"
+    )])
 }
 
 /// Archive an asset.
