@@ -295,7 +295,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["universe.analytics:read"],
         mutating: false,
-        note: "Not covered by rbxcloud. Requires OAuth2, not an API key.",
+        note: "Not covered by rbxcloud. Supports API keys and OAuth2; enable universe.analytics:read.",
     },
     Endpoint {
         id: "analytics.operation",

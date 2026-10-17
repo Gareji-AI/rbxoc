@@ -216,6 +216,17 @@ fn catalog_auth_and_permissions_match_official_operations() {
 }
 
 #[test]
+fn analytics_catalog_note_does_not_contradict_supported_credentials() {
+    let entry = catalog::ENDPOINTS
+        .iter()
+        .find(|e| e.id == "analytics.metrics")
+        .unwrap();
+    assert!(entry.auth.contains(&catalog::AuthKind::ApiKey));
+    assert!(!entry.note.contains("not an API key"), "{}", entry.note);
+    assert!(entry.note.contains("API keys and OAuth2"), "{}", entry.note);
+}
+
+#[test]
 fn auth_contract_detects_credential_and_scope_drift() {
     let mut entries = catalog::ENDPOINTS.to_vec();
     let endpoint = entries
