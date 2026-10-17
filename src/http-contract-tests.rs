@@ -456,6 +456,77 @@ async fn every_alert_operation_uses_the_case_sensitive_universe_resource() {
 }
 
 #[tokio::test]
+async fn ordered_list_uses_documented_sort_and_page_size_query_names() {
+    let server = Server::success();
+    for (ascending, page_size) in [(false, 25), (true, 1), (false, 100)] {
+        let out = cmd::ordered_datastore::list(
+            &server.ctx(),
+            123,
+            "board",
+            "global",
+            ascending,
+            page_size,
+        )
+        .await;
+        assert!(out.ok, "{out:?}");
+    }
+    let requests = server.captured();
+    for (request, query) in requests.iter().zip([
+        "order_by=desc&max_page_size=25",
+        "order_by=asc&max_page_size=1",
+        "order_by=desc&max_page_size=100",
+    ]) {
+        assert_eq!(request.method, "GET");
+        assert_eq!(
+            request.target,
+            format!(
+                "/ordered-data-stores/v1/universes/123/orderedDataStores/board/scopes/global/entries?{query}"
+            )
+        );
+    }
+    assert_eq!(requests.len(), 3);
+}
+
+#[tokio::test]
+async fn thumbnail_status_repeats_each_independently_encoded_operation_id() {
+    let server = Server::success();
+    for ids in [vec!["one".into()], vec!["one".into(), "two&?# %,+".into()]] {
+        assert!(cmd::thumbnail::status(&server.ctx(), 123, &ids).await.ok);
+    }
+    let requests = server.captured();
+    assert_eq!(requests.len(), 2);
+    for (request, query) in requests.iter().zip([
+        "operationIds=one",
+        "operationIds=one&operationIds=two%26%3F%23+%25%2C%2B",
+    ]) {
+        assert_eq!(request.method, "GET");
+        assert_eq!(
+            request.target,
+            format!(
+                "/thumbnail-personalization-api/v1/universes/123/thumbnails/uploads/status?{query}"
+            )
+        );
+    }
+}
+
+#[tokio::test]
+async fn place_history_uses_documented_page_size_query() {
+    let server = Server::success();
+    for limit in [1, 20, 100] {
+        assert!(cmd::place::history(&server.ctx(), 456, limit).await.ok);
+    }
+    let requests = server.captured();
+    assert_eq!(requests.len(), 3);
+    for (request, size) in requests.iter().zip([1, 20, 100]) {
+        assert_eq!(request.method, "GET");
+        assert_eq!(
+            request.target,
+            format!("/place-version-history-api/v1/456/history?pageSize={size}")
+        );
+    }
+}
+
+#[tokio::test]
 async fn local_and_http_failures_have_actionable_hints_in_both_formats() {
     let server = Server::success();
     let ctx = server.ctx();

@@ -26,11 +26,12 @@ pub async fn list(
         Ok(path) => path,
         Err(err) => return failure("ordered-datastore list", err),
     };
-    let query = format!(
-        "?orderBy={}&maxPageSize={page_size}",
-        if ascending { "asc" } else { "desc" }
-    );
-    match ctx.get_json(&format!("{path}{query}")).await {
+    let page_size = page_size.to_string();
+    let query = [
+        ("order_by", if ascending { "asc" } else { "desc" }),
+        ("max_page_size", page_size.as_str()),
+    ];
+    match ctx.get_json_query(&path, &query).await {
         Ok(data) => {
             let count = data
                 .get("entries")

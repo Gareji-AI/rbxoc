@@ -97,8 +97,11 @@ pub async fn get(ctx: &Ctx, universe_id: u64, place_id: u64) -> Output {
 
 /// Fetch a place's version history.
 pub async fn history(ctx: &Ctx, place_id: u64, limit: u32) -> Output {
-    let path = format!("/place-version-history-api/v1/{place_id}/history?limit={limit}");
-    match ctx.get_json(&path).await {
+    let path = format!("/place-version-history-api/v1/{place_id}/history");
+    match ctx
+        .get_json_query(&path, &[("pageSize", &limit.to_string())])
+        .await
+    {
         Ok(data) => {
             let count = data
                 .get("versions")

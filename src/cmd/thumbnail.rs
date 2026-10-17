@@ -154,14 +154,14 @@ pub async fn status(ctx: &Ctx, universe_id: u64, operation_ids: &[String]) -> Ou
             },
         );
     }
-    let joined = operation_ids.join(",");
+    let query: Vec<_> = operation_ids
+        .iter()
+        .map(|id| ("operationIds", id.as_str()))
+        .collect();
     let path = format!(
         "/thumbnail-personalization-api/v1/universes/{universe_id}/thumbnails/uploads/status"
     );
-    match ctx
-        .get_json_query(&path, &[("operationIds", joined.as_str())])
-        .await
-    {
+    match ctx.get_json_query(&path, &query).await {
         Ok(data) => Output::success(
             "thumbnail status",
             format!("Fetched status for {} operations", operation_ids.len()),
