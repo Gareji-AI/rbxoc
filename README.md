@@ -223,8 +223,21 @@ rbxoc place history --place-id 456
 rbxoc asset create --file model.fbx --display-name "My Model" --user-id 789
 rbxoc asset operation --operation-id ABC123
 rbxoc asset update --asset-id 2205400862 --file v2.fbx
+rbxoc asset update --asset-id 2205400862 --display-name "Renamed Model" --description "New description"
+rbxoc asset update --asset-id 2205400862 --icon assets/123 --preview assets/456,assets/789 --dry-run
 rbxoc asset rollback --asset-id 2205400862 --version 1
 ```
+
+`asset update` replaces content only for Models. Omit `--file` for metadata-only
+updates; metadata may also accompany a Model content update. `--icon` and
+`--preview` take existing **Image** resources (`assets/123`), not local files
+or Decal IDs. Repeat `--preview` or separate references with commas to replace
+the preview list. Icons must be square. Dry-run validates the local plan without
+credentials or requests; it cannot verify remote type, ownership, or dimensions.
+Content-only updates omit `updateMask`; metadata masks select only supplied fields.
+The official metadata-only examples omit `fileContent` even though the formal
+multipart schema marks it required. These builders follow those examples and are
+covered by offline wire tests, not live provider verification.
 
 Supported formats (20 MB per request): `.fbx` `.gltf` `.glb` `.rbxm` `.rbxmx` (Model), `.png` `.jpeg` `.bmp` `.tga` (Decal image uploads), `.mp3` `.ogg` `.wav` `.flac`, `.mp4` `.mov`.
 

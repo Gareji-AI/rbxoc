@@ -217,19 +217,21 @@ pub enum AssetCommand {
     Update {
         #[arg(long)]
         asset_id: u64,
+        /// Model content; omit for a metadata-only update
         #[arg(long, value_name = "PATH")]
-        file: std::path::PathBuf,
-        #[arg(long)]
+        file: Option<std::path::PathBuf>,
+        #[arg(long, requires = "file")]
         asset_type: Option<String>,
         #[arg(long)]
         display_name: Option<String>,
         #[arg(long)]
         description: Option<String>,
-        /// Square PNG / JPEG
-        #[arg(long, value_name = "PATH")]
-        icon: Option<std::path::PathBuf>,
-        #[arg(long, value_name = "PATH")]
-        preview: Option<std::path::PathBuf>,
+        /// Existing square Image resource, e.g. assets/123; not a local image or Decal ID
+        #[arg(long, value_name = "IMAGE_ASSET_RESOURCE")]
+        icon: Option<String>,
+        /// Existing Image resource; repeat or separate with commas to replace the preview list
+        #[arg(long, value_name = "IMAGE_ASSET_RESOURCE", value_delimiter = ',')]
+        preview: Vec<String>,
         /// Resolve the asset type and report it without uploading
         #[arg(long)]
         dry_run: bool,
@@ -1013,18 +1015,21 @@ impl Cli {
                     description,
                     icon,
                     preview,
-                    dry_run: true,
+                    dry_run,
                 } => {
-                    return cmd::asset::preview_update(
-                        file,
+                    let plan = cmd::asset::preview_update(
+                        file.as_deref(),
                         *asset_id,
                         asset_type.as_deref(),
                         display_name.as_deref(),
                         description.as_deref(),
                         icon.as_deref(),
-                        preview.as_deref(),
+                        preview,
                     )
                     .await;
+                    if !plan.ok || *dry_run {
+                        return plan;
+                    }
                 }
                 _ => {}
             }
@@ -1120,12 +1125,12 @@ impl Cli {
                     cmd::asset::update(
                         &ctx,
                         asset_id,
-                        &file,
+                        file.as_deref(),
                         asset_type.as_deref(),
                         display_name.as_deref(),
                         description.as_deref(),
                         icon.as_deref(),
-                        preview.as_deref(),
+                        &preview,
                     )
                     .await
                 }

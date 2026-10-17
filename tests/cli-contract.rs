@@ -97,6 +97,57 @@ fn local_validation_registry_and_file_failures_have_nonempty_hints() {
 }
 
 #[test]
+fn metadata_only_asset_update_is_credential_free_in_dry_run() {
+    let out = run(&[
+        "asset",
+        "update",
+        "--asset-id",
+        "123",
+        "--display-name",
+        "Renamed",
+        "--description",
+        "New description",
+        "--icon",
+        "assets/456",
+        "--preview",
+        "assets/789",
+        "--dry-run",
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(
+        json["data"]["updateMask"],
+        "displayName,description,icon,previews"
+    );
+    assert_eq!(json["data"]["request"]["icon"], "assets/456");
+    assert_eq!(
+        json["data"]["request"]["previews"],
+        serde_json::json!([{"asset": "assets/789"}])
+    );
+    assert_eq!(json["data"]["bytes"], 0);
+}
+
+#[test]
+fn invalid_asset_metadata_fails_before_authentication() {
+    for (args, code) in [
+        (
+            vec!["asset", "update", "--asset-id", "123"],
+            "nothing_to_update",
+        ),
+        (
+            vec!["asset", "update", "--asset-id", "123", "--icon", "icon.png"],
+            "invalid_image_resource",
+        ),
+    ] {
+        let out = run(&args);
+        assert!(!out.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["error"]["code"], code);
+    }
+}
+
+#[test]
 fn help_and_version_remain_successful_human_readable_output() {
     for arg in ["--help", "--version"] {
         let out = run(&[arg]);

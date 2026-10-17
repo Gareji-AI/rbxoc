@@ -25,6 +25,22 @@ impl Request {
             .find(|(key, _)| key.eq_ignore_ascii_case(name))
             .map(|(_, value)| value.as_str())
     }
+
+    fn json_part(&self, name: &str) -> Value {
+        let boundary = self
+            .header("content-type")
+            .unwrap()
+            .split("boundary=")
+            .nth(1)
+            .unwrap();
+        let marker = format!("name=\"{name}\"");
+        let part = self
+            .body
+            .split(&format!("--{boundary}"))
+            .find(|part| part.contains(&marker))
+            .unwrap();
+        serde_json::from_str(part.split_once("\r\n\r\n").unwrap().1.trim_end()).unwrap()
+    }
 }
 
 enum Reply {
@@ -653,7 +669,17 @@ async fn asset_submissions_reject_missing_and_malformed_operation_receipts() {
         let server = Server::new(move |_| Reply::Json(200, body.clone()));
         for out in [
             cmd::asset::create(&server.ctx(), &model, "Model", "", Some(123), None, None).await,
-            cmd::asset::update(&server.ctx(), 456, &model, None, None, None, None, None).await,
+            cmd::asset::update(
+                &server.ctx(),
+                456,
+                Some(&model),
+                None,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .await,
         ] {
             assert!(!out.ok, "{out:?}");
             assert_eq!(out.error.unwrap().code, "operation_id_missing");
@@ -795,6 +821,154 @@ async fn analytics_api_key_errors_are_not_unconditionally_oauth_required() {
     let malformed = Server::new(|_| Reply::Raw(200, "not json".into()));
     let out = cmd::analytics::metrics(&malformed.ctx(), 123, "{}").await;
     assert_eq!(out.error.unwrap().code, "invalid_json");
+}
+
+#[tokio::test]
+async fn asset_content_update_omits_metadata_mask_and_undocumented_parts() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("model.fbx");
+    std::fs::write(&model, "synthetic Model content").unwrap();
+    let server = Server::new(|_| Reply::Json(200, json!({"path": "operations/op-1"})));
+    let out = cmd::asset::update(
+        &server.ctx(),
+        123,
+        Some(&model),
+        None,
+        None,
+        None,
+        None,
+        &[],
+    )
+    .await;
+    assert!(out.ok, "{out:?}");
+    let requests = server.captured();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "PATCH");
+    assert_eq!(requests[0].target, "/assets/v1/assets/123");
+    assert_eq!(requests[0].json_part("request"), json!({"assetId": "123"}));
+    assert_eq!(requests[0].body.matches("Content-Disposition:").count(), 2);
+    assert!(requests[0].body.contains("name=\"fileContent\""));
+}
+
+#[tokio::test]
+async fn asset_metadata_updates_use_only_documented_json_fields_and_parts() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("model.fbx");
+    std::fs::write(&model, "synthetic Model content").unwrap();
+    for content in [false, true] {
+        let server = Server::new(move |_| {
+            Reply::Json(
+                200,
+                if content {
+                    json!({"path": "operations/op-1"})
+                } else {
+                    json!({"previews": [{"asset": "assets/789"}, {"asset": "assets/790"}]})
+                },
+            )
+        });
+        let out = cmd::asset::update(
+            &server.ctx(),
+            123,
+            content.then_some(model.as_path()),
+            None,
+            Some("Renamed"),
+            Some(""),
+            Some("assets/456"),
+            &["assets/789".into(), "assets/790".into()],
+        )
+        .await;
+        assert!(out.ok, "{out:?}");
+        let requests = server.captured();
+        assert_eq!(requests.len(), 1);
+        let req = &requests[0];
+        assert_eq!(req.method, "PATCH");
+        assert_eq!(
+            req.target,
+            "/assets/v1/assets/123?updateMask=displayName%2Cdescription%2Cicon%2Cpreviews"
+        );
+        assert_eq!(
+            req.json_part("request"),
+            json!({
+                "assetId": "123", "displayName": "Renamed", "description": "",
+                "icon": "assets/456", "previews": [{"asset": "assets/789"}, {"asset": "assets/790"}],
+            })
+        );
+        assert_eq!(
+            req.body.matches("Content-Disposition:").count(),
+            if content { 2 } else { 1 }
+        );
+        assert_eq!(req.body.contains("name=\"fileContent\""), content);
+        assert!(!req.body.contains("name=\"icon\""));
+        assert!(!req.body.contains("name=\"preview\""));
+    }
+}
+
+#[tokio::test]
+async fn asset_metadata_update_validates_local_input_before_sending() {
+    let server = Server::success();
+    for out in [
+        cmd::asset::update(&server.ctx(), 123, None, None, None, None, None, &[]).await,
+        cmd::asset::update(&server.ctx(), 0, None, None, Some("N"), None, None, &[]).await,
+        cmd::asset::update(
+            &server.ctx(),
+            123,
+            None,
+            Some("Model"),
+            Some("N"),
+            None,
+            None,
+            &[],
+        )
+        .await,
+        cmd::asset::update(
+            &server.ctx(),
+            123,
+            None,
+            None,
+            None,
+            None,
+            Some("icon.png"),
+            &[],
+        )
+        .await,
+        cmd::asset::update(
+            &server.ctx(),
+            123,
+            None,
+            None,
+            None,
+            None,
+            None,
+            &["assets/0".into()],
+        )
+        .await,
+    ] {
+        assert!(!out.ok, "{out:?}");
+        assert!(!out.hints.is_empty());
+    }
+    assert!(server.captured().is_empty());
+}
+
+#[tokio::test]
+async fn asset_metadata_update_rejects_missing_or_wrong_receipts_without_resending() {
+    for body in [
+        json!({}),
+        json!({"description": 7}),
+        json!({"path": "assets/999"}),
+        json!({"path": "assets/123", "assetId": "999"}),
+    ] {
+        let server = Server::new(move |_| Reply::Json(200, body.clone()));
+        let out =
+            cmd::asset::update(&server.ctx(), 123, None, None, None, Some("New"), None, &[]).await;
+        assert!(!out.ok, "{out:?}");
+        assert_eq!(out.error.unwrap().code, "invalid_asset_response");
+        assert_eq!(server.captured().len(), 1);
+    }
+    let server = Server::new(|_| Reply::Json(503, json!({"message": "uncertain fixture"})));
+    let out =
+        cmd::asset::update(&server.ctx(), 123, None, None, None, Some("New"), None, &[]).await;
+    assert_eq!(out.error.unwrap().code, "mutation_outcome_unknown");
+    assert_eq!(server.captured().len(), 1);
 }
 
 #[tokio::test]
