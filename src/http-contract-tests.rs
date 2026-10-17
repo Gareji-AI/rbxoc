@@ -656,6 +656,53 @@ async fn completed_asset_operation_errors_are_not_success() {
 }
 
 #[tokio::test]
+async fn immediately_failed_asset_submissions_preserve_receipts_but_never_report_success() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("model.fbx");
+    std::fs::write(&model, "synthetic model").unwrap();
+    let server = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({
+                "path": "operations/op-failed", "done": true,
+                "error": {"code": 3, "message": "fixture rejected"},
+            }),
+        )
+    });
+    for out in [
+        cmd::asset::create(&server.ctx(), &model, "Model", "", Some(123), None, None).await,
+        cmd::asset::update(
+            &server.ctx(),
+            456,
+            Some(&model),
+            None,
+            None,
+            None,
+            None,
+            &[],
+        )
+        .await,
+        cmd::asset::update(
+            &server.ctx(),
+            456,
+            None,
+            None,
+            Some("Renamed"),
+            None,
+            None,
+            &[],
+        )
+        .await,
+    ] {
+        assert!(!out.ok, "{out:?}");
+        assert_eq!(out.error.unwrap().code, "operation_failed");
+        assert_eq!(out.data.unwrap()["operationId"], "op-failed");
+        assert!(out.hints.iter().any(|h| h.contains("op-failed")));
+    }
+    assert_eq!(server.captured().len(), 3);
+}
+
+#[tokio::test]
 async fn asset_submissions_reject_missing_and_malformed_operation_receipts() {
     let dir = tempfile::tempdir().unwrap();
     let model = dir.path().join("model.fbx");
@@ -956,6 +1003,8 @@ async fn asset_metadata_update_rejects_missing_or_wrong_receipts_without_resendi
         json!({"description": 7}),
         json!({"path": "assets/999"}),
         json!({"path": "assets/123", "assetId": "999"}),
+        json!({"path": "assets/123", "error": {"code": 3, "message": "rejected"}}),
+        json!({"path": "assets/123", "description": 7}),
     ] {
         let server = Server::new(move |_| Reply::Json(200, body.clone()));
         let out =

@@ -219,9 +219,17 @@ pub async fn update(
     }
     // Metadata-only examples return the updated fields directly. Do not
     // invent an operation receipt or interpret an empty object as success.
-    let has_metadata = plan.mask.split(',').any(|field| match field {
-        "previews" => data.get(field).is_some_and(Value::is_array),
-        _ => data.get(field).is_some_and(Value::is_string),
+    let valid_field = |field: &str, value: &Value| match field {
+        "previews" => value.is_array(),
+        _ => value.is_string(),
+    };
+    let has_metadata = plan.mask.split(',').any(|field| {
+        data.get(field)
+            .is_some_and(|value| valid_field(field, value))
+    });
+    let malformed_metadata = plan.mask.split(',').any(|field| {
+        data.get(field)
+            .is_some_and(|value| !valid_field(field, value))
     });
     let target = format!("assets/{asset_id}");
     let has_path = data.get("path").and_then(Value::as_str) == Some(target.as_str());
@@ -231,7 +239,8 @@ pub async fn update(
             .or_else(|| id.as_str().and_then(|s| s.parse().ok()))
             != Some(asset_id)
     });
-    if (!has_metadata && !has_path) || wrong_path || wrong_id {
+    let has_error = data.get("error").is_some_and(|error| !error.is_null());
+    if (!has_metadata && !has_path) || wrong_path || wrong_id || has_error || malformed_metadata {
         return failure(CMD_UPDATE, ErrorBody {
             code: "invalid_asset_response",
             message: "Metadata update response has no updated fields or matching asset resource".into(),
@@ -507,6 +516,22 @@ fn operation_output(
         Ok(id) => id,
         Err(err) => return failure(command, err),
     };
+    if let Some(error) = data.get("error").filter(|error| !error.is_null()) {
+        let mut out = failure(
+            command,
+            ErrorBody {
+                code: "operation_failed",
+                message: format!("Operation {op_id} failed"),
+                status: None,
+                detail: Some(error.to_string()),
+                refs: None,
+            },
+        );
+        out.data = Some(json!({"operationId": op_id, "assetType": asset_type, "response": data}));
+        return out.with_hints(type_note.into_iter().chain([format!(
+            "Inspect `rbxoc asset operation --operation-id {op_id}` and the existing asset before starting another upload; do not blindly repeat the mutation"
+        )]));
+    }
     Output::success(
         command,
         format!("Accepted the {asset_type} operation (operation {op_id})"),
