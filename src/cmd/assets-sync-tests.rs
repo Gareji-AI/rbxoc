@@ -395,6 +395,79 @@ async fn scoped_valid_batch_uploads_only_selected_missing_and_keeps_registry() {
 }
 
 #[tokio::test]
+async fn partial_sync_codegen_matches_durable_completed_ids_after_uncertain_create() {
+    let dir = fixture();
+    png(dir.path(), "a.png");
+    png(dir.path(), "b.png");
+    let mut lock = assets::Lockfile::new();
+    lock.assets.insert("old.png".into(), 88);
+    assets::save_lockfile(dir.path(), &lock).unwrap();
+    let server = MockServer::new(|request, body, creates| {
+        if request.starts_with("POST ") && creates == 2 {
+            (500, json!({"message": "second create uncertain"}))
+        } else {
+            success_response(request, body, creates)
+        }
+    });
+    let out = run(&server.ctx(), dir.path(), &[]).await;
+    assert_eq!(out.error.as_ref().unwrap().code, "publication_uncertain");
+    let lock = assets::load_lockfile(dir.path()).unwrap();
+    let generated = std::fs::read_to_string(dir.path().join("generated/assets.luau"))
+        .expect("partial sync must emit durable completed IDs");
+    assert_eq!(
+        generated,
+        assets::render(&assets::load_manifest(dir.path()).unwrap(), &lock).unwrap()
+    );
+    assert!(generated.contains("rbxassetid://101"));
+    assert!(generated.contains("rbxassetid://88"));
+    assert!(!generated.contains("rbxassetid://102"));
+    assert!(!lock.assets.contains_key("assets/b.png"));
+    assert!(lock.pending["assets/b.png"].operation_id.is_none());
+    assert_eq!(
+        out.data.as_ref().unwrap()["partialSync"]["registered"]["assets/a.png"],
+        101
+    );
+    assert!(out.hints.iter().any(|hint| hint.contains("assets codegen")));
+    assert!(!run(&server.ctx(), dir.path(), &[]).await.ok);
+    assert_eq!(server.creates(), 2);
+}
+
+#[tokio::test]
+async fn partial_sync_codegen_failure_does_not_hide_original_publication_error() {
+    let dir = fixture();
+    png(dir.path(), "a.png");
+    png(dir.path(), "b.png");
+    let root = dir.path().to_path_buf();
+    let server = MockServer::new(move |request, body, creates| {
+        if request.starts_with("POST ") && creates == 2 {
+            std::fs::create_dir(root.join("generated/assets.luau")).unwrap();
+            (500, json!({"message": "second create uncertain"}))
+        } else {
+            success_response(request, body, creates)
+        }
+    });
+    let out = run(&server.ctx(), dir.path(), &[]).await;
+    assert_eq!(out.error.as_ref().unwrap().code, "publication_uncertain");
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("codegen") && hint.contains("directory")),
+        "{out:?}"
+    );
+    let lock = assets::load_lockfile(dir.path()).unwrap();
+    assert_eq!(lock.assets["assets/a.png"], 101);
+    assert!(lock.pending.contains_key("assets/b.png"));
+    std::fs::remove_dir(dir.path().join("generated/assets.luau")).unwrap();
+    assets::write_generated(
+        dir.path(),
+        &assets::load_manifest(dir.path()).unwrap(),
+        &lock,
+    )
+    .unwrap();
+    assert_eq!(server.creates(), 2);
+}
+
+#[tokio::test]
 async fn partial_completion_is_durable_and_retry_only_polls_pending_operation() {
     let dir = fixture();
     png(dir.path(), "a.png");
@@ -422,6 +495,10 @@ async fn partial_completion_is_durable_and_retry_only_polls_pending_operation() 
     assert_eq!(
         lock.pending["assets/b.png"].operation_id.as_deref(),
         Some("op2")
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("generated/assets.luau")).unwrap(),
+        assets::render(&assets::load_manifest(dir.path()).unwrap(), &lock).unwrap()
     );
     assert!(
         !std::fs::read_to_string(dir.path().join(assets::LOCKFILE_NAME))
@@ -519,6 +596,7 @@ async fn receipt_write_failure_keeps_recoverable_operation_and_reports_asset_id(
     let out = run(&server.ctx(), dir.path(), &[]).await;
     assert_eq!(out.error.unwrap().code, "receipt_write_failed");
     assert!(out.hints.iter().any(|hint| hint.contains("101")));
+    assert!(!dir.path().join("generated/assets.luau").exists());
     std::fs::remove_dir(dir.path().join(assets::LOCKFILE_NAME)).unwrap();
     std::fs::rename(
         dir.path().join("saved-receipt.toml"),

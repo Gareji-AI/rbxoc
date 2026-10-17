@@ -306,7 +306,40 @@ async fn run_mode(ctx: &Ctx, dir: &Path, selection: &[String], mode: Mode) -> Ou
         .with_hints((!unresolved_images.is_empty()).then(|| "Image uploads return Decal IDs, not resolved Image IDs. Preserve these receipts; resolve Decal.Texture in Studio, register --id DECAL_ID --image-id IMAGE_ID, then enable codegen.image_ids for image consumers. See docs/image-ids.md.".into()))
     }
     .await;
+    let outcome = if outcome.ok {
+        outcome
+    } else {
+        refresh_partial_codegen(outcome, dir, &manifest)
+    };
     outcome.with_hints(warnings)
+}
+
+/// Preserve the publication error and generate only from receipts that actually
+/// reached disk, never from an in-memory completion whose save may have failed.
+fn refresh_partial_codegen(mut outcome: Output, dir: &Path, manifest: &assets::Manifest) -> Output {
+    let result = (|| -> anyhow::Result<_> {
+        anyhow::ensure!(
+            dir.join(assets::LOCKFILE_NAME).is_file(),
+            "durable lockfile is missing or not a file"
+        );
+        let persisted = assets::load_lockfile(dir)?;
+        let output = assets::write_generated(dir, manifest, &persisted)?;
+        Ok((output, persisted.assets))
+    })();
+    match result {
+        Ok((output, registered)) => {
+            outcome.data.get_or_insert_with(|| json!({}))["partialSync"] = json!({
+                "output": output.to_string_lossy(), "registered": registered,
+            });
+            outcome.with_hints([format!(
+                "Partial sync: wrote {} from durable registered IDs only; pending creates are not emitted and existing update target IDs remain registered. `rbxoc assets codegen` can regenerate this output without publishing again. The original sync error remains unresolved.",
+                output.display()
+            )])
+        }
+        Err(error) => outcome.with_hints([format!(
+            "Partial sync codegen could not refresh from the durable lockfile: {error:#}. Preserve existing output and receipts, fix the local destination/receipt problem, then run `rbxoc assets codegen`; do not publish again to regenerate code. The original sync error is preserved."
+        )]),
+    }
 }
 
 struct Prepared {

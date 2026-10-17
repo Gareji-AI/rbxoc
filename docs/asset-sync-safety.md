@@ -108,6 +108,9 @@ There is no all-or-nothing guarantee and no destructive rollback.
 It is a **registry and known-freshness check**, not full preprocessing/upload
 preflight or remote verification. It uses the same selection as real sync:
 unselected missing or stale paths do not fail a scoped check.
+It also performs a best-effort read-only advisory check on XML Animations at
+least 2 MiB. That threshold is not a Roblox limit or a proven HTTP 500 cause;
+no binary conversion or source/fingerprint changes are made. See README.
 
 `assets status` and dry-run report:
 
@@ -162,6 +165,17 @@ If A succeeds and B fails, A stays registered. Retrying sync polls B's existing
 operation and never creates another asset for it. Poll failures/timeouts leave
 the operation receipt intact. Failed operations also remain recorded; retrying
 polls them rather than silently issuing a replacement create.
+
+On any post-preflight sync failure, codegen is refreshed from the **durable
+on-disk lockfile** before returning the original failure. Completed A and other
+registered IDs are usable even if B is uncertain; pending creates are not emitted.
+Pending updates retain their already registered target IDs, not a new freshness
+claim. `data.partialSync` lists the output path and registered map after a
+successful refresh. Codegen failure adds a hint without hiding the publication
+error or dropping receipts. Repair local output/receipt storage, then run
+`rbxoc assets codegen` to regenerate without publishing. A failed completion
+receipt save must never cause an unsaved in-memory ID to appear in generated code.
+Preflight failures still leave existing generated output untouched.
 
 Recovery rejects changed bytes, preprocessing settings, asset type, or creator.
 Restore the original source/configuration before resuming. This prevents a
