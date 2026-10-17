@@ -781,6 +781,23 @@ async fn product_creates_never_report_unknown_successful_ids() {
 }
 
 #[tokio::test]
+async fn analytics_api_key_errors_are_not_unconditionally_oauth_required() {
+    let denied = Server::new(|_| Reply::Json(403, json!({"message": "permission denied"})));
+    let out = cmd::analytics::metrics(&denied.ctx(), 123, "{}").await;
+    assert!(!out.ok);
+    assert_eq!(out.error.unwrap().code, "http_403");
+    assert!(
+        out.hints
+            .iter()
+            .any(|h| h.contains("universe.analytics:read"))
+    );
+
+    let malformed = Server::new(|_| Reply::Raw(200, "not json".into()));
+    let out = cmd::analytics::metrics(&malformed.ctx(), 123, "{}").await;
+    assert_eq!(out.error.unwrap().code, "invalid_json");
+}
+
+#[tokio::test]
 async fn local_and_http_failures_have_actionable_hints_in_both_formats() {
     let server = Server::success();
     let ctx = server.ctx();

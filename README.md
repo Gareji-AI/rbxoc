@@ -444,7 +444,10 @@ rbxoc analytics alerts list --universe-id 123
 rbxoc analytics alerts incidents --universe-id 123 --start-time 2026-10-01T00:00:00Z --end-time 2026-10-08T00:00:00Z
 ```
 
-This API needs OAuth2 (`universe.analytics:read`); an API key cannot call it.
+The current contract supports API keys and OAuth2 for analytics queries and
+operation reads. Both need the documented `universe.analytics:read` permission.
+See `rbxoc api show analytics.metrics`; contract support is not evidence that a
+particular account/key is enrolled or that a query has been live-verified.
 
 Alert commands use the provider's case-sensitive `Universe` resource type
 automatically, for example `/analytics-alert-control-plane/v1/resource/Universe/id/123/alerts`.
@@ -495,7 +498,12 @@ Open Cloud has three auth families. This CLI excludes cookies.
 | OAuth2 bearer | ✅ | Analytics, alerts, and similar |
 | legacy cookie | ✗ | browser-session derived, unsuited to automation |
 
-**Note**: some areas are OAuth2-only. Analytics queries need `universe.analytics:read` and cannot be called with an API key. Check the `auth` field of `rbxoc api show <id>`.
+Authentication is operation-specific. The 2026-10-17 contract supports both
+API keys and OAuth2 for analytics, server reads, messaging, assets, configs,
+events, badges and monetization. Thumbnail, asset-permission, standard/ordered
+DataStore, place-publish and place-history operations advertise API keys only
+after excluding unsupported cookies. Check `auth` and `scopes` in
+`rbxoc api show <id>` rather than reusing another endpoint's permission names.
 
 ## Toolchain
 
@@ -578,7 +586,7 @@ results and limits; a 400/404 response is not proof of a successful operation.
 | Auth probe, universe read, event list | Live-verified with the session's real API key |
 | Registry, codegen, type inference, catalog | Offline-verified; no cloud call required |
 | Thumbnails, server management, game passes, developer products, standard/ordered DataStores | Implemented; the session reached 401/403 because its key lacked scopes, not successful operation verification |
-| Asset uploads/updates, place publishing, real server logs, OAuth2 analytics, paid product creation | Live behavior remains unverified |
+| Asset uploads/updates, place publishing, real server logs, analytics with either credential family, paid product creation | Live behavior remains unverified |
 
 Offline fixtures test publication safety and recovery, including stable-ID
 Model updates; they do **not** establish live moderation, latest-version

@@ -1,7 +1,7 @@
 //! Analytics queries.
 //!
-//! `analytics-query-api` is OAuth2-only (`universe.analytics:read`). Unlike
-//! most areas, an API key cannot call it. Not covered by rbxcloud.
+//! `analytics-query-api` supports API keys and OAuth2
+//! (`universe.analytics:read`). Not covered by rbxcloud.
 //!
 //! Queries may be asynchronous and return an operation to poll.
 
@@ -134,6 +134,6 @@ pub async fn catalog() -> Output {
     )
     .with_hints(vec![
         "Confirm exact metric names in the Creator Dashboard analytics view".into(),
-        "This API requires OAuth2 (universe.analytics:read)".into(),
+        "API keys and OAuth2 are supported; enable universe.analytics:read (see `rbxoc api show analytics.metrics`)".into(),
     ])
 }

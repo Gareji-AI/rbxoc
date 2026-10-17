@@ -2,7 +2,7 @@
 
 What `rbxoc` covers, what it deliberately does not, and how that was decided.
 
-Survey date: 2026-10-12. Source: `create.roblox.com/docs/cloud/openapi.json`
+Original coverage survey: 2026-10-12. Source: `create.roblox.com/docs/cloud/openapi.json`
 (3,105,191 bytes, 648 paths), read directly rather than through the docs pages.
 
 ## How to re-check
@@ -27,6 +27,28 @@ The command mapping is discovered recursively from CLI help. Local composite
 analytics metric list are excluded. Rust regression tests independently walk
 the clap command tree and prove that same-count substitutions cannot hide a
 missing command/endpoint mapping.
+
+### Authentication and permission contract (2026-10-17)
+
+`tests/fixtures/openapi-auth-contract.json` preserves security and scope excerpts
+from the official document, with its source URL, date and SHA-256. It covers all
+57 implemented cloud catalog entries (58 operations, since analytics operation
+reads dispatch to metrics or dimension-values). Local composites are excluded.
+`cargo test catalog_contract_tests` compares auth, method, route and the union of
+OAuth security scopes / `x-roblox-scopes`, and proves credential/scope drift is
+detected. Refresh the fixture from the official operation, not from catalog data.
+
+API-key-only families: thumbnails, asset permissions, standard and ordered
+DataStores, place publish/history. Both API keys and OAuth are documented for
+analytics, server list/logs, cross-server messaging, asset APIs, configs, events,
+badges and monetization. Cookie credentials remain excluded; empty anonymous
+security alternatives do not add an anonymous execution path to this CLI.
+
+Standard DataStore permissions use `universe-datastores.objects:read`, `:update`,
+`:delete` and `:list` per operation. Ordered DataStores use
+`universe.ordered-data-store.scope.entry:read|write`. These names also drive
+API-key hints. An empty documented permission set is not replaced with an
+invented scope. Contract support is distinct from live verification and enrollment.
 
 ## Current state
 

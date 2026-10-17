@@ -33,6 +33,7 @@ Do not commit API keys, OAuth tokens, or live universe/place IDs invented for te
 5. **English** for user-facing CLI strings, README, and agent docs in this repo.
 6. **Replay safety.** `Ctx::send` retries only safe HTTP methods (GET/HEAD/OPTIONS/TRACE). All other methods are sent once, even when the body is cloneable. Transport/429/5xx outcomes return `mutation_outcome_unknown`; reconcile the target or receipt before resubmitting. Keep publication-specific `send_once` receipt recovery intact.
 7. **Failure hints.** Construct failures through `ctx::failure` / `failure_for_endpoint`. Every failure must serialize a non-empty `hints` array; JSON and text render the same `Output`. Do not replace unknown-mutation reconciliation hints with generic retry advice.
+8. **Auth metadata.** Derive catalog auth from the operation's supported API-key/OAuth security alternatives, and permissions from both OAuth security scope lists and `x-roblox-scopes`. Never infer OAuth-only behavior from an old survey. `tests/fixtures/openapi-auth-contract.json` retains official operation excerpts; refresh them deliberately and run `cargo test catalog_contract_tests` when changing catalog metadata. Cookies stay unsupported.
 
 ## Coding standards
 
@@ -69,4 +70,4 @@ mise run verify
 
 ## Live API verification (maintainers)
 
-Use a **real** universe ID and project-local `.env` / `.rbxoc` in a consumer repo (e.g. game template), not invented IDs. See `docs/live-api-verification.md` for known platform limits (OAuth-only analytics metrics, PerformanceMonitoringV2 enrollment for alerts, place publish 409 busy).
+Use a **real** universe ID and project-local `.env` / `.rbxoc` in a consumer repo (e.g. game template), not invented IDs. See `docs/live-api-verification.md` for known platform limits (PerformanceMonitoringV2 enrollment for alerts, place publish 409 busy). Analytics now advertises both API-key and OAuth support in the official contract; that does not establish live verification or account enrollment.

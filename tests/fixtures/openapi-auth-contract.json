@@ -1,0 +1,1265 @@
+{
+  "source": "https://create.roblox.com/docs/cloud/openapi.json",
+  "fetched": "2026-10-17",
+  "sourceSha256": "e53153475cb2bf934aa43c6c697ec26796aa6d8405e0623f4e5764a373996848",
+  "operations": [
+    {
+      "catalogId": "auth.check",
+      "method": "GET",
+      "path": "/cloud/v2/universes/{universe_id}",
+      "operationId": "Cloud_GetUniverse",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": []
+    },
+    {
+      "catalogId": "universe.get",
+      "method": "GET",
+      "path": "/cloud/v2/universes/{universe_id}",
+      "operationId": "Cloud_GetUniverse",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": []
+    },
+    {
+      "catalogId": "place.publish",
+      "method": "POST",
+      "path": "/universes/v1/{universeId}/places/{placeId}/versions",
+      "operationId": "Places_CreatePlaceVersionApiKey",
+      "security": [
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe-places:write",
+          "targetResourceSpecifier": "v1"
+        },
+        {
+          "name": "universe-places:write"
+        }
+      ]
+    },
+    {
+      "catalogId": "place.get",
+      "method": "GET",
+      "path": "/cloud/v2/universes/{universe_id}/places/{place_id}",
+      "operationId": "Cloud_GetPlace",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": []
+    },
+    {
+      "catalogId": "asset.create",
+      "method": "POST",
+      "path": "/assets/v1/assets",
+      "operationId": "Assets_CreateAsset",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "asset:read"
+        },
+        {
+          "name": "asset:write"
+        }
+      ]
+    },
+    {
+      "catalogId": "asset.update",
+      "method": "PATCH",
+      "path": "/assets/v1/assets/{assetId}",
+      "operationId": "Assets_UpdateAsset",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "asset:read"
+        },
+        {
+          "name": "asset:write"
+        }
+      ]
+    },
+    {
+      "catalogId": "asset.get",
+      "method": "GET",
+      "path": "/assets/v1/assets/{assetId}",
+      "operationId": "Assets_GetAsset",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "asset:read"
+        }
+      ]
+    },
+    {
+      "catalogId": "asset.versions",
+      "method": "GET",
+      "path": "/assets/v1/assets/{assetId}/versions",
+      "operationId": "listAssetVersions",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "asset:read"
+        }
+      ]
+    },
+    {
+      "catalogId": "asset.rollback",
+      "method": "POST",
+      "path": "/assets/v1/assets/{assetId}/versions:rollback",
+      "operationId": "Assets_RollbackAssetVersion",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "asset:read"
+        },
+        {
+          "name": "asset:write"
+        }
+      ]
+    },
+    {
+      "catalogId": "asset.archive",
+      "method": "POST",
+      "path": "/assets/v1/assets/{assetId}:archive",
+      "operationId": "Assets_ArchiveAsset",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "asset:read"
+        },
+        {
+          "name": "asset:write"
+        }
+      ]
+    },
+    {
+      "catalogId": "asset.operation",
+      "method": "GET",
+      "path": "/assets/v1/operations/{operationId}",
+      "operationId": "Assets_GetOperation",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "asset:read"
+        }
+      ]
+    },
+    {
+      "catalogId": "thumbnail.upload",
+      "method": "POST",
+      "path": "/thumbnail-personalization-api/v1/universes/{universeId}/thumbnails/uploads",
+      "operationId": "ThumbnailPersonalizationApi.HomepageThumbnail_UploadHomepageThumbnails",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.thumbnail:write",
+          "targetResourceSpecifier": "universes",
+          "firstPartyOAuthOnly": true
+        }
+      ]
+    },
+    {
+      "catalogId": "thumbnail.status",
+      "method": "GET",
+      "path": "/thumbnail-personalization-api/v1/universes/{universeId}/thumbnails/uploads/status",
+      "operationId": "ThumbnailPersonalizationApi.HomepageThumbnail_GetHomepageThumbnailsStatus",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.thumbnail:read",
+          "targetResourceSpecifier": "universes",
+          "firstPartyOAuthOnly": true
+        }
+      ]
+    },
+    {
+      "catalogId": "thumbnail.list",
+      "method": "GET",
+      "path": "/thumbnail-personalization-api/v1/universes/{universeId}/thumbnails",
+      "operationId": "ThumbnailPersonalizationApi.HomepageThumbnail_GetHomepageThumbnails",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.thumbnail:read",
+          "targetResourceSpecifier": "universes",
+          "firstPartyOAuthOnly": true
+        }
+      ]
+    },
+    {
+      "catalogId": "thumbnail.delete",
+      "method": "DELETE",
+      "path": "/thumbnail-personalization-api/v1/universes/{universeId}/thumbnails",
+      "operationId": "ThumbnailPersonalizationApi.HomepageThumbnail_DeleteHomepageThumbnails",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.thumbnail:write",
+          "targetResourceSpecifier": "universes",
+          "firstPartyOAuthOnly": true
+        }
+      ]
+    },
+    {
+      "catalogId": "server.logs",
+      "method": "GET",
+      "path": "/server-management/v1/universes/{universeId}/places/{placeId}/versions/{versionNumber}/game-servers/{jobId}/logs",
+      "operationId": "GameServers_ListGameServerLogs",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "server.list",
+      "method": "GET",
+      "path": "/server-management/v1/universes/{universeId}/places/{placeId}/versions/{versionNumber}/game-servers",
+      "operationId": "GameServers_ListGameServers",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "server.restart",
+      "method": "POST",
+      "path": "/cloud/v2/universes/{universe_id}:restartServers",
+      "operationId": "Cloud_RestartUniverseServers",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe:write"
+        }
+      ]
+    },
+    {
+      "catalogId": "server.restart-forecast",
+      "method": "GET",
+      "path": "/server-management/v1/universes/{universeId}/restarts:forecast",
+      "operationId": "Restarts_ForecastRestart",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "analytics.metrics",
+      "method": "POST",
+      "path": "/analytics-query-api/v1/universes/{universeId}/metrics",
+      "operationId": null,
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.analytics:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.analytics:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "analytics.operation",
+      "method": "GET",
+      "path": "/analytics-query-api/v1/universes/{universeId}/operations/metrics/{operationId}",
+      "operationId": null,
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.analytics:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.analytics:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "analytics.operation",
+      "method": "GET",
+      "path": "/analytics-query-api/v1/universes/{universeId}/operations/dimension-values/{operationId}",
+      "operationId": null,
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.analytics:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.analytics:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "place.history",
+      "method": "GET",
+      "path": "/place-version-history-api/v1/{placeId}/history",
+      "operationId": "PlaceVersion_GetPlaceVersionHistory",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.place:read",
+          "targetResourceSpecifier": ""
+        }
+      ]
+    },
+    {
+      "catalogId": "datastore.get",
+      "method": "GET",
+      "path": "/cloud/v2/universes/{universe_id}/data-stores/{data_store_id}/entries/{entry_id}",
+      "operationId": "Cloud_GetDataStoreEntry__Using_Universes_DataStores",
+      "security": [
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe-datastores.objects:read"
+        },
+        {
+          "name": "universe-datastores.objects:read"
+        }
+      ]
+    },
+    {
+      "catalogId": "datastore.set",
+      "method": "PATCH",
+      "path": "/cloud/v2/universes/{universe_id}/data-stores/{data_store_id}/entries/{entry_id}",
+      "operationId": "Cloud_UpdateDataStoreEntry__Using_Universes_DataStores",
+      "security": [
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe-datastores.objects:update"
+        },
+        {
+          "name": "universe-datastores.objects:update"
+        }
+      ]
+    },
+    {
+      "catalogId": "datastore.delete",
+      "method": "DELETE",
+      "path": "/cloud/v2/universes/{universe_id}/data-stores/{data_store_id}/entries/{entry_id}",
+      "operationId": "Cloud_DeleteDataStoreEntry__Using_Universes_DataStores",
+      "security": [
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe-datastores.objects:delete"
+        },
+        {
+          "name": "universe-datastores.objects:delete"
+        }
+      ]
+    },
+    {
+      "catalogId": "datastore.list",
+      "method": "GET",
+      "path": "/cloud/v2/universes/{universe_id}/data-stores/{data_store_id}/entries",
+      "operationId": "Cloud_ListDataStoreEntries__Using_Universes",
+      "security": [
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe-datastores.objects:list"
+        },
+        {
+          "name": "universe-datastores.objects:list"
+        }
+      ]
+    },
+    {
+      "catalogId": "ordered-datastore.list",
+      "method": "GET",
+      "path": "/ordered-data-stores/v1/universes/{universeId}/orderedDataStores/{orderedDataStore}/scopes/{scope}/entries",
+      "operationId": "OrderedDataStores_ListEntries",
+      "security": [
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.ordered-data-store.scope.entry:read"
+        }
+      ]
+    },
+    {
+      "catalogId": "ordered-datastore.get",
+      "method": "GET",
+      "path": "/ordered-data-stores/v1/universes/{universeId}/orderedDataStores/{orderedDataStore}/scopes/{scope}/entries/{entry}",
+      "operationId": "OrderedDataStores_GetEntry",
+      "security": [
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.ordered-data-store.scope.entry:read"
+        }
+      ]
+    },
+    {
+      "catalogId": "ordered-datastore.set",
+      "method": "PATCH",
+      "path": "/ordered-data-stores/v1/universes/{universeId}/orderedDataStores/{orderedDataStore}/scopes/{scope}/entries/{entry}",
+      "operationId": "OrderedDataStores_UpdateEntry",
+      "security": [
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.ordered-data-store.scope.entry:write"
+        }
+      ]
+    },
+    {
+      "catalogId": "ordered-datastore.delete",
+      "method": "DELETE",
+      "path": "/ordered-data-stores/v1/universes/{universeId}/orderedDataStores/{orderedDataStore}/scopes/{scope}/entries/{entry}",
+      "operationId": "OrderedDataStores_DeleteEntry",
+      "security": [
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.ordered-data-store.scope.entry:write"
+        }
+      ]
+    },
+    {
+      "catalogId": "ordered-datastore.increment",
+      "method": "POST",
+      "path": "/ordered-data-stores/v1/universes/{universeId}/orderedDataStores/{orderedDataStore}/scopes/{scope}/entries/{entry}:increment",
+      "operationId": "OrderedDataStores_IncrementEntry",
+      "security": [
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.ordered-data-store.scope.entry:write"
+        }
+      ]
+    },
+    {
+      "catalogId": "gamepass.list",
+      "method": "GET",
+      "path": "/game-passes/v1/universes/{universeId}/game-passes/creator",
+      "operationId": "GamePasses_ListGamePassConfigsByUniverse",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "game-pass:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "game-pass:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "gamepass.create",
+      "method": "POST",
+      "path": "/game-passes/v1/universes/{universeId}/game-passes",
+      "operationId": "GamePasses_CreateGamePass",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "game-pass:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "game-pass:write",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "gamepass.update",
+      "method": "PATCH",
+      "path": "/game-passes/v1/universes/{universeId}/game-passes/{gamePassId}",
+      "operationId": "GamePasses_UpdateGamePass",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "game-pass:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "game-pass:write",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "devproduct.list",
+      "method": "GET",
+      "path": "/developer-products/v2/universes/{universeId}/developer-products/creator",
+      "operationId": "DeveloperProducts_ListDeveloperProductConfigsByUniverseV2",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "developer-product:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "developer-product:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "devproduct.create",
+      "method": "POST",
+      "path": "/developer-products/v2/universes/{universeId}/developer-products",
+      "operationId": "DeveloperProducts_CreateDeveloperProductV2",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "developer-product:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "developer-product:write",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "badge.create",
+      "method": "POST",
+      "path": "/legacy-badges/v1/universes/{universeId}/badges",
+      "operationId": null,
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "legacy-universe.badge:manage-and-spend-robux"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "legacy-universe.badge:manage-and-spend-robux",
+          "targetResourceSpecifier": ""
+        }
+      ]
+    },
+    {
+      "catalogId": "badge.update",
+      "method": "PATCH",
+      "path": "/legacy-badges/v1/badges/{badgeId}",
+      "operationId": null,
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "legacy-universe.badge:write",
+            "legacy-universe.badge:manage-and-spend-robux"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "legacy-universe.badge:write",
+          "targetResourceSpecifier": ""
+        },
+        {
+          "name": "legacy-universe.badge:manage-and-spend-robux",
+          "targetResourceSpecifier": ""
+        }
+      ]
+    },
+    {
+      "catalogId": "permissions.grant",
+      "method": "PATCH",
+      "path": "/asset-permissions-api/v1/assets/permissions",
+      "operationId": null,
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "asset-permissions:write",
+          "targetResourceSpecifier": ""
+        }
+      ]
+    },
+    {
+      "catalogId": "config.get",
+      "method": "GET",
+      "path": "/creator-configs-public-api/v1/configs/universes/{universeId}/repositories/{repository}/full",
+      "operationId": "CreatorConfigsPublicApi_GetConfigRepositoryFull",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "config.draft",
+      "method": "GET",
+      "path": "/creator-configs-public-api/v1/configs/universes/{universeId}/repositories/{repository}/draft",
+      "operationId": "CreatorConfigsPublicApi_GetConfigRepositoryDraft",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "config.patch-draft",
+      "method": "PATCH",
+      "path": "/creator-configs-public-api/v1/configs/universes/{universeId}/repositories/{repository}/draft",
+      "operationId": "CreatorConfigsPublicApi_UpdateDraft",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe:write",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "config.overwrite",
+      "method": "PUT",
+      "path": "/creator-configs-public-api/v1/configs/universes/{universeId}/repositories/{repository}/draft:overwrite",
+      "operationId": "CreatorConfigsPublicApi_OverwriteDraft",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe:write",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "config.publish",
+      "method": "POST",
+      "path": "/creator-configs-public-api/v1/configs/universes/{universeId}/repositories/{repository}/publish",
+      "operationId": "CreatorConfigsPublicApi_PublishDraft",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe:write",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "config.revisions",
+      "method": "GET",
+      "path": "/creator-configs-public-api/v1/configs/universes/{universeId}/repositories/{repository}/revisions",
+      "operationId": "CreatorConfigsPublicApi_ListRevisions",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "config.restore",
+      "method": "POST",
+      "path": "/creator-configs-public-api/v1/configs/universes/{universeId}/repositories/{repository}/revisions/{revisionId}/restore",
+      "operationId": "CreatorConfigsPublicApi_RestoreRevision",
+      "security": [
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe:write",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "messaging.publish",
+      "method": "POST",
+      "path": "/messaging-service/v1/universes/{universeId}/topics/{topic}",
+      "operationId": "CrossServerMessaging_Publish",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": []
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe-messaging-service:publish"
+        }
+      ]
+    },
+    {
+      "catalogId": "analytics.alert.list",
+      "method": "GET",
+      "path": "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts",
+      "operationId": null,
+      "security": [
+        {},
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.analytics.alert:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.analytics.alert:read",
+          "targetResourceSpecifier": "id"
+        }
+      ]
+    },
+    {
+      "catalogId": "analytics.alert.create",
+      "method": "POST",
+      "path": "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts",
+      "operationId": null,
+      "security": [
+        {},
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.analytics.alert:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.analytics.alert:write",
+          "targetResourceSpecifier": "id"
+        }
+      ]
+    },
+    {
+      "catalogId": "analytics.alert.update",
+      "method": "PATCH",
+      "path": "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts/{alertId}",
+      "operationId": null,
+      "security": [
+        {},
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.analytics.alert:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.analytics.alert:write",
+          "targetResourceSpecifier": "id"
+        }
+      ]
+    },
+    {
+      "catalogId": "analytics.alert.delete",
+      "method": "DELETE",
+      "path": "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts/{alertId}",
+      "operationId": null,
+      "security": [
+        {},
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.analytics.alert:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.analytics.alert:write",
+          "targetResourceSpecifier": "id"
+        }
+      ]
+    },
+    {
+      "catalogId": "analytics.alert.incidents",
+      "method": "GET",
+      "path": "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts/incidents",
+      "operationId": null,
+      "security": [
+        {},
+        {
+          "roblox-legacy-cookie": []
+        },
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.analytics.alert:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.analytics.alert:read",
+          "targetResourceSpecifier": "id"
+        }
+      ]
+    },
+    {
+      "catalogId": "event.list",
+      "method": "GET",
+      "path": "/virtual-events/v3/universes/{universeId}/game-events",
+      "operationId": "GameEvents_List",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.event:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.event:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "event.get",
+      "method": "GET",
+      "path": "/virtual-events/v3/game-events/{eventId}",
+      "operationId": "GameEvent_Get",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.event:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.event:read",
+          "targetResourceSpecifier": ""
+        }
+      ]
+    },
+    {
+      "catalogId": "event.create",
+      "method": "POST",
+      "path": "/virtual-events/v3/universes/{universeId}/game-events",
+      "operationId": "GameEvents_Create",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.event:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.event:write",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "event.update",
+      "method": "PATCH",
+      "path": "/virtual-events/v3/game-events/{eventId}",
+      "operationId": "GameEvent_Update",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.event:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.event:write",
+          "targetResourceSpecifier": ""
+        }
+      ]
+    },
+    {
+      "catalogId": "event.delete",
+      "method": "DELETE",
+      "path": "/virtual-events/v3/game-events/{eventId}",
+      "operationId": "GameEvent_Delete",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.event:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.event:write",
+          "targetResourceSpecifier": ""
+        }
+      ]
+    }
+  ]
+}

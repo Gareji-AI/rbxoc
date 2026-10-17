@@ -1,7 +1,7 @@
 //! Thumbnail replacement.
 //!
 //! `thumbnail-personalization-api` is experimental. Expect the schema to
-//! change without notice. Needs an API key or OAuth
+//! change without notice. Needs an API key
 //! (`universe.thumbnail:write`).
 //!
 //! Uploads are asynchronous. Pass the returned operationIds to

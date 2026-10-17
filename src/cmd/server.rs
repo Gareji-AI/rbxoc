@@ -1,6 +1,6 @@
 //! Server and log operations.
 //!
-//! `server-management` is API-key only. Not covered by rbxcloud.
+//! `server-management` supports API keys and OAuth2. Not covered by rbxcloud.
 //!
 //! Log retrieval flow:
 //! 1. `server list` gives the game servers for a place version, including jobIds
