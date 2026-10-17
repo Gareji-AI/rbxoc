@@ -241,6 +241,86 @@ fn pending(dir: &Path, key: &str, operation: Option<&str>) {
     assets::save_lockfile(dir, &lock).unwrap();
 }
 
+fn sized_xml(class: &str, bytes: usize) -> String {
+    let xml = format!(
+        "<roblox version=\"4\"><!--PADDING--><Item class=\"{class}\" referent=\"RBX0\"><Properties/></Item></roblox>"
+    );
+    let padding = "x".repeat(bytes - xml.len() + "PADDING".len());
+    let xml = xml.replace("PADDING", &padding);
+    assert_eq!(xml.len(), bytes);
+    xml
+}
+
+#[tokio::test]
+async fn large_xml_animation_dry_run_warns_without_changing_source_or_registry() {
+    for (class, bytes, expected) in [
+        ("KeyframeSequence", 2 * 1024 * 1024 - 1, false),
+        ("KeyframeSequence", 2 * 1024 * 1024, true),
+        ("CurveAnimation", 2 * 1024 * 1024 + 1, true),
+        ("Model", 2 * 1024 * 1024 + 1, false),
+    ] {
+        let dir = fixture();
+        let path = dir.path().join("assets/animation.RBXMX");
+        let xml = sized_xml(class, bytes);
+        std::fs::write(&path, &xml).unwrap();
+        let preview = asset::preview_create(&path, "Animation", "", None, Some(7), None).await;
+        assert!(preview.ok, "{preview:?}");
+        assert_eq!(
+            preview
+                .hints
+                .iter()
+                .any(|h| h.contains("large XML Animation")),
+            expected,
+            "{preview:?}"
+        );
+        let plan = run_dry_run(dir.path(), &[]);
+        assert!(!plan.ok); // Missing ID is still reported as out-of-sync.
+        assert_eq!(
+            plan.hints.iter().any(|h| h.contains("large XML Animation")),
+            expected,
+            "{plan:?}"
+        );
+        if expected {
+            assert!(plan.render_text().contains("not a Roblox limit"));
+            assert!(plan.render_text().contains(".rbxm"));
+        }
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), xml);
+        assert!(!dir.path().join(assets::LOCKFILE_NAME).exists());
+        assert!(!dir.path().join("generated").exists());
+    }
+}
+
+#[tokio::test]
+async fn large_xml_animation_warning_survives_uncertain_upload_without_conversion_or_retry() {
+    let dir = fixture();
+    let path = dir.path().join("assets/animation.rbxmx");
+    let xml = sized_xml("KeyframeSequence", 2 * 1024 * 1024 + 1);
+    std::fs::write(&path, &xml).unwrap();
+    let manifest = assets::load_manifest(dir.path()).unwrap();
+    let sources = assets::collect_sources(dir.path(), &manifest).unwrap();
+    let fingerprint = assets::fingerprint(&sources["assets/animation.rbxmx"]).unwrap();
+    let server = MockServer::new(|_, _, _| (500, json!({"message": "uncertain fixture"})));
+    let out = run(&server.ctx(), dir.path(), &[]).await;
+    assert_eq!(out.error.as_ref().unwrap().code, "publication_uncertain");
+    assert!(
+        out.hints.iter().any(|h| h.contains("large XML Animation")),
+        "{out:?}"
+    );
+    let lock = assets::load_lockfile(dir.path()).unwrap();
+    assert_eq!(
+        lock.pending["assets/animation.rbxmx"].fingerprint,
+        fingerprint
+    );
+    assert_eq!(
+        lock.pending["assets/animation.rbxmx"].asset_type,
+        "Animation"
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), xml);
+    assert!(server.requests.lock().unwrap()[0].contains(&xml));
+    assert!(!run(&server.ctx(), dir.path(), &[]).await.ok);
+    assert_eq!(server.creates(), 1);
+}
+
 #[tokio::test]
 async fn valid_first_invalid_later_sends_zero_mutations() {
     let dir = fixture();

@@ -83,7 +83,7 @@ pub async fn infer_asset_from_file(
     match model::classify(&bytes, format) {
         Ok(root) => {
             let kind = root.kind();
-            let note = if kind == ModelKind::Animation {
+            let mut note = if kind == ModelKind::Animation {
                 Some(format!(
                     "{} has class {}, so it uploads as Animation",
                     file.display(),
@@ -92,6 +92,13 @@ pub async fn infer_asset_from_file(
             } else {
                 None
             };
+            if let Some(warning) =
+                model::large_xml_animation_warning(file, kind.asset_type(), bytes.len() as u64)
+                && let Some(note) = &mut note
+            {
+                note.push_str(". ");
+                note.push_str(&warning);
+            }
             Ok((kind.asset_type(), "model/x-rbxm", note))
         }
         Err(e) => Err(ErrorBody {

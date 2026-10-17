@@ -288,6 +288,16 @@ the classification can be checked before spending an upload. Pass
 A malformed model file fails with `model_parse_failed` instead of guessing, so
 a broken export does not silently land as the wrong asset type.
 
+XML Animations at least **2 MiB** receive an advisory in `asset create --dry-run`
+and `assets sync --dry-run`, also retained in sync success/failure hints. One
+large XML Animation reportedly failed with HTTP 500 while its equivalent binary
+export worked; the cause is unconfirmed. This threshold is **not a Roblox limit**
+and smaller files are not guaranteed to upload. Consider exporting `.rbxm` in
+Studio and checking poses before a new upload. rbxoc does not convert files or
+change their fingerprints. Never replace the source of an uncertain publication
+and retry: reconcile its pending receipt with the original bytes first.
+Registry dry-run still does not perform full preprocessing/upload preflight.
+
 For 3D models, `.fbx` / `.gltf` / `.glb` upload as `Model` containing
 MeshParts. Roblox does not expose importer settings through Open Cloud, so
 [Studio's 3D Importer](https://create.roblox.com/docs/art/modeling/3d-importer)
