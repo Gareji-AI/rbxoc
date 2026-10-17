@@ -501,6 +501,12 @@ rbxoc permissions grant --asset-id 111 --asset-id 222 \
   --subject-type group --subject-id 999 --action use
 ```
 
+HTTP 200 can still contain per-asset grant failures. `permission_grant_failed`
+preserves `successAssetIds` and the original `response.errors`; a missing or
+malformed completion receipt returns `invalid_permissions_response`. Only a
+complete confirmed batch reports success. Inspect existing permissions before
+retrying individual failures, never blindly replay the whole batch.
+
 ### Discover everything
 
 ```bash

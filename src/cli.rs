@@ -1027,7 +1027,15 @@ impl Cli {
                         preview,
                     )
                     .await;
-                    if !plan.ok || *dry_run {
+                    if *dry_run {
+                        return plan;
+                    }
+                    if !plan.ok {
+                        let mut plan = plan;
+                        plan.command = "asset update".into();
+                        for hint in &mut plan.hints {
+                            *hint = hint.replace("asset update (dry-run)", "asset update");
+                        }
                         return plan;
                     }
                 }

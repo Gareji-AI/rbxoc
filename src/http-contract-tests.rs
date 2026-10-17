@@ -621,6 +621,79 @@ async fn documented_thumbnail_file_operation_map_is_preserved() {
 }
 
 #[tokio::test]
+async fn reviewer_thumbnail_upload_rejects_blank_receipts_from_every_supported_shape() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("thumb.png");
+    std::fs::write(&file, "synthetic image bytes").unwrap();
+    for body in [
+        json!({"operationIds": [""]}),
+        json!({"paths": ["  "]}),
+        json!({"operations": [{"path": "operations/"}]}),
+        json!({"fileToOperationIdDict": {"thumb.png": "operations/ "}}),
+    ] {
+        let server = Server::new(move |_| Reply::Json(200, body.clone()));
+        let out = cmd::thumbnail::upload(&server.ctx(), 123, std::slice::from_ref(&file)).await;
+        assert!(!out.ok, "{out:?}");
+        assert_eq!(out.error.unwrap().code, "operation_id_missing");
+        assert_eq!(server.captured().len(), 1);
+    }
+    let server = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({
+                "operationIds": ["", "operations/op-1", "  "],
+                "operations": [{"path": "operations/"}],
+                "fileToOperationIdDict": {"thumb.png": "op-2"},
+            }),
+        )
+    });
+    let out = cmd::thumbnail::upload(&server.ctx(), 123, &[file]).await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(out.data.unwrap()["operationIds"], json!(["op-1", "op-2"]));
+}
+
+#[tokio::test]
+async fn reviewer_permission_grants_preserve_partial_success_and_never_replay_the_batch() {
+    let response = json!({"successAssetIds": [123], "errors": [{"assetId": 456, "code": "CannotManageAsset"}]});
+    let reply = response.clone();
+    let server = Server::new(move |_| Reply::Json(200, reply.clone()));
+    let mut ctx = server.ctx();
+    ctx.retry = 3;
+    let out = cmd::permissions::grant(&ctx, &[123, 456], "user", 789, "use").await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(out.error.as_ref().unwrap().code, "permission_grant_failed");
+    assert_eq!(out.data.as_ref().unwrap()["successAssetIds"], json!([123]));
+    assert_eq!(out.data.as_ref().unwrap()["response"], response);
+    assert!(!out.hints.is_empty());
+    assert_eq!(server.captured().len(), 1);
+
+    let server =
+        Server::new(|_| Reply::Json(200, json!({"successAssetIds": [123, 456], "errors": null})));
+    assert!(
+        cmd::permissions::grant(&server.ctx(), &[123, 456], "user", 789, "use")
+            .await
+            .ok
+    );
+}
+
+#[tokio::test]
+async fn reviewer_permission_grants_reject_unproven_or_malformed_success_receipts() {
+    for body in [
+        json!({}),
+        json!({"successAssetIds": [123]}),
+        json!({"successAssetIds": [123, 999], "errors": []}),
+        json!({"successAssetIds": ["123", 456], "errors": []}),
+        json!({"successAssetIds": [123, 456], "errors": "not-an-array"}),
+    ] {
+        let server = Server::new(move |_| Reply::Json(200, body.clone()));
+        let out = cmd::permissions::grant(&server.ctx(), &[123, 456], "user", 789, "use").await;
+        assert!(!out.ok, "{out:?}");
+        assert_eq!(out.error.unwrap().code, "invalid_permissions_response");
+        assert_eq!(server.captured().len(), 1);
+    }
+}
+
+#[tokio::test]
 async fn documented_game_server_logs_preserve_entries_and_limit() {
     let server = Server::new(|_| {
         Reply::Json(

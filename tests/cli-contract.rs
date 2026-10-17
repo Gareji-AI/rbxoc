@@ -148,6 +148,42 @@ fn invalid_asset_metadata_fails_before_authentication() {
 }
 
 #[test]
+fn reviewer_asset_update_preflight_preserves_the_requested_command_label() {
+    for dry_run in [false, true] {
+        let mut args = vec!["asset", "update", "--asset-id", "123"];
+        if dry_run {
+            args.push("--dry-run");
+        }
+        let out = run(&args);
+        assert!(!out.status.success());
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["error"]["code"], "nothing_to_update");
+        assert_eq!(
+            json["command"],
+            if dry_run {
+                "asset update (dry-run)"
+            } else {
+                "asset update"
+            }
+        );
+        if !dry_run {
+            assert!(
+                json["hints"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|hint| !hint.as_str().unwrap().contains("(dry-run)"))
+            );
+            assert!(
+                String::from_utf8(out.stdout)
+                    .unwrap()
+                    .contains("rbxoc asset update --help")
+            );
+        }
+    }
+}
+
+#[test]
 fn help_and_version_remain_successful_human_readable_output() {
     for arg in ["--help", "--version"] {
         let out = run(&[arg]);

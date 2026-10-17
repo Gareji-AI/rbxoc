@@ -4,7 +4,7 @@
 //! Used to grant a user or group access to assets, which matters when a group
 //! collaborates on a place and the assets live under one account.
 
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::ctx::{Ctx, failure};
 use crate::output::{ErrorBody, Output};
@@ -96,19 +96,59 @@ pub async fn grant(
                 Ok(data) => data,
                 Err(err) => return failure(COMMAND, err),
             };
+            let successful: Option<Vec<u64>> = match data.get("successAssetIds") {
+                None | Some(Value::Null) => Some(Vec::new()),
+                Some(Value::Array(ids)) => ids
+                    .iter()
+                    .map(|id| id.as_u64().filter(|id| *id > 0))
+                    .collect(),
+                _ => None,
+            };
+            let error_count = match data.get("errors") {
+                None | Some(Value::Null) => Some(0),
+                Some(Value::Array(errors)) => Some(errors.len()),
+                _ => None,
+            };
+            let requested: std::collections::BTreeSet<_> = asset_ids.iter().copied().collect();
+            let problem = match (&successful, error_count) {
+                (Some(ids), Some(count)) if count > 0 => Some((
+                    "permission_grant_failed",
+                    format!("Permission batch reported {} successful asset(s) and {count} grant error(s)", ids.len()),
+                )),
+                (Some(ids), Some(0)) if ids.iter().copied().collect::<std::collections::BTreeSet<_>>() == requested => None,
+                _ => Some((
+                    "invalid_permissions_response",
+                    "Permission response does not confirm every requested asset with valid successAssetIds/errors arrays".into(),
+                )),
+            };
+            let evidence = json!({
+                "assetIds": asset_ids, "successAssetIds": successful,
+                "subjectType": subject_type, "subjectId": subject_id,
+                "action": action, "response": data,
+            });
+            if let Some((code, message)) = problem {
+                let mut out = failure(
+                    COMMAND,
+                    ErrorBody {
+                        code,
+                        message,
+                        status: None,
+                        detail: None,
+                        refs: None,
+                    },
+                );
+                out.data = Some(evidence);
+                return out.with_hints([
+                    "Inspect successAssetIds and response.errors, then verify the existing permissions before retrying individual failures. Do not blindly replay the entire grant batch.".into()
+                ]);
+            }
             Output::success(
                 COMMAND,
                 format!(
                     "Granted {action} on {} asset(s) to {subject_type} {subject_id}",
-                    asset_ids.len()
+                    requested.len()
                 ),
-                Some(json!({
-                    "assetIds": asset_ids,
-                    "subjectType": subject_type,
-                    "subjectId": subject_id,
-                    "action": action,
-                    "response": data,
-                })),
+                Some(evidence),
             )
         }
         Err(err) => failure(COMMAND, err),

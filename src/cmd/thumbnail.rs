@@ -137,19 +137,20 @@ fn extract_operation_ids(data: &Value) -> Vec<String> {
     let mut ids = Vec::new();
     if let Some(map) = data.get("fileToOperationIdDict").and_then(Value::as_object) {
         for value in map.values().filter_map(Value::as_str) {
-            let id = value.strip_prefix("operations/").unwrap_or(value);
-            if !id.trim().is_empty() {
-                ids.push(id.to_string());
+            if let Some(id) = usable_operation_id(value) {
+                ids.push(id);
             }
         }
     }
     for key in ["operationIds", "operations", "paths"] {
         if let Some(arr) = data.get(key).and_then(|v| v.as_array()) {
             for item in arr {
-                if let Some(s) = item.as_str() {
-                    ids.push(s.strip_prefix("operations/").unwrap_or(s).to_string());
-                } else if let Some(s) = item.get("path").and_then(|v| v.as_str()) {
-                    ids.push(s.strip_prefix("operations/").unwrap_or(s).to_string());
+                if let Some(raw) = item
+                    .as_str()
+                    .or_else(|| item.get("path").and_then(Value::as_str))
+                    && let Some(id) = usable_operation_id(raw)
+                {
+                    ids.push(id);
                 }
             }
         }
@@ -157,6 +158,11 @@ fn extract_operation_ids(data: &Value) -> Vec<String> {
     ids.sort();
     ids.dedup();
     ids
+}
+
+fn usable_operation_id(raw: &str) -> Option<String> {
+    let id = raw.strip_prefix("operations/").unwrap_or(raw);
+    (!id.trim().is_empty()).then(|| id.to_string())
 }
 
 /// Check upload processing status.
