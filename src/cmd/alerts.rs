@@ -70,7 +70,7 @@ fn count_alerts(data: &Value) -> usize {
 pub async fn create(ctx: &Ctx, resource_id: &str, document: &str) -> Output {
     let body: Value = match serde_json::from_str(document) {
         Ok(v) => v,
-        Err(e) => return invalid_document(e),
+        Err(e) => return invalid_document("analytics alerts create", e),
     };
     let path = match alerts_path(resource_id) {
         Ok(path) => path,
@@ -100,7 +100,7 @@ pub async fn create(ctx: &Ctx, resource_id: &str, document: &str) -> Output {
 pub async fn update(ctx: &Ctx, resource_id: &str, alert_id: &str, document: &str) -> Output {
     let body: Value = match serde_json::from_str(document) {
         Ok(v) => v,
-        Err(e) => return invalid_document(e),
+        Err(e) => return invalid_document("analytics alerts update", e),
     };
     let path = match alert_path(resource_id, alert_id) {
         Ok(path) => path,
@@ -179,9 +179,9 @@ pub async fn incidents(ctx: &Ctx, resource_id: &str, start_time: &str, end_time:
     }
 }
 
-fn invalid_document(e: serde_json::Error) -> Output {
+fn invalid_document(command: &str, e: serde_json::Error) -> Output {
     failure(
-        "analytics alerts",
+        command,
         ErrorBody {
             code: "invalid_document",
             message: format!("--document is not valid JSON: {e}"),

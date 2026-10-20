@@ -400,14 +400,20 @@ empty IDs fail locally. No JSON body is sent.
 
 ```bash
 rbxoc server list --universe-id 123 --place-id 456 --version 12
-rbxoc server logs --universe-id 123 --place-id 456 --version 12 --job-id <jobId> --limit 200
+rbxoc server logs --universe-id 123 --place-id 456 --version 12 --job-id <jobId> --limit 100
 rbxoc server restart-forecast --universe-id 123
 rbxoc server restart --universe-id 123 --dry-run
 ```
 
 `server restart --dry-run` calls the same read-only GET forecast endpoint as
 `restart-forecast`; it never sends a restart mutation. Without `--dry-run`,
-`server restart` requests an actual restart and is sent at most once.
+`server restart` requests an actual restart and is sent at most once. The
+restart body is `{}`. Config restore and asset archive declare no body, so
+those posts send no JSON object.
+
+`--limit` is `MaxPageSize` (1–100), not a client-side trim. `0` or `--full`
+follows `nextPageToken` with `MaxPageSize=100`. A later page uses
+`--page-token`. `server list` uses the query name `PageToken`.
 
 ### Standard DataStores
 
@@ -418,11 +424,19 @@ rbxoc datastore set --universe-id 123 --store players --entry player_42 \
 
 Values retain their JSON types: objects, arrays, strings, numbers, booleans,
 and null are not converted to strings. Quote JSON strings explicitly, for
-example `--value '"hello"'`. For both DataStore families, `set` updates an
-existing entry by default. `--create` also allows creation when missing;
-it is not a create-only guard against overwriting an existing entry.
-Standard DataStores send `allowMissing=true`; ordered DataStores send
-`allow_missing=true`. Without `--create`, the parameter is omitted.
+example `--value '"hello"'`. A value update reads the entry first, so the key also needs
+`universe-datastores.objects:read`, and then sends
+`value`, `attributes`, `users`, and `etag` together. A forbidden read returns
+`datastore_read_forbidden` and does not PATCH. Omitting attributes or
+users on a PATCH would clear them, so a missing etag fails locally with
+`etag_missing` and sends no PATCH. Pass `--attributes` or `--users` to replace
+them, or `--clear-attributes` and `--clear-users` to store `{}` and `[]`.
+A missing entry without `--create` fails with `entry_not_found` and sends no
+PATCH. `--create` allows creation when missing and is not a create-only guard
+against overwriting an existing entry. Standard DataStores send
+`allowMissing=true`; ordered DataStores send `allow_missing=true`. Without
+`--create`, the parameter is omitted. List pages accept `--page-token`
+(`pageToken` for standard stores, `page_token` for ordered stores).
 
 ### Leaderboards (Ordered DataStores)
 
@@ -448,24 +462,36 @@ Roblox can still impose its own endpoint-specific naming constraints.
 ### Remote config and feature flags
 
 ```bash
-rbxoc config get --universe-id 123 --repository game
-rbxoc config patch-draft --universe-id 123 --repository game \
-  --document '{"flags":{"newShop":true}}'
-rbxoc config publish --universe-id 123 --repository game
-rbxoc config revisions --universe-id 123 --repository game
+rbxoc config get --universe-id 123 --repository InExperienceConfig
+rbxoc config patch-draft --universe-id 123 --repository InExperienceConfig \
+  --document '{"entries":{"newShop":true}}'
+rbxoc config publish --universe-id 123 --repository InExperienceConfig \
+  --draft-hash <draftHash> --deployment-strategy Immediate
+rbxoc config revisions --universe-id 123 --repository InExperienceConfig
 ```
 
-Editing a draft never changes live values. Only `config publish` does, and the
-draft commands say so in their `hints`.
+Repository names are the public enum (`InExperienceConfig`,
+`RecommendationServicesConfig`, `DataStoresConfig`, `ExtendedServicesConfig`,
+`LeaderboardsConfig`, `ExperienceUserConfig`, `JourneysConfig`,
+`AntiCheatConfig`). Draft documents accept only `draftHash`, `entries`, and
+`conditionalRules`. Invalid names and unknown fields fail before authentication.
+Editing a draft never changes live values. `config publish` requires the
+reviewed `--draft-hash`, and may include `--message` and
+`--deployment-strategy Immediate` or `GradualRollout`.
 
 ### Analytics
 
 ```bash
 rbxoc analytics catalog
-rbxoc analytics metrics --universe-id 123 --query '{"metrics":[{"metric":"DailyActiveUsers"}],"startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z","granularity":"P1D"}'
+rbxoc analytics metrics --universe-id 123 --query '{"metric":"DailyActiveUsers","granularity":"OneDay","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}'
 rbxoc analytics alerts list --universe-id 123
 rbxoc analytics alerts incidents --universe-id 123 --start-time 2026-10-01T00:00:00Z --end-time 2026-10-08T00:00:00Z
 ```
+
+`QueryRequest` requires one `metric` plus `granularity`, `startTime`, and
+`endTime`. Granularity is `OneMinute`, `HalfHour`, `OneHour`, `OneDay`,
+`OneWeek`, `OneMonth`, or `None`. A closed-enum miss fails locally before
+authentication.
 
 The current contract supports API keys and OAuth2 for analytics queries and
 operation reads. Both need the documented `universe.analytics:read` permission.
@@ -480,6 +506,7 @@ automatically, for example `/analytics-alert-control-plane/v1/resource/Universe/
 ```bash
 rbxoc gamepass list --universe-id 123
 rbxoc gamepass create --universe-id 123 --name "VIP" --price 499 --image vip.png
+rbxoc gamepass update --universe-id 123 --game-pass-id 456 --price 499
 
 rbxoc badge update --badge-id 456 --description "Reach wave 10"
 
@@ -491,15 +518,27 @@ rbxoc event create --universe-id 123 --document '{"title":"Winter","startTime":"
 its result. Only `user` (provider enum `1`) and `group` (`2`) are accepted;
 other values fail locally before any paid request. Badge creation uses
 multipart fields `name`, `description`, and numeric `paymentSourceType`.
+`gamepass create --price` also sends `isForSale=true`. `gamepass update --price`
+changes only the price; sale state changes only with `--is-for-sale true` or
+`--is-for-sale false`.
+
 Alert and event bodies are provider-defined JSON, passed through
-verbatim rather than re-declared here.
+verbatim rather than re-declared here. `universe publish-message` sends the
+exact string in `{"message":"..."}`. A JSON string such as `"hello"` is
+unwrapped once; object-shaped text is not parsed into a new document. The
+limit is 1,024 characters.
 
 ### Asset permissions
 
 ```bash
 rbxoc permissions grant --asset-id 111 --asset-id 222 \
   --subject-type group --subject-id 999 --action use
+rbxoc permissions grant --asset-id 111 --subject-type all --action use
 ```
+
+`--subject-type` is `user`, `group`, `group-roleset`, `universe`, or `all`.
+`--action` is `use`, `edit`, or `download`. `all` sends an empty `subjectId`
+and rejects `--subject-id`. Every other subject type requires a positive ID.
 
 HTTP 200 can still contain per-asset grant failures. `permission_grant_failed`
 preserves `successAssetIds` and the original `response.errors`; a missing or

@@ -24,30 +24,43 @@ pub async fn get(ctx: &Ctx, universe_id: u64) -> Output {
     }
 }
 
+const MAX_MESSAGE_CHARS: usize = 1024;
+
+/// The provider field is a string of at most 1,024 characters.
+/// A JSON string is unwrapped once so `"hello"` sends `hello`.
+/// Every other input, including object-shaped JSON text, is sent unchanged.
+fn message_content(message: &str) -> String {
+    match serde_json::from_str::<Value>(message) {
+        Ok(Value::String(text)) => text,
+        _ => message.to_string(),
+    }
+}
+
 /// Publish a cross-server message.
 pub async fn publish_message(ctx: &Ctx, universe_id: u64, topic: &str, message: &str) -> Output {
-    let parsed: Value = match serde_json::from_str(message) {
-        Ok(v) => v,
-        Err(e) => {
-            return failure(
-                "universe publish-message",
-                ErrorBody {
-                    code: "invalid_message",
-                    message: format!("--message is not valid JSON: {e}"),
-                    status: None,
-                    detail: Some("Example: --message '{\"event\":\"restart\"}'".into()),
-
-                    refs: None,
-                },
-            );
-        }
-    };
+    let content = message_content(message);
+    let chars = content.chars().count();
+    if chars > MAX_MESSAGE_CHARS {
+        return failure(
+            "universe publish-message",
+            ErrorBody {
+                code: "message_too_large",
+                message: format!("--message is {chars} characters; the provider limit is 1,024"),
+                status: None,
+                detail: Some(
+                    "The value is the exact PublishRequest.message string, not a JSON wrapper"
+                        .into(),
+                ),
+                refs: None,
+            },
+        );
+    }
     let encoded_topic = match path_segment(topic) {
         Ok(value) => value,
         Err(err) => return failure("universe publish-message", err),
     };
     let path = format!("/messaging-service/v1/universes/{universe_id}/topics/{encoded_topic}");
-    let body = json!({ "message": parsed.to_string() });
+    let body = json!({ "message": content });
     let req = ctx.client.post(ctx.url(&path)).json(&body);
     match ctx.send(req).await {
         Ok(resp) => {

@@ -177,7 +177,17 @@ impl Drop for Server {
 
 #[tokio::test]
 async fn standard_datastore_preserves_json_types_on_the_wire() {
-    let server = Server::success();
+    let server = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({
+                "value": 0,
+                "attributes": {"rank": 1},
+                "users": ["users/7"],
+                "etag": "etag-1"
+            }),
+        )
+    });
     let ctx = server.ctx();
     let values = [
         json!({"coins": 100}),
@@ -190,35 +200,73 @@ async fn standard_datastore_preserves_json_types_on_the_wire() {
         json!("{\"coins\":100}"),
     ];
     for value in &values {
-        let out =
-            cmd::datastore::set(&ctx, 123, "test", "player", None, &value.to_string(), false).await;
+        let out = cmd::datastore::set(
+            &ctx,
+            123,
+            "test",
+            "player",
+            None,
+            &value.to_string(),
+            false,
+            cmd::datastore::ValueUpdate::default(),
+        )
+        .await;
         assert!(out.ok, "{out:?}");
     }
     let requests = server.captured();
-    assert_eq!(requests.len(), values.len());
-    for (request, value) in requests.iter().zip(values) {
-        assert_eq!(request.method, "PATCH");
+    assert_eq!(requests.len(), values.len() * 2);
+    for (pair, value) in requests.chunks(2).zip(values) {
+        assert_eq!(pair[0].method, "GET");
+        assert_eq!(pair[1].method, "PATCH");
         assert_eq!(
-            serde_json::from_str::<Value>(&request.body).unwrap(),
-            json!({"value": value})
+            serde_json::from_str::<Value>(&pair[1].body).unwrap(),
+            json!({
+                "value": value,
+                "attributes": {"rank": 1},
+                "users": ["users/7"],
+                "etag": "etag-1"
+            })
         );
     }
 }
 
 #[tokio::test]
 async fn datastore_create_flags_use_only_documented_query_parameters() {
-    let server = Server::success();
+    let server = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({"value": 1, "attributes": {}, "users": [], "etag": "etag-1"}),
+        )
+    });
     let ctx = server.ctx();
     for create in [true, false] {
         assert!(
-            cmd::datastore::set(&ctx, 123, "test", "player", None, "1", create)
-                .await
-                .ok
+            cmd::datastore::set(
+                &ctx,
+                123,
+                "test",
+                "player",
+                None,
+                "1",
+                create,
+                cmd::datastore::ValueUpdate::default(),
+            )
+            .await
+            .ok
         );
         assert!(
-            cmd::datastore::set(&ctx, 123, "test", "player", Some("global"), "1", create)
-                .await
-                .ok
+            cmd::datastore::set(
+                &ctx,
+                123,
+                "test",
+                "player",
+                Some("global"),
+                "1",
+                create,
+                cmd::datastore::ValueUpdate::default(),
+            )
+            .await
+            .ok
         );
         assert!(
             cmd::ordered_datastore::set(&ctx, 123, "test", "global", "player", 1, create)
@@ -226,9 +274,13 @@ async fn datastore_create_flags_use_only_documented_query_parameters() {
                 .ok
         );
     }
-    let requests = server.captured();
-    assert_eq!(requests.len(), 6);
-    for (index, request) in requests.iter().enumerate() {
+    let patches: Vec<_> = server
+        .captured()
+        .into_iter()
+        .filter(|request| request.method == "PATCH")
+        .collect();
+    assert_eq!(patches.len(), 6);
+    for (index, request) in patches.iter().enumerate() {
         let (base, parameter) = match index % 3 {
             0 => (
                 "/cloud/v2/universes/123/data-stores/test/entries/player",
@@ -243,7 +295,6 @@ async fn datastore_create_flags_use_only_documented_query_parameters() {
                 "allow_missing",
             ),
         };
-        assert_eq!(request.method, "PATCH");
         assert_eq!(
             request.target,
             if index < 3 {
@@ -254,6 +305,12 @@ async fn datastore_create_flags_use_only_documented_query_parameters() {
         );
         assert_eq!(request.header("if-none-match"), None);
         assert_eq!(request.header("roblox-entry-attributes"), None);
+        if index % 3 != 2 {
+            let body: Value = serde_json::from_str(&request.body).unwrap();
+            assert_eq!(body["etag"], "etag-1");
+            assert!(body.get("attributes").is_some());
+            assert!(body.get("users").is_some());
+        }
     }
 }
 
@@ -482,6 +539,7 @@ async fn ordered_list_uses_documented_sort_and_page_size_query_names() {
             "global",
             ascending,
             page_size,
+            None,
         )
         .await;
         assert!(out.ok, "{out:?}");
@@ -529,7 +587,11 @@ async fn thumbnail_status_repeats_each_independently_encoded_operation_id() {
 async fn place_history_uses_documented_page_size_query() {
     let server = Server::success();
     for limit in [1, 20, 100] {
-        assert!(cmd::place::history(&server.ctx(), 456, limit).await.ok);
+        assert!(
+            cmd::place::history(&server.ctx(), 456, limit, None)
+                .await
+                .ok
+        );
     }
     let requests = server.captured();
     assert_eq!(requests.len(), 3);
@@ -659,7 +721,7 @@ async fn reviewer_permission_grants_preserve_partial_success_and_never_replay_th
     let server = Server::new(move |_| Reply::Json(200, reply.clone()));
     let mut ctx = server.ctx();
     ctx.retry = 3;
-    let out = cmd::permissions::grant(&ctx, &[123, 456], "user", 789, "use").await;
+    let out = cmd::permissions::grant(&ctx, &[123, 456], "user", Some(789), "use").await;
     assert!(!out.ok, "{out:?}");
     assert_eq!(out.error.as_ref().unwrap().code, "permission_grant_failed");
     assert_eq!(out.data.as_ref().unwrap()["successAssetIds"], json!([123]));
@@ -670,7 +732,7 @@ async fn reviewer_permission_grants_preserve_partial_success_and_never_replay_th
     let server =
         Server::new(|_| Reply::Json(200, json!({"successAssetIds": [123, 456], "errors": null})));
     assert!(
-        cmd::permissions::grant(&server.ctx(), &[123, 456], "user", 789, "use")
+        cmd::permissions::grant(&server.ctx(), &[123, 456], "user", Some(789), "use")
             .await
             .ok
     );
@@ -686,7 +748,8 @@ async fn reviewer_permission_grants_reject_unproven_or_malformed_success_receipt
         json!({"successAssetIds": [123, 456], "errors": "not-an-array"}),
     ] {
         let server = Server::new(move |_| Reply::Json(200, body.clone()));
-        let out = cmd::permissions::grant(&server.ctx(), &[123, 456], "user", 789, "use").await;
+        let out =
+            cmd::permissions::grant(&server.ctx(), &[123, 456], "user", Some(789), "use").await;
         assert!(!out.ok, "{out:?}");
         assert_eq!(out.error.unwrap().code, "invalid_permissions_response");
         assert_eq!(server.captured().len(), 1);
@@ -703,13 +766,15 @@ async fn documented_game_server_logs_preserve_entries_and_limit() {
             }),
         )
     });
-    let out = cmd::server::logs(&server.ctx(), 123, 456, 7, "fixture-job", 1, false).await;
+    let out = cmd::server::logs(&server.ctx(), 123, 456, 7, "fixture-job", 1, false, None).await;
     assert!(out.ok, "{out:?}");
+    let requests = server.captured();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].target.contains("MaxPageSize=1"));
+    assert!(!requests[0].target.contains("PageToken="));
     let data = out.data.unwrap();
-    assert_eq!(data["total"], 2);
-    assert_eq!(data["shown"], 1);
-    assert_eq!(data["entries"], json!([{"message": "hello"}]));
-    assert!(!out.hints.is_empty());
+    assert_eq!(data["entries"].as_array().unwrap().len(), 2);
+    assert!(data["nextPageToken"].is_null());
 }
 
 #[tokio::test]
@@ -824,7 +889,7 @@ async fn documented_collection_shapes_have_truthful_summaries() {
     });
     for (out, summary) in [
         (
-            cmd::place::history(&server.ctx(), 456, 20).await,
+            cmd::place::history(&server.ctx(), 456, 20, None).await,
             "Fetched 2 versions",
         ),
         (
@@ -849,6 +914,10 @@ async fn place_publish_parses_the_documented_version_number_object() {
     let server = Server::new(|_| Reply::Json(200, json!({"versionNumber": 7})));
     let out = cmd::place::publish(&server.ctx(), 123, 456, &file, false).await;
     assert!(out.ok, "{out:?}");
+    assert_eq!(
+        server.captured()[0].header("content-type"),
+        Some("application/xml")
+    );
     assert_eq!(out.data.unwrap()["version"], 7);
     assert!(out.summary.contains("version 7"));
 }
@@ -864,18 +933,18 @@ async fn required_json_mutations_reject_malformed_and_empty_success_bodies() {
             cmd::event::update(&ctx, 456, "{}").await,
             cmd::badge::create(&ctx, 123, "Fixture", "", Some("user")).await,
             cmd::badge::update(&ctx, 456, Some("Fixture"), None, None).await,
-            cmd::datastore::set(&ctx, 123, "store", "entry", None, "1", false).await,
+            cmd::datastore::set(&ctx, 123, "store", "entry", None, "1", false, cmd::datastore::ValueUpdate::default()).await,
             cmd::ordered_datastore::set(&ctx, 123, "store", "global", "entry", 1, false).await,
             cmd::ordered_datastore::increment(&ctx, 123, "store", "global", "entry", 1).await,
             cmd::server::restart(&ctx, 123, false).await,
-            cmd::config::patch_draft(&ctx, 123, "repo", "{}").await,
-            cmd::config::overwrite(&ctx, 123, "repo", "{}").await,
-            cmd::config::publish(&ctx, 123, "repo").await,
-            cmd::config::restore(&ctx, 123, "repo", "rev").await,
+            cmd::config::patch_draft(&ctx, 123, "InExperienceConfig", "{}").await,
+            cmd::config::overwrite(&ctx, 123, "InExperienceConfig", "{}").await,
+            cmd::config::publish(&ctx, 123, "InExperienceConfig", Some("draft-hash"), None, None).await,
+            cmd::config::restore(&ctx, 123, "InExperienceConfig", "rev").await,
             cmd::alerts::create(&ctx, "123", "{}").await,
             cmd::alerts::update(&ctx, "123", "456", "{}").await,
-            cmd::analytics::metrics(&ctx, 123, "{}").await,
-            cmd::permissions::grant(&ctx, &[456], "user", 123, "use").await,
+            cmd::analytics::metrics(&ctx, 123, "{\"metric\":\"DailyActiveUsers\",\"granularity\":\"OneDay\",\"startTime\":\"2026-10-01T00:00:00Z\",\"endTime\":\"2026-10-08T00:00:00Z\"}").await,
+            cmd::permissions::grant(&ctx, &[456], "user", Some(123), "use").await,
             cmd::monetization::gamepass_create(&ctx, 123, "Fixture", None, None, None).await,
             cmd::monetization::devproduct_create(&ctx, 123, "Fixture", None, None, None).await,
         ] {
@@ -896,7 +965,8 @@ async fn documented_no_content_mutations_remain_successful() {
         cmd::alerts::delete(&ctx, "123", "456").await,
         cmd::datastore::delete(&ctx, 123, "store", "entry", None).await,
         cmd::ordered_datastore::delete(&ctx, 123, "store", "global", "entry").await,
-        cmd::monetization::gamepass_update(&ctx, 123, 456, Some("Fixture"), None, None, None).await,
+        cmd::monetization::gamepass_update(&ctx, 123, 456, Some("Fixture"), None, None, None, None)
+            .await,
     ] {
         assert!(out.ok, "{out:?}");
     }
@@ -929,7 +999,8 @@ async fn product_creates_never_report_unknown_successful_ids() {
 #[tokio::test]
 async fn analytics_api_key_errors_are_not_unconditionally_oauth_required() {
     let denied = Server::new(|_| Reply::Json(403, json!({"message": "permission denied"})));
-    let out = cmd::analytics::metrics(&denied.ctx(), 123, "{}").await;
+    let query = r#"{"metric":"DailyActiveUsers","granularity":"OneDay","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#;
+    let out = cmd::analytics::metrics(&denied.ctx(), 123, query).await;
     assert!(!out.ok);
     assert_eq!(out.error.unwrap().code, "http_403");
     assert!(
@@ -939,7 +1010,7 @@ async fn analytics_api_key_errors_are_not_unconditionally_oauth_required() {
     );
 
     let malformed = Server::new(|_| Reply::Raw(200, "not json".into()));
-    let out = cmd::analytics::metrics(&malformed.ctx(), 123, "{}").await;
+    let out = cmd::analytics::metrics(&malformed.ctx(), 123, query).await;
     assert_eq!(out.error.unwrap().code, "invalid_json");
 }
 
@@ -1118,4 +1189,505 @@ async fn local_and_http_failures_have_actionable_hints_in_both_formats() {
             assert!(out.render_text().contains(hint));
         }
     }
+}
+
+fn part_present(body: &str, name: &str) -> bool {
+    body.contains(&format!("name=\"{name}\""))
+}
+
+#[tokio::test]
+async fn place_publish_sets_media_type_and_rejects_other_extensions() {
+    let dir = tempfile::tempdir().unwrap();
+    let binary = dir.path().join("fixture.rbxl");
+    std::fs::write(&binary, "rbxl-bytes").unwrap();
+    let server = Server::new(|_| Reply::Json(200, json!({"versionNumber": 3})));
+    let out = cmd::place::publish(&server.ctx(), 123, 456, &binary, true).await;
+    assert!(out.ok, "{out:?}");
+    let request = &server.captured()[0];
+    assert_eq!(
+        request.header("content-type"),
+        Some("application/octet-stream")
+    );
+    assert_eq!(request.body, "rbxl-bytes");
+
+    let other = dir.path().join("fixture.txt");
+    std::fs::write(&other, "nope").unwrap();
+    let server = Server::success();
+    let out = cmd::place::publish(&server.ctx(), 123, 456, &other, true).await;
+    assert_eq!(out.error.unwrap().code, "unsupported_place_file");
+    assert!(server.captured().is_empty());
+}
+
+#[tokio::test]
+async fn declared_empty_posts_send_no_json_object() {
+    let server = Server::success();
+    let ctx = server.ctx();
+    assert!(
+        cmd::config::restore(&ctx, 123, "InExperienceConfig", "rev-1")
+            .await
+            .ok
+    );
+    assert!(cmd::asset::archive(&ctx, 456).await.ok);
+    assert!(cmd::server::restart(&ctx, 123, false).await.ok);
+    assert!(
+        cmd::config::publish(
+            &ctx,
+            123,
+            "InExperienceConfig",
+            Some("hash-1"),
+            Some("ship"),
+            Some("Immediate"),
+        )
+        .await
+        .ok
+    );
+    let requests = server.captured();
+    assert_eq!(requests[0].body, "");
+    assert_ne!(requests[0].header("content-type"), Some("application/json"));
+    assert_eq!(requests[1].body, "");
+    assert_ne!(requests[1].header("content-type"), Some("application/json"));
+    assert_eq!(requests[2].body, "{}");
+    assert!(
+        requests[2]
+            .header("content-type")
+            .unwrap()
+            .starts_with("application/json")
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&requests[3].body).unwrap(),
+        json!({"draftHash": "hash-1", "message": "ship", "deploymentStrategy": "Immediate"})
+    );
+    let rejected = cmd::config::publish(
+        &ctx,
+        123,
+        "InExperienceConfig",
+        Some("hash-1"),
+        None,
+        Some("Invalid"),
+    )
+    .await;
+    assert_eq!(rejected.error.unwrap().code, "invalid_deployment_strategy");
+    assert_eq!(server.captured().len(), 4);
+}
+
+#[tokio::test]
+async fn gamepass_price_does_not_imply_sale_on_update() {
+    let server = Server::new(|_| Reply::Raw(204, String::new()));
+    let ctx = server.ctx();
+    assert!(
+        cmd::monetization::gamepass_update(&ctx, 123, 7, None, None, Some(100), None, None)
+            .await
+            .ok
+    );
+    assert!(
+        cmd::monetization::gamepass_update(&ctx, 123, 7, None, None, None, Some(false), None)
+            .await
+            .ok
+    );
+    assert!(
+        cmd::monetization::gamepass_update(&ctx, 123, 7, None, None, Some(50), Some(true), None)
+            .await
+            .ok
+    );
+    let created = Server::new(|_| Reply::Json(200, json!({"gamePassId": 9})));
+    assert!(
+        cmd::monetization::gamepass_create(&created.ctx(), 123, "VIP", None, Some(499), None)
+            .await
+            .ok
+    );
+    let updates = server.captured();
+    assert!(part_present(&updates[0].body, "price"));
+    assert!(!part_present(&updates[0].body, "isForSale"));
+    assert!(part_present(&updates[1].body, "isForSale"));
+    assert!(!part_present(&updates[1].body, "price"));
+    assert!(updates[1].body.contains("false"));
+    assert!(part_present(&updates[2].body, "price"));
+    assert!(part_present(&updates[2].body, "isForSale"));
+    let create = &created.captured()[0];
+    assert!(part_present(&create.body, "price"));
+    assert!(part_present(&create.body, "isForSale"));
+    assert!(create.body.contains("true"));
+}
+
+#[tokio::test]
+async fn publish_message_preserves_the_exact_string() {
+    let server = Server::success();
+    let ctx = server.ctx();
+    for message in ["hello", "\"hello\"", "{\"event\":\"restart\"}", "{}"] {
+        assert!(
+            cmd::universe::publish_message(&ctx, 123, "status", message)
+                .await
+                .ok,
+            "{message}"
+        );
+    }
+    let bodies: Vec<Value> = server
+        .captured()
+        .iter()
+        .map(|request| serde_json::from_str(&request.body).unwrap())
+        .collect();
+    assert_eq!(
+        bodies,
+        vec![
+            json!({"message": "hello"}),
+            json!({"message": "hello"}),
+            json!({"message": "{\"event\":\"restart\"}"}),
+            json!({"message": "{}"}),
+        ]
+    );
+    let huge = "x".repeat(1025);
+    let idle = Server::success();
+    let out = cmd::universe::publish_message(&idle.ctx(), 123, "status", &huge).await;
+    assert_eq!(out.error.unwrap().code, "message_too_large");
+    assert!(idle.captured().is_empty());
+}
+
+#[tokio::test]
+async fn permission_subjects_follow_the_empty_id_rule() {
+    let server = Server::new(|_| Reply::Json(200, json!({"successAssetIds": [111], "errors": []})));
+    let ctx = server.ctx();
+    for (subject, id) in [
+        ("all", None),
+        ("user", Some(4u64)),
+        ("group", Some(5)),
+        ("group-roleset", Some(6)),
+        ("universe", Some(7)),
+    ] {
+        let out = cmd::permissions::grant(&ctx, &[111], subject, id, "use").await;
+        assert!(out.ok, "{subject} {out:?}");
+    }
+    let bodies: Vec<Value> = server
+        .captured()
+        .iter()
+        .map(|request| serde_json::from_str(&request.body).unwrap())
+        .collect();
+    assert_eq!(bodies[0]["subjectType"], "All");
+    assert_eq!(bodies[0]["subjectId"], "");
+    assert_eq!(bodies[1]["subjectId"], "4");
+    assert_eq!(bodies[2]["subjectType"], "Group");
+    assert_eq!(bodies[3]["subjectType"], "GroupRoleset");
+    assert_eq!(bodies[4]["subjectType"], "Universe");
+    let idle = Server::success();
+    let forbidden = cmd::permissions::grant(&idle.ctx(), &[111], "all", Some(4), "use").await;
+    assert_eq!(forbidden.error.unwrap().code, "subject_id_forbidden");
+    let missing = cmd::permissions::grant(&idle.ctx(), &[111], "user", None, "use").await;
+    assert_eq!(missing.error.unwrap().code, "subject_id_required");
+    assert!(idle.captured().is_empty());
+}
+
+#[tokio::test]
+async fn list_pages_forward_provider_tokens_with_exact_query_names() {
+    let server = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({"nextPageToken": "next", "nextCursor": "cur", "previousPageToken": "prev"}),
+        )
+    });
+    let ctx = server.ctx();
+    assert!(cmd::thumbnail::list(&ctx, 123, Some("cur")).await.ok);
+    assert!(cmd::server::list(&ctx, 123, 456, 7, Some("page")).await.ok);
+    assert!(cmd::place::history(&ctx, 456, 10, Some("cur")).await.ok);
+    assert!(
+        cmd::datastore::list(&ctx, 123, "store", 10, Some("page"))
+            .await
+            .ok
+    );
+    assert!(
+        cmd::ordered_datastore::list(&ctx, 123, "store", "global", false, 10, Some("page"))
+            .await
+            .ok
+    );
+    assert!(
+        cmd::monetization::gamepass_list(&ctx, 123, Some("page"))
+            .await
+            .ok
+    );
+    assert!(
+        cmd::monetization::devproduct_list(&ctx, 123, Some("page"))
+            .await
+            .ok
+    );
+    assert!(cmd::event::list(&ctx, 123, 10, Some("page"), true).await.ok);
+    assert!(
+        cmd::server::logs(&ctx, 123, 456, 7, "job", 100, false, Some("page"))
+            .await
+            .ok
+    );
+    let targets: Vec<_> = server
+        .captured()
+        .into_iter()
+        .map(|request| request.target)
+        .collect();
+    assert!(targets[0].contains("nextCursor=cur"));
+    assert!(targets[1].contains("PageToken=page"));
+    assert!(targets[2].contains("cursor=cur"));
+    assert!(targets[2].contains("pageSize=10"));
+    assert!(targets[3].contains("pageToken=page"));
+    assert!(targets[3].contains("maxPageSize=10"));
+    assert!(targets[4].contains("page_token=page"));
+    assert!(targets[4].contains("max_page_size=10"));
+    assert!(targets[5].contains("pageToken=page"));
+    assert!(targets[6].contains("pageToken=page"));
+    assert!(targets[7].contains("pageToken=page"));
+    assert!(targets[7].contains("reverse=true"));
+    assert!(targets[8].contains("MaxPageSize=100"));
+    assert!(targets[8].contains("PageToken=page"));
+}
+
+#[tokio::test]
+async fn server_logs_follow_pages_and_reject_bad_limits() {
+    let server = Server::new(|count| {
+        if count == 1 {
+            Reply::Json(
+                200,
+                json!({"gameServerLogs": [{"message": "a"}], "nextPageToken": "p2"}),
+            )
+        } else {
+            Reply::Json(200, json!({"gameServerLogs": [{"message": "b"}]}))
+        }
+    });
+    let out = cmd::server::logs(&server.ctx(), 123, 456, 7, "job", 0, false, None).await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(out.data.unwrap()["entries"].as_array().unwrap().len(), 2);
+    let requests = server.captured();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].target.contains("MaxPageSize=100"));
+    assert!(requests[1].target.contains("PageToken=p2"));
+
+    let looping = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({"gameServerLogs": [{"message": "a"}], "nextPageToken": "again"}),
+        )
+    });
+    let out = cmd::server::logs(&looping.ctx(), 123, 456, 7, "job", 0, true, None).await;
+    assert_eq!(out.error.unwrap().code, "pagination_loop");
+    assert_eq!(looping.captured().len(), 2);
+
+    let idle = Server::success();
+    let out = cmd::server::logs(&idle.ctx(), 123, 456, 7, "job", 101, false, None).await;
+    assert_eq!(out.error.unwrap().code, "invalid_limit");
+    assert!(idle.captured().is_empty());
+}
+
+#[tokio::test]
+async fn datastore_value_updates_preserve_metadata() {
+    let missing = Server::new(|_| Reply::Json(404, json!({"message": "missing"})));
+    let out = cmd::datastore::set(
+        &missing.ctx(),
+        123,
+        "store",
+        "player",
+        None,
+        "1",
+        false,
+        cmd::datastore::ValueUpdate::default(),
+    )
+    .await;
+    assert_eq!(out.error.unwrap().code, "entry_not_found");
+    assert_eq!(missing.captured().len(), 1);
+    assert_eq!(missing.captured()[0].method, "GET");
+
+    let created = Server::new(|count| {
+        if count == 1 {
+            Reply::Json(404, json!({"message": "missing"}))
+        } else {
+            Reply::Json(200, json!({"value": 1}))
+        }
+    });
+    let out = cmd::datastore::set(
+        &created.ctx(),
+        123,
+        "store",
+        "player",
+        Some("global"),
+        "1",
+        true,
+        cmd::datastore::ValueUpdate::default(),
+    )
+    .await;
+    assert!(out.ok, "{out:?}");
+    let patch = &created.captured()[1];
+    assert_eq!(patch.method, "PATCH");
+    assert!(patch.target.contains("/scopes/global/"));
+    assert!(patch.target.contains("allowMissing=true"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&patch.body).unwrap(),
+        json!({"value": 1})
+    );
+
+    let existing = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({"value": 1, "attributes": {"rank": 1}, "users": ["users/7"], "etag": "e1"}),
+        )
+    });
+    let out = cmd::datastore::set(
+        &existing.ctx(),
+        123,
+        "store",
+        "player",
+        None,
+        "2",
+        false,
+        cmd::datastore::ValueUpdate {
+            attributes_json: Some(r#"{"rank":2}"#),
+            users_json: Some(r#"["users/9"]"#),
+            ..cmd::datastore::ValueUpdate::default()
+        },
+    )
+    .await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&existing.captured()[1].body).unwrap(),
+        json!({"value": 2, "attributes": {"rank": 2}, "users": ["users/9"], "etag": "e1"})
+    );
+
+    let cleared = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({"value": 1, "attributes": {"rank": 1}, "users": ["users/7"], "etag": "e1"}),
+        )
+    });
+    let out = cmd::datastore::set(
+        &cleared.ctx(),
+        123,
+        "store",
+        "player",
+        None,
+        "3",
+        false,
+        cmd::datastore::ValueUpdate {
+            clear_attributes: true,
+            clear_users: true,
+            ..cmd::datastore::ValueUpdate::default()
+        },
+    )
+    .await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&cleared.captured()[1].body).unwrap(),
+        json!({"value": 3, "attributes": {}, "users": [], "etag": "e1"})
+    );
+
+    let bare = Server::new(|_| Reply::Json(200, json!({"value": 1})));
+    let out = cmd::datastore::set(
+        &bare.ctx(),
+        123,
+        "store",
+        "player",
+        None,
+        "4",
+        false,
+        cmd::datastore::ValueUpdate::default(),
+    )
+    .await;
+    assert_eq!(out.error.unwrap().code, "etag_missing");
+    assert_eq!(bare.captured().len(), 1);
+
+    let conflict = Server::success();
+    let out = cmd::datastore::set(
+        &conflict.ctx(),
+        123,
+        "store",
+        "player",
+        None,
+        "5",
+        false,
+        cmd::datastore::ValueUpdate {
+            attributes_json: Some("{}"),
+            clear_attributes: true,
+            ..cmd::datastore::ValueUpdate::default()
+        },
+    )
+    .await;
+    assert_eq!(out.error.unwrap().code, "metadata_conflict");
+    assert!(conflict.captured().is_empty());
+
+    let denied = Server::new(|_| Reply::Json(403, json!({"message": "permission denied"})));
+    let out = cmd::datastore::set(
+        &denied.ctx(),
+        123,
+        "store",
+        "player",
+        None,
+        "6",
+        false,
+        cmd::datastore::ValueUpdate::default(),
+    )
+    .await;
+    let error = out.error.unwrap();
+    assert_eq!(error.code, "datastore_read_forbidden");
+    assert!(
+        error
+            .detail
+            .unwrap()
+            .contains("universe-datastores.objects:read")
+    );
+    assert_eq!(denied.captured().len(), 1);
+    assert_eq!(denied.captured()[0].method, "GET");
+}
+
+#[tokio::test]
+async fn standalone_asset_files_are_rejected_before_upload() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.png");
+    let empty = dir.path().join("empty.fbx");
+    std::fs::write(&empty, b"").unwrap();
+    let over = dir.path().join("over.png");
+    std::fs::File::create(&over)
+        .unwrap()
+        .set_len(cmd::asset::MAX_ASSET_BYTES + 1)
+        .unwrap();
+    let boundary = dir.path().join("boundary.png");
+    std::fs::File::create(&boundary)
+        .unwrap()
+        .set_len(cmd::asset::MAX_ASSET_BYTES)
+        .unwrap();
+    let server = Server::success();
+    let ctx = server.ctx();
+    for file in [&missing, &empty, &over] {
+        let created = cmd::asset::create(&ctx, file, "N", "", Some(1), None, None).await;
+        assert!(!created.ok, "{created:?}");
+        let updated = cmd::asset::update(&ctx, 9, Some(file), None, None, None, None, &[]).await;
+        assert!(!updated.ok, "{updated:?}");
+    }
+    let directory = dir.path().join("not-a-file.png");
+    std::fs::create_dir(&directory).unwrap();
+    assert_eq!(
+        cmd::asset::preview_create(&missing, "N", "", Some(1), None, None)
+            .await
+            .error
+            .unwrap()
+            .code,
+        "file_unreadable"
+    );
+    assert_eq!(
+        cmd::asset::preview_create(&directory, "N", "", Some(1), None, None)
+            .await
+            .error
+            .unwrap()
+            .code,
+        "file_unreadable"
+    );
+    assert_eq!(
+        cmd::asset::preview_create(&empty, "N", "", Some(1), None, None)
+            .await
+            .error
+            .unwrap()
+            .code,
+        "file_size_invalid"
+    );
+    assert_eq!(
+        cmd::asset::preview_update(Some(&over), 9, None, None, None, None, &[])
+            .await
+            .error
+            .unwrap()
+            .code,
+        "file_size_invalid"
+    );
+    let preview = cmd::asset::preview_create(&boundary, "N", "", Some(1), None, None).await;
+    assert!(preview.ok, "{preview:?}");
+    assert_eq!(preview.data.unwrap()["bytes"], cmd::asset::MAX_ASSET_BYTES);
+    assert!(server.captured().is_empty());
 }

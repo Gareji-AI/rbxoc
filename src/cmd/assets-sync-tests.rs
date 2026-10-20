@@ -29,14 +29,18 @@ async fn named_segments_stay_encoded_in_actual_http_request_targets() {
             .await
             .ok
     );
-    assert!(crate::cmd::config::restore(&ctx, 1, raw, raw).await.ok);
+    assert!(
+        crate::cmd::config::restore(&ctx, 1, "InExperienceConfig", raw)
+            .await
+            .ok
+    );
     assert!(
         crate::cmd::universe::publish_message(&ctx, 1, raw, "{}")
             .await
             .ok
     );
     assert!(
-        crate::cmd::server::logs(&ctx, 1, 2, 3, raw, 1, false)
+        crate::cmd::server::logs(&ctx, 1, 2, 3, raw, 1, false, None)
             .await
             .ok
     );
@@ -51,9 +55,10 @@ async fn named_segments_stay_encoded_in_actual_http_request_targets() {
     assert_eq!(requests.len(), 8);
     for request in requests.iter() {
         let target = request.lines().next().unwrap();
-        assert!(target.contains(encoded), "{target}");
-        assert!(!target.contains('?'), "{target}");
-        assert!(!target.contains('#'), "{target}");
+        let route = target.split_whitespace().nth(1).unwrap_or(target);
+        let path = route.split('?').next().unwrap_or(route);
+        assert!(path.contains(encoded), "{target}");
+        assert!(!path.contains('?') && !path.contains('#'), "{target}");
     }
     assert!(requests[1].contains(&format!("/{encoded}:increment ")));
 }

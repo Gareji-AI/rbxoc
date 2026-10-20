@@ -1,0 +1,32 @@
+{
+  "repositories": [
+    "InExperienceConfig",
+    "RecommendationServicesConfig",
+    "DataStoresConfig",
+    "ExtendedServicesConfig",
+    "LeaderboardsConfig",
+    "ExperienceUserConfig",
+    "JourneysConfig",
+    "AntiCheatConfig"
+  ],
+  "draftFields": ["draftHash", "entries", "conditionalRules"],
+  "queryRequired": ["metric", "granularity", "startTime", "endTime"],
+  "granularities": [
+    "OneMinute",
+    "HalfHour",
+    "OneHour",
+    "OneDay",
+    "OneWeek",
+    "OneMonth",
+    "None"
+  ],
+  "deploymentStrategies": ["Immediate", "GradualRollout"],
+  "rejectedReadmeSnippets": [
+    "--repository game",
+    "\"flags\"",
+    "\"metrics\"",
+    "P1D"
+  ],
+  "readmeQuery": "{\"metric\":\"DailyActiveUsers\",\"granularity\":\"OneDay\",\"startTime\":\"2026-10-01T00:00:00Z\",\"endTime\":\"2026-10-08T00:00:00Z\"}",
+  "readmeDraft": "{\"entries\":{\"newShop\":true}}"
+}

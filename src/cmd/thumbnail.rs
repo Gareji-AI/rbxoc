@@ -198,14 +198,29 @@ pub async fn status(ctx: &Ctx, universe_id: u64, operation_ids: &[String]) -> Ou
 }
 
 /// List homepage thumbnails.
-pub async fn list(ctx: &Ctx, universe_id: u64) -> Output {
+pub async fn list(ctx: &Ctx, universe_id: u64, next_cursor: Option<&str>) -> Output {
     let path = format!("/thumbnail-personalization-api/v1/universes/{universe_id}/thumbnails");
-    match ctx.get_json(&path).await {
-        Ok(data) => Output::success(
-            "thumbnail list",
-            format!("Fetched thumbnails for universe {universe_id}"),
-            Some(data),
-        ),
+    let data = if let Some(cursor) = next_cursor.filter(|cursor| !cursor.is_empty()) {
+        ctx.get_json_query(&path, &[("nextCursor", cursor)]).await
+    } else {
+        ctx.get_json(&path).await
+    };
+    match data {
+        Ok(data) => {
+            let mut out = Output::success(
+                "thumbnail list",
+                format!("Fetched thumbnails for universe {universe_id}"),
+                Some(data.clone()),
+            );
+            if let Some(cursor) = data.get("nextCursor").and_then(|value| value.as_str())
+                && !cursor.is_empty()
+            {
+                out = out.with_hints([format!(
+                    "Pass --next-cursor {cursor} to fetch the next page"
+                )]);
+            }
+            out
+        }
         Err(err) => failure("thumbnail list", err),
     }
 }

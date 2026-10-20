@@ -21,6 +21,10 @@ pub async fn publish(
     file: &std::path::Path,
     published: bool,
 ) -> Output {
+    let media_type = match place_media_type(file) {
+        Ok(media_type) => media_type,
+        Err(err) => return failure(COMMAND, err),
+    };
     let bytes = match tokio::fs::read(file).await {
         Ok(b) => b,
         Err(e) => {
@@ -42,7 +46,11 @@ pub async fn publish(
     let path = format!(
         "/universes/v1/{universe_id}/places/{place_id}/versions?versionType={version_type}"
     );
-    let req = ctx.client.post(ctx.url(&path)).body(bytes);
+    let req = ctx
+        .client
+        .post(ctx.url(&path))
+        .header("content-type", media_type)
+        .body(bytes);
 
     match ctx.send(req).await {
         Ok(resp) => {
@@ -109,13 +117,37 @@ pub async fn get(ctx: &Ctx, universe_id: u64, place_id: u64) -> Output {
     }
 }
 
-/// Fetch a place's version history.
-pub async fn history(ctx: &Ctx, place_id: u64, limit: u32) -> Output {
-    let path = format!("/place-version-history-api/v1/{place_id}/history");
-    match ctx
-        .get_json_query(&path, &[("pageSize", &limit.to_string())])
-        .await
+fn place_media_type(file: &std::path::Path) -> Result<&'static str, crate::output::ErrorBody> {
+    match file
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .as_deref()
     {
+        Some("rbxlx") => Ok("application/xml"),
+        Some("rbxl") => Ok("application/octet-stream"),
+        _ => Err(crate::output::ErrorBody {
+            code: "unsupported_place_file",
+            message: format!(
+                "place files must end in .rbxlx or .rbxl, got {}",
+                file.display()
+            ),
+            status: None,
+            detail: Some(".rbxlx is application/xml and .rbxl is application/octet-stream".into()),
+            refs: None,
+        }),
+    }
+}
+
+/// Fetch a place's version history.
+pub async fn history(ctx: &Ctx, place_id: u64, limit: u32, cursor: Option<&str>) -> Output {
+    let path = format!("/place-version-history-api/v1/{place_id}/history");
+    let page_size = limit.to_string();
+    let mut query = vec![("pageSize", page_size.as_str())];
+    if let Some(cursor) = cursor.filter(|cursor| !cursor.is_empty()) {
+        query.push(("cursor", cursor));
+    }
+    match ctx.get_json_query(&path, &query).await {
         Ok(data) => {
             let count = data
                 .get("placeVersions")
@@ -123,11 +155,17 @@ pub async fn history(ctx: &Ctx, place_id: u64, limit: u32) -> Output {
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            Output::success(
+            let mut out = Output::success(
                 "place history",
                 format!("Fetched {count} versions for place {place_id}"),
-                Some(data),
-            )
+                Some(data.clone()),
+            );
+            if let Some(cursor) = data.get("nextCursor").and_then(|v| v.as_str())
+                && !cursor.is_empty()
+            {
+                out = out.with_hints([format!("Pass --cursor {cursor} to fetch the next page")]);
+            }
+            out
         }
         Err(err) => failure("place history", err),
     }

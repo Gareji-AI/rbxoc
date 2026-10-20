@@ -16,6 +16,68 @@ use serde_json::{Value, json};
 use crate::ctx::{Ctx, failure, path_segment};
 use crate::output::{ErrorBody, Output};
 
+pub const REPOSITORIES: &[&str] = &[
+    "InExperienceConfig",
+    "RecommendationServicesConfig",
+    "DataStoresConfig",
+    "ExtendedServicesConfig",
+    "LeaderboardsConfig",
+    "ExperienceUserConfig",
+    "JourneysConfig",
+    "AntiCheatConfig",
+];
+
+const DRAFT_FIELDS: &[&str] = &["draftHash", "entries", "conditionalRules"];
+
+pub fn validate_repository_name(repository: &str) -> Result<(), ErrorBody> {
+    if REPOSITORIES.contains(&repository) {
+        Ok(())
+    } else {
+        Err(ErrorBody {
+            code: "invalid_repository",
+            message: format!("--repository {repository} is not a public config repository"),
+            status: None,
+            detail: Some(format!("Use one of: {}", REPOSITORIES.join(", "))),
+            refs: None,
+        })
+    }
+}
+
+pub fn validate_draft_document(document: &str) -> Result<Value, ErrorBody> {
+    let body: Value = serde_json::from_str(document).map_err(|e| ErrorBody {
+        code: "invalid_document",
+        message: format!("--document is not valid JSON: {e}"),
+        status: None,
+        detail: Some("Example: --document '{\"entries\":{\"newShop\":true}}'".into()),
+        refs: None,
+    })?;
+    let Some(object) = body.as_object() else {
+        return Err(ErrorBody {
+            code: "invalid_document",
+            message: "--document must be a JSON object".into(),
+            status: None,
+            detail: Some("Example: --document '{\"entries\":{\"newShop\":true}}'".into()),
+            refs: None,
+        });
+    };
+    if let Some(key) = object
+        .keys()
+        .find(|key| !DRAFT_FIELDS.contains(&key.as_str()))
+    {
+        return Err(ErrorBody {
+            code: "invalid_document",
+            message: format!("--document field {key} is not in UpdateDraftRequest"),
+            status: None,
+            detail: Some(format!(
+                "Allowed fields: {}. Example: {{\"entries\":{{\"newShop\":true}}}}",
+                DRAFT_FIELDS.join(", ")
+            )),
+            refs: None,
+        });
+    }
+    Ok(body)
+}
+
 fn entries_path(universe_id: u64, repository: &str) -> Result<String, ErrorBody> {
     let repository = path_segment(repository)?;
     Ok(format!(
@@ -25,6 +87,9 @@ fn entries_path(universe_id: u64, repository: &str) -> Result<String, ErrorBody>
 
 /// Read the live, published values.
 pub async fn get(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
+    if let Err(err) = validate_repository_name(repository) {
+        return failure("config get", err);
+    }
     let path = match entries_path(universe_id, repository) {
         Ok(base) => format!("{base}/full"),
         Err(err) => return failure("config get", err),
@@ -41,6 +106,9 @@ pub async fn get(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
 
 /// Read the current draft.
 pub async fn draft(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
+    if let Err(err) = validate_repository_name(repository) {
+        return failure("config draft", err);
+    }
     let path = match entries_path(universe_id, repository) {
         Ok(base) => format!("{base}/draft"),
         Err(err) => return failure("config draft", err),
@@ -57,9 +125,12 @@ pub async fn draft(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
 
 /// Patch the draft with a JSON document.
 pub async fn patch_draft(ctx: &Ctx, universe_id: u64, repository: &str, document: &str) -> Output {
-    let body: Value = match serde_json::from_str(document) {
-        Ok(v) => v,
-        Err(e) => return invalid_document(e),
+    if let Err(err) = validate_repository_name(repository) {
+        return failure("config patch-draft", err);
+    }
+    let body = match validate_draft_document(document) {
+        Ok(body) => body,
+        Err(err) => return failure("config patch-draft", err),
     };
     let path = match entries_path(universe_id, repository) {
         Ok(base) => format!("{base}/draft"),
@@ -73,9 +144,12 @@ pub async fn patch_draft(ctx: &Ctx, universe_id: u64, repository: &str, document
 
 /// Replace the whole draft.
 pub async fn overwrite(ctx: &Ctx, universe_id: u64, repository: &str, document: &str) -> Output {
-    let body: Value = match serde_json::from_str(document) {
-        Ok(v) => v,
-        Err(e) => return invalid_document(e),
+    if let Err(err) = validate_repository_name(repository) {
+        return failure("config overwrite", err);
+    }
+    let body = match validate_draft_document(document) {
+        Ok(body) => body,
+        Err(err) => return failure("config overwrite", err),
     };
     let path = match entries_path(universe_id, repository) {
         Ok(base) => format!("{base}/draft:overwrite"),
@@ -88,15 +162,59 @@ pub async fn overwrite(ctx: &Ctx, universe_id: u64, repository: &str, document: 
 }
 
 /// Publish the draft so the game reads the new values.
-pub async fn publish(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
+/// `draft_hash` is the hash returned by a draft read or write.
+pub async fn publish(
+    ctx: &Ctx,
+    universe_id: u64,
+    repository: &str,
+    draft_hash: Option<&str>,
+    message: Option<&str>,
+    deployment_strategy: Option<&str>,
+) -> Output {
+    if let Err(err) = validate_repository_name(repository) {
+        return failure("config publish", err);
+    }
+    let Some(draft_hash) = draft_hash.filter(|hash| !hash.is_empty()) else {
+        return failure(
+            "config publish",
+            ErrorBody {
+                code: "draft_hash_required",
+                message: "config publish requires the draft hash you reviewed".into(),
+                status: None,
+                detail: Some(
+                    "Read it from `rbxoc config draft` or the draft write response, then pass --draft-hash. Optional fields are --message and --deployment-strategy Immediate|GradualRollout."
+                        .into(),
+                ),
+                refs: None,
+            },
+        );
+    };
+    if let Some(strategy) = deployment_strategy
+        && !matches!(strategy, "Immediate" | "GradualRollout")
+    {
+        return failure(
+            "config publish",
+            ErrorBody {
+                code: "invalid_deployment_strategy",
+                message: format!("--deployment-strategy {strategy} is not accepted"),
+                status: None,
+                detail: Some("Use Immediate or GradualRollout".into()),
+                refs: None,
+            },
+        );
+    }
+    let mut body = json!({ "draftHash": draft_hash });
+    if let Some(message) = message {
+        body["message"] = json!(message);
+    }
+    if let Some(strategy) = deployment_strategy {
+        body["deploymentStrategy"] = json!(strategy);
+    }
     let path = match entries_path(universe_id, repository) {
         Ok(base) => format!("{base}/publish"),
         Err(err) => return failure("config publish", err),
     };
-    match ctx
-        .send(ctx.client.post(ctx.url(&path)).json(&json!({})))
-        .await
-    {
+    match ctx.send(ctx.client.post(ctx.url(&path)).json(&body)).await {
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
@@ -121,6 +239,9 @@ pub async fn publish(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
 
 /// List revisions.
 pub async fn revisions(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
+    if let Err(err) = validate_repository_name(repository) {
+        return failure("config revisions", err);
+    }
     let path = match entries_path(universe_id, repository) {
         Ok(base) => format!("{base}/revisions"),
         Err(err) => return failure("config revisions", err),
@@ -144,6 +265,9 @@ pub async fn revisions(ctx: &Ctx, universe_id: u64, repository: &str) -> Output 
 
 /// Restore a previous revision into the draft.
 pub async fn restore(ctx: &Ctx, universe_id: u64, repository: &str, revision_id: &str) -> Output {
+    if let Err(err) = validate_repository_name(repository) {
+        return failure("config restore", err);
+    }
     let path = match entries_path(universe_id, repository).and_then(|base| {
         Ok(format!(
             "{base}/revisions/{}/restore",
@@ -153,10 +277,7 @@ pub async fn restore(ctx: &Ctx, universe_id: u64, repository: &str, revision_id:
         Ok(path) => path,
         Err(err) => return failure("config restore", err),
     };
-    match ctx
-        .send(ctx.client.post(ctx.url(&path)).json(&json!({})))
-        .await
-    {
+    match ctx.send(ctx.client.post(ctx.url(&path))).await {
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
@@ -177,20 +298,6 @@ pub async fn restore(ctx: &Ctx, universe_id: u64, repository: &str, revision_id:
         }
         Err(err) => failure("config restore", err),
     }
-}
-
-fn invalid_document(e: serde_json::Error) -> Output {
-    failure(
-        "config",
-        ErrorBody {
-            code: "invalid_document",
-            message: format!("--document is not valid JSON: {e}"),
-            status: None,
-            detail: Some("Example: --document '{\"flags\":{\"newShop\":true}}'".into()),
-
-            refs: None,
-        },
-    )
 }
 
 /// Shared tail for draft writes.
@@ -214,7 +321,7 @@ async fn finish_write(
         Some(data),
     )
     .with_hints(vec![
-        "Draft changes are not live until `rbxoc config publish` runs".into(),
+        "Draft changes are not live until `rbxoc config publish --draft-hash <hash>` runs. Use the draftHash from this response.".into(),
     ])
 }
 

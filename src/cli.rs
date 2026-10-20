@@ -181,6 +181,9 @@ pub enum PlaceCommand {
         place_id: u64,
         #[arg(long, default_value_t = 20)]
         limit: u32,
+        /// Continuation cursor from a previous `nextCursor`
+        #[arg(long)]
+        cursor: Option<String>,
     },
 }
 
@@ -413,6 +416,9 @@ pub enum ThumbnailCommand {
     List {
         #[arg(long)]
         universe_id: u64,
+        /// `nextCursor` from the previous page
+        #[arg(long)]
+        next_cursor: Option<String>,
     },
     /// Delete thumbnails
     Delete {
@@ -439,6 +445,9 @@ pub enum ServerCommand {
         place_id: u64,
         #[arg(long)]
         version: u64,
+        /// `PageToken` from a previous page
+        #[arg(long)]
+        page_token: Option<String>,
     },
     /// Fetch game server logs
     Logs {
@@ -450,12 +459,15 @@ pub enum ServerCommand {
         version: u64,
         #[arg(long)]
         job_id: String,
-        /// Entries to show. 0 means all.
+        /// Provider MaxPageSize, from 1 to 100. 0 follows every page.
         #[arg(long, default_value_t = 100)]
         limit: usize,
-        /// Show everything (same as --limit 0)
+        /// Follow nextPageToken until the provider stops
         #[arg(long)]
         full: bool,
+        /// `PageToken` from a previous `nextPageToken`
+        #[arg(long)]
+        page_token: Option<String>,
     },
     /// Restart servers
     Restart {
@@ -567,6 +579,12 @@ pub enum EventCommand {
         universe_id: u64,
         #[arg(long, default_value_t = 25)]
         page_size: u32,
+        /// `pageToken` from a previous page
+        #[arg(long)]
+        page_token: Option<String>,
+        /// Treat --page-token as a backward cursor
+        #[arg(long)]
+        reverse: bool,
     },
     /// Get one game event
     Get {
@@ -627,6 +645,18 @@ pub enum DatastoreCommand {
         /// Create if missing; without this flag, update existing entries only
         #[arg(long)]
         create: bool,
+        /// JSON object that replaces attributes. Omit to keep the current ones.
+        #[arg(long)]
+        attributes: Option<String>,
+        /// JSON array of `users/{id}` paths. Omit to keep the current users.
+        #[arg(long)]
+        users: Option<String>,
+        /// Replace attributes with an empty object
+        #[arg(long)]
+        clear_attributes: bool,
+        /// Replace users with an empty array
+        #[arg(long)]
+        clear_users: bool,
     },
     Delete {
         #[arg(long)]
@@ -645,6 +675,9 @@ pub enum DatastoreCommand {
         store: String,
         #[arg(long, default_value_t = 50)]
         max_page_size: u32,
+        /// `pageToken` from a previous `nextPageToken`
+        #[arg(long)]
+        page_token: Option<String>,
     },
 }
 
@@ -670,6 +703,9 @@ pub enum OrderedDatastoreCommand {
         ascending: bool,
         #[arg(long, default_value_t = 50)]
         page_size: u32,
+        /// `page_token` from a previous `nextPageToken`
+        #[arg(long)]
+        page_token: Option<String>,
     },
     Get {
         #[arg(long)]
@@ -734,6 +770,9 @@ pub enum GamepassCommand {
     List {
         #[arg(long)]
         universe_id: u64,
+        /// `pageToken` from a previous `nextPageToken`
+        #[arg(long)]
+        page_token: Option<String>,
     },
     Create {
         #[arg(long)]
@@ -742,7 +781,7 @@ pub enum GamepassCommand {
         name: String,
         #[arg(long)]
         description: Option<String>,
-        /// Integer Robux
+        /// Integer Robux. Also sets isForSale=true on create.
         #[arg(long)]
         price: Option<u64>,
         #[arg(long, value_name = "PATH")]
@@ -757,8 +796,12 @@ pub enum GamepassCommand {
         name: Option<String>,
         #[arg(long)]
         description: Option<String>,
+        /// Integer Robux. Does not change sale state.
         #[arg(long)]
         price: Option<u64>,
+        /// Set isForSale explicitly. true or false. Omitted leaves it unchanged.
+        #[arg(long, action = clap::ArgAction::Set, num_args = 1, value_name = "BOOL")]
+        is_for_sale: Option<bool>,
         #[arg(long, value_name = "PATH")]
         image: Option<std::path::PathBuf>,
     },
@@ -806,16 +849,17 @@ pub struct PermissionsArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum PermissionsCommand {
-    /// Grant a user or group access to assets
+    /// Grant a user, group, group roleset, universe, or everyone access to assets
     Grant {
         /// Asset ID. Repeat for more than one.
         #[arg(long = "asset-id", required = true)]
         asset_ids: Vec<u64>,
-        /// `user` or `group`
+        /// `user`, `group`, `group-roleset`, `universe`, or `all`
         #[arg(long, default_value = "user")]
         subject_type: String,
+        /// Positive ID. Omit this only for `--subject-type all`.
         #[arg(long)]
-        subject_id: u64,
+        subject_id: Option<u64>,
         /// `use` to load the asset, `edit` to modify it
         #[arg(long, default_value = "use")]
         action: String,
@@ -864,12 +908,21 @@ pub enum ConfigCommand {
         #[arg(long)]
         document: String,
     },
-    /// Publish the draft so the game reads it
+    /// Publish the reviewed draft so the game reads it
     Publish {
         #[arg(long)]
         universe_id: u64,
         #[arg(long)]
         repository: String,
+        /// draftHash returned by the draft read or write you reviewed
+        #[arg(long)]
+        draft_hash: Option<String>,
+        /// Publish message stored with the revision
+        #[arg(long)]
+        message: Option<String>,
+        /// `Immediate` or `GradualRollout`
+        #[arg(long)]
+        deployment_strategy: Option<String>,
     },
     /// List revision history
     Revisions {
@@ -900,6 +953,9 @@ pub enum DevproductCommand {
     List {
         #[arg(long)]
         universe_id: u64,
+        /// `pageToken` from a previous `nextPageToken`
+        #[arg(long)]
+        page_token: Option<String>,
     },
     Create {
         #[arg(long)]
@@ -933,10 +989,163 @@ pub enum UniverseCommand {
         universe_id: u64,
         #[arg(long)]
         topic: String,
-        /// JSON string
+        /// Exact message string, up to 1,024 characters. Plain text is sent as-is.
         #[arg(long)]
         message: String,
     },
+}
+
+fn requested_leaf(command: &Command) -> &'static str {
+    match command {
+        Command::Auth(_) => "auth check",
+        Command::Api(ApiArgs { command }) => match command {
+            ApiCommand::List { .. } => "api list",
+            ApiCommand::Show { .. } => "api show",
+            ApiCommand::Mutating => "api mutating",
+        },
+        Command::Place(PlaceArgs { command }) => match command {
+            PlaceCommand::Publish { .. } => "place publish",
+            PlaceCommand::Get { .. } => "place get",
+            PlaceCommand::History { .. } => "place history",
+        },
+        Command::Asset(AssetArgs { command }) => match command {
+            AssetCommand::Create { .. } => "asset create",
+            AssetCommand::Update { .. } => "asset update",
+            AssetCommand::Get { .. } => "asset get",
+            AssetCommand::Versions { .. } => "asset versions",
+            AssetCommand::Rollback { .. } => "asset rollback",
+            AssetCommand::Archive { .. } => "asset archive",
+            AssetCommand::Operation { .. } => "asset operation",
+            AssetCommand::ImageId { .. } => "asset image-id",
+        },
+        Command::Assets(AssetsArgs { command }) => match command {
+            AssetsCommand::Init { .. } => "assets init",
+            AssetsCommand::Status { .. } => "assets status",
+            AssetsCommand::Register { .. } => "assets register",
+            AssetsCommand::Unregister { .. } => "assets unregister",
+            AssetsCommand::Codegen { .. } => "assets codegen",
+            AssetsCommand::Sync { .. } => "assets sync",
+            AssetsCommand::Recover { .. } => "assets recover",
+            AssetsCommand::Preprocess { .. } => "assets preprocess",
+            AssetsCommand::ImportAsphaltLock { .. } => "assets import-asphalt-lock",
+        },
+        Command::Thumbnail(ThumbnailArgs { command }) => match command {
+            ThumbnailCommand::Upload { .. } => "thumbnail upload",
+            ThumbnailCommand::Status { .. } => "thumbnail status",
+            ThumbnailCommand::List { .. } => "thumbnail list",
+            ThumbnailCommand::Delete { .. } => "thumbnail delete",
+        },
+        Command::Server(ServerArgs { command }) => match command {
+            ServerCommand::List { .. } => "server list",
+            ServerCommand::Logs { .. } => "server logs",
+            ServerCommand::Restart { .. } => "server restart",
+            ServerCommand::RestartForecast { .. } => "server restart-forecast",
+        },
+        Command::Analytics(AnalyticsArgs { command }) => match command {
+            AnalyticsCommand::Metrics { .. } => "analytics metrics",
+            AnalyticsCommand::Operation { .. } => "analytics operation",
+            AnalyticsCommand::Catalog => "analytics catalog",
+            AnalyticsCommand::Alerts { command } => match command {
+                AlertCommand::List { .. } => "analytics alerts list",
+                AlertCommand::Create { .. } => "analytics alerts create",
+                AlertCommand::Update { .. } => "analytics alerts update",
+                AlertCommand::Delete { .. } => "analytics alerts delete",
+                AlertCommand::Incidents { .. } => "analytics alerts incidents",
+            },
+        },
+        Command::Event(EventArgs { command }) => match command {
+            EventCommand::List { .. } => "event list",
+            EventCommand::Get { .. } => "event get",
+            EventCommand::Create { .. } => "event create",
+            EventCommand::Update { .. } => "event update",
+            EventCommand::Delete { .. } => "event delete",
+        },
+        Command::Datastore(DatastoreArgs { command }) => match command {
+            DatastoreCommand::Get { .. } => "datastore get",
+            DatastoreCommand::Set { .. } => "datastore set",
+            DatastoreCommand::Delete { .. } => "datastore delete",
+            DatastoreCommand::List { .. } => "datastore list",
+        },
+        Command::OrderedDatastore(OrderedDatastoreArgs { command }) => match command {
+            OrderedDatastoreCommand::List { .. } => "ordered-datastore list",
+            OrderedDatastoreCommand::Get { .. } => "ordered-datastore get",
+            OrderedDatastoreCommand::Set { .. } => "ordered-datastore set",
+            OrderedDatastoreCommand::Delete { .. } => "ordered-datastore delete",
+            OrderedDatastoreCommand::Increment { .. } => "ordered-datastore increment",
+        },
+        Command::Gamepass(GamepassArgs { command }) => match command {
+            GamepassCommand::List { .. } => "gamepass list",
+            GamepassCommand::Create { .. } => "gamepass create",
+            GamepassCommand::Update { .. } => "gamepass update",
+        },
+        Command::Badge(BadgeArgs { command }) => match command {
+            BadgeCommand::Create { .. } => "badge create",
+            BadgeCommand::Update { .. } => "badge update",
+        },
+        Command::Permissions(_) => "permissions grant",
+        Command::Config(ConfigArgs { command }) => match command {
+            ConfigCommand::Get { .. } => "config get",
+            ConfigCommand::Draft { .. } => "config draft",
+            ConfigCommand::PatchDraft { .. } => "config patch-draft",
+            ConfigCommand::Overwrite { .. } => "config overwrite",
+            ConfigCommand::Publish { .. } => "config publish",
+            ConfigCommand::Revisions { .. } => "config revisions",
+            ConfigCommand::Restore { .. } => "config restore",
+        },
+        Command::Devproduct(DevproductArgs { command }) => match command {
+            DevproductCommand::List { .. } => "devproduct list",
+            DevproductCommand::Create { .. } => "devproduct create",
+        },
+        Command::Universe(UniverseArgs { command }) => match command {
+            UniverseCommand::Get { .. } => "universe get",
+            UniverseCommand::PublishMessage { .. } => "universe publish-message",
+        },
+    }
+}
+
+fn preflight_before_auth(command: &Command) -> Option<Output> {
+    match command {
+        Command::Config(ConfigArgs { command }) => {
+            let repository = match command {
+                ConfigCommand::Get { repository, .. }
+                | ConfigCommand::Draft { repository, .. }
+                | ConfigCommand::PatchDraft { repository, .. }
+                | ConfigCommand::Overwrite { repository, .. }
+                | ConfigCommand::Publish { repository, .. }
+                | ConfigCommand::Revisions { repository, .. }
+                | ConfigCommand::Restore { repository, .. } => repository.as_str(),
+            };
+            let leaf = match command {
+                ConfigCommand::Get { .. } => "config get",
+                ConfigCommand::Draft { .. } => "config draft",
+                ConfigCommand::PatchDraft { .. } => "config patch-draft",
+                ConfigCommand::Overwrite { .. } => "config overwrite",
+                ConfigCommand::Publish { .. } => "config publish",
+                ConfigCommand::Revisions { .. } => "config revisions",
+                ConfigCommand::Restore { .. } => "config restore",
+            };
+            if let Err(err) = cmd::config::validate_repository_name(repository) {
+                return Some(failure(leaf, err));
+            }
+            let document = match command {
+                ConfigCommand::PatchDraft { document, .. }
+                | ConfigCommand::Overwrite { document, .. } => Some(document.as_str()),
+                _ => None,
+            };
+            if let Some(document) = document
+                && let Err(err) = cmd::config::validate_draft_document(document)
+            {
+                return Some(failure(leaf, err));
+            }
+            None
+        }
+        Command::Analytics(AnalyticsArgs {
+            command: AnalyticsCommand::Metrics { query, .. },
+        }) => cmd::analytics::validate_metrics_query_text(query)
+            .err()
+            .map(|err| failure("analytics metrics", err)),
+        _ => None,
+    }
 }
 
 impl Cli {
@@ -995,17 +1204,27 @@ impl Cli {
                     user_id,
                     group_id,
                     asset_type,
-                    dry_run: true,
+                    dry_run,
                 } => {
-                    return cmd::asset::preview_create(
-                        file,
-                        display_name,
-                        description,
-                        *user_id,
-                        *group_id,
-                        asset_type.as_deref(),
-                    )
-                    .await;
+                    if let Err(err) = cmd::asset::validate_asset_file(file).await {
+                        let command = if *dry_run {
+                            "asset create (dry-run)"
+                        } else {
+                            "asset create"
+                        };
+                        return failure(command, err);
+                    }
+                    if *dry_run {
+                        return cmd::asset::preview_create(
+                            file,
+                            display_name,
+                            description,
+                            *user_id,
+                            *group_id,
+                            asset_type.as_deref(),
+                        )
+                        .await;
+                    }
                 }
                 AssetCommand::Update {
                     asset_id,
@@ -1043,10 +1262,15 @@ impl Cli {
             }
         }
 
+        if let Some(output) = preflight_before_auth(&self.command) {
+            return output;
+        }
+
+        let leaf = requested_leaf(&self.command);
         let auth = match auth::resolve(self.api_key.as_deref(), self.api_key_file.as_ref()) {
             Ok(a) => a,
             Err(e) => {
-                return failure("auth", auth::missing_auth_error(format!("{e:#}")));
+                return failure(leaf, auth::missing_auth_error(format!("{e:#}")));
             }
         };
         let ctx = match Ctx::new(auth, self.retry) {
@@ -1094,9 +1318,11 @@ impl Cli {
                     universe_id,
                     place_id,
                 } => cmd::place::get(&ctx, universe_id, place_id).await,
-                PlaceCommand::History { place_id, limit } => {
-                    cmd::place::history(&ctx, place_id, limit).await
-                }
+                PlaceCommand::History {
+                    place_id,
+                    limit,
+                    cursor,
+                } => cmd::place::history(&ctx, place_id, limit, cursor.as_deref()).await,
             },
             Command::Asset(args) => match args.command {
                 AssetCommand::ImageId { .. } => unreachable!("handled without credentials"),
@@ -1166,9 +1392,10 @@ impl Cli {
                     universe_id,
                     operation_ids,
                 } => cmd::thumbnail::status(&ctx, universe_id, &operation_ids).await,
-                ThumbnailCommand::List { universe_id } => {
-                    cmd::thumbnail::list(&ctx, universe_id).await
-                }
+                ThumbnailCommand::List {
+                    universe_id,
+                    next_cursor,
+                } => cmd::thumbnail::list(&ctx, universe_id, next_cursor.as_deref()).await,
                 ThumbnailCommand::Delete {
                     universe_id,
                     thumbnail_ids,
@@ -1179,7 +1406,11 @@ impl Cli {
                     universe_id,
                     place_id,
                     version,
-                } => cmd::server::list(&ctx, universe_id, place_id, version).await,
+                    page_token,
+                } => {
+                    cmd::server::list(&ctx, universe_id, place_id, version, page_token.as_deref())
+                        .await
+                }
                 ServerCommand::Logs {
                     universe_id,
                     place_id,
@@ -1187,9 +1418,19 @@ impl Cli {
                     job_id,
                     limit,
                     full,
+                    page_token,
                 } => {
-                    cmd::server::logs(&ctx, universe_id, place_id, version, &job_id, limit, full)
-                        .await
+                    cmd::server::logs(
+                        &ctx,
+                        universe_id,
+                        place_id,
+                        version,
+                        &job_id,
+                        limit,
+                        full,
+                        page_token.as_deref(),
+                    )
+                    .await
                 }
                 ServerCommand::Restart {
                     universe_id,
@@ -1252,7 +1493,12 @@ impl Cli {
                 EventCommand::List {
                     universe_id,
                     page_size,
-                } => cmd::event::list(&ctx, universe_id, page_size).await,
+                    page_token,
+                    reverse,
+                } => {
+                    cmd::event::list(&ctx, universe_id, page_size, page_token.as_deref(), reverse)
+                        .await
+                }
                 EventCommand::Get { event_id } => cmd::event::get(&ctx, event_id).await,
                 EventCommand::Create {
                     universe_id,
@@ -1277,6 +1523,10 @@ impl Cli {
                     scope,
                     value,
                     create,
+                    attributes,
+                    users,
+                    clear_attributes,
+                    clear_users,
                 } => {
                     cmd::datastore::set(
                         &ctx,
@@ -1286,6 +1536,12 @@ impl Cli {
                         scope.as_deref(),
                         &value,
                         create,
+                        cmd::datastore::ValueUpdate {
+                            attributes_json: attributes.as_deref(),
+                            users_json: users.as_deref(),
+                            clear_attributes,
+                            clear_users,
+                        },
                     )
                     .await
                 }
@@ -1302,7 +1558,17 @@ impl Cli {
                     universe_id,
                     store,
                     max_page_size,
-                } => cmd::datastore::list(&ctx, universe_id, &store, max_page_size).await,
+                    page_token,
+                } => {
+                    cmd::datastore::list(
+                        &ctx,
+                        universe_id,
+                        &store,
+                        max_page_size,
+                        page_token.as_deref(),
+                    )
+                    .await
+                }
             },
             Command::OrderedDatastore(args) => match args.command {
                 OrderedDatastoreCommand::List {
@@ -1311,6 +1577,7 @@ impl Cli {
                     scope,
                     ascending,
                     page_size,
+                    page_token,
                 } => {
                     cmd::ordered_datastore::list(
                         &ctx,
@@ -1319,6 +1586,7 @@ impl Cli {
                         &scope,
                         ascending,
                         page_size,
+                        page_token.as_deref(),
                     )
                     .await
                 }
@@ -1374,8 +1642,11 @@ impl Cli {
                 }
             },
             Command::Gamepass(args) => match args.command {
-                GamepassCommand::List { universe_id } => {
-                    cmd::monetization::gamepass_list(&ctx, universe_id).await
+                GamepassCommand::List {
+                    universe_id,
+                    page_token,
+                } => {
+                    cmd::monetization::gamepass_list(&ctx, universe_id, page_token.as_deref()).await
                 }
                 GamepassCommand::Create {
                     universe_id,
@@ -1400,6 +1671,7 @@ impl Cli {
                     name,
                     description,
                     price,
+                    is_for_sale,
                     image,
                 } => {
                     cmd::monetization::gamepass_update(
@@ -1409,6 +1681,7 @@ impl Cli {
                         name.as_deref(),
                         description.as_deref(),
                         price,
+                        is_for_sale,
                         image.as_ref(),
                     )
                     .await
@@ -1479,7 +1752,20 @@ impl Cli {
                 ConfigCommand::Publish {
                     universe_id,
                     repository,
-                } => cmd::config::publish(&ctx, universe_id, &repository).await,
+                    draft_hash,
+                    message,
+                    deployment_strategy,
+                } => {
+                    cmd::config::publish(
+                        &ctx,
+                        universe_id,
+                        &repository,
+                        draft_hash.as_deref(),
+                        message.as_deref(),
+                        deployment_strategy.as_deref(),
+                    )
+                    .await
+                }
                 ConfigCommand::Revisions {
                     universe_id,
                     repository,
@@ -1491,8 +1777,12 @@ impl Cli {
                 } => cmd::config::restore(&ctx, universe_id, &repository, &revision_id).await,
             },
             Command::Devproduct(args) => match args.command {
-                DevproductCommand::List { universe_id } => {
-                    cmd::monetization::devproduct_list(&ctx, universe_id).await
+                DevproductCommand::List {
+                    universe_id,
+                    page_token,
+                } => {
+                    cmd::monetization::devproduct_list(&ctx, universe_id, page_token.as_deref())
+                        .await
                 }
                 DevproductCommand::Create {
                     universe_id,

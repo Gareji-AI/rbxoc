@@ -128,6 +128,9 @@ pub async fn create(
     creator_group_id: Option<u64>,
     asset_type_override: Option<&str>,
 ) -> Output {
+    if let Err(err) = validate_asset_file(file).await {
+        return failure(CMD_CREATE, err);
+    }
     let (asset_type, content_type, type_note) =
         match resolve_asset_type(file, asset_type_override, CMD_CREATE).await {
             Ok((t, ct, note)) => (t, ct, note),
@@ -307,6 +310,7 @@ async fn plan_update(
         ));
     }
     let (asset_type, content_type, type_note) = if let Some(file) = file {
+        validate_asset_file(file).await?;
         let (kind, content_type, note) = resolve_asset_type(file, asset_type, CMD_UPDATE).await?;
         if !is_updateable_body(&kind) {
             return Err(invalid(
@@ -452,12 +456,51 @@ fn content_type_for(asset_type: &str, file: &std::path::Path) -> Option<&'static
     })
 }
 
+pub(crate) const MAX_ASSET_BYTES: u64 = 20 * 1024 * 1024;
+
+pub(crate) async fn validate_asset_file(file: &std::path::Path) -> Result<u64, ErrorBody> {
+    let unreadable = |detail: String| ErrorBody {
+        code: "file_unreadable",
+        message: format!("cannot read the file: {}", file.display()),
+        status: None,
+        detail: Some(detail),
+        refs: None,
+    };
+    let handle = tokio::fs::File::open(file)
+        .await
+        .map_err(|err| unreadable(err.to_string()))?;
+    let metadata = handle
+        .metadata()
+        .await
+        .map_err(|err| unreadable(err.to_string()))?;
+    if !metadata.is_file() {
+        return Err(unreadable("path is not a regular file".into()));
+    }
+    let size = metadata.len();
+    if size == 0 || size > MAX_ASSET_BYTES {
+        return Err(ErrorBody {
+            code: "file_size_invalid",
+            message: format!(
+                "file must be nonempty and at most 20 MiB, got {size} bytes ({})",
+                file.display()
+            ),
+            status: None,
+            detail: Some(
+                "Standalone asset uploads use the same 20 MiB ceiling as assets sync".into(),
+            ),
+            refs: None,
+        });
+    }
+    Ok(size)
+}
+
 async fn build_multipart(
     request: &Value,
     file: &std::path::Path,
     content_type: &'static str,
     command: &str,
 ) -> Result<reqwest::multipart::Form, ErrorBody> {
+    validate_asset_file(file).await?;
     let bytes = tokio::fs::read(file).await.map_err(|e| ErrorBody {
         code: "file_unreadable",
         message: format!("cannot read the file: {}", file.display()),
@@ -633,10 +676,10 @@ pub async fn rollback(ctx: &Ctx, asset_id: u64, version: u64) -> Output {
     )])
 }
 
-/// Archive an asset.
+/// Archive an asset. The operation declares no request body.
 pub async fn archive(ctx: &Ctx, asset_id: u64) -> Output {
     let path = format!("/assets/v1/assets/{asset_id}:archive");
-    let req = ctx.client.post(ctx.url(&path)).json(&json!({}));
+    let req = ctx.client.post(ctx.url(&path));
     match ctx.send(req).await {
         Ok(resp) => {
             if !resp.status().is_success() {
@@ -928,6 +971,10 @@ pub async fn preview_create(
     asset_type_override: Option<&str>,
 ) -> Output {
     const COMMAND: &str = "asset create (dry-run)";
+    let size = match validate_asset_file(file).await {
+        Ok(size) => size,
+        Err(err) => return failure(COMMAND, err),
+    };
     let (asset_type, content_type, type_note) =
         match resolve_asset_type(file, asset_type_override, COMMAND).await {
             Ok(v) => v,
@@ -938,10 +985,6 @@ pub async fn preview_create(
         return failure(COMMAND, err);
     }
 
-    let size = tokio::fs::metadata(file)
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
     let mut hints = vec![
         "Drop --dry-run to upload for real".into(),
         "Set RBXOC_API_KEY before uploading".into(),
@@ -977,6 +1020,14 @@ pub async fn preview_update(
     previews: &[String],
 ) -> Output {
     const COMMAND: &str = "asset update (dry-run)";
+    let size = if let Some(file) = file {
+        match validate_asset_file(file).await {
+            Ok(size) => size,
+            Err(err) => return failure(COMMAND, err),
+        }
+    } else {
+        0
+    };
     let plan = match plan_update(
         asset_id,
         file,
@@ -990,25 +1041,6 @@ pub async fn preview_update(
     {
         Ok(plan) => plan,
         Err(err) => return failure(COMMAND, err),
-    };
-    let size = if let Some(file) = file {
-        match tokio::fs::metadata(file).await {
-            Ok(metadata) => metadata.len(),
-            Err(err) => {
-                return failure(
-                    COMMAND,
-                    ErrorBody {
-                        code: "file_unreadable",
-                        message: format!("Cannot read {}", file.display()),
-                        status: None,
-                        detail: Some(err.to_string()),
-                        refs: None,
-                    },
-                );
-            }
-        }
-    } else {
-        0
     };
     let mut hints = vec![
         "Drop --dry-run to update for real".into(),

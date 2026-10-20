@@ -82,7 +82,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey],
         scopes: &["universe-places:write"],
         mutating: true,
-        note: "versionType=Saved only saves; Published also goes live.",
+        note: ".rbxlx uses application/xml and .rbxl uses application/octet-stream. versionType=Saved only saves; Published also goes live.",
     },
     Endpoint {
         id: "place.get",
@@ -160,7 +160,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["asset:read", "asset:write"],
         mutating: true,
-        note: "",
+        note: "The provider declares no request body.",
     },
     Endpoint {
         id: "asset.operation",
@@ -250,7 +250,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["universe:read"],
         mutating: false,
-        note: "Not covered by rbxcloud. A differentiator for this CLI.",
+        note: "MaxPageSize is 1–100. --limit maps to that query; --full follows nextPageToken.",
     },
     Endpoint {
         id: "server.list",
@@ -363,7 +363,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey],
         scopes: &["universe-datastores.objects:update"],
         mutating: true,
-        note: "Preserves the supplied JSON value type. --create sends allowMissing=true; otherwise updates only.",
+        note: "Reads the entry first, which also needs universe-datastores.objects:read, then sends value, attributes, users, and etag. A missing etag fails locally. --create sends allowMissing=true.",
     },
     Endpoint {
         id: "datastore.delete",
@@ -530,12 +530,12 @@ pub const ENDPOINTS: &[Endpoint] = &[
         id: "permissions.grant",
         method: "PATCH",
         path: "/asset-permissions-api/v1/assets/permissions",
-        summary: "Grant a user or group access to assets",
+        summary: "Grant a user, group, roleset, universe, or everyone access to assets",
         implemented: true,
         auth: &[ApiKey],
         scopes: &["asset-permissions:write"],
         mutating: true,
-        note: "Needed when a group collaborates on assets owned by one account.",
+        note: "Subject types: User, Group, GroupRoleset, Universe, All. All sends an empty subjectId. Actions: Use, Edit, Download.",
     },
     // ---- creator configs (remote config / feature flags) ----
     Endpoint {
@@ -591,7 +591,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["universe:write"],
         mutating: true,
-        note: "The only step that changes live values.",
+        note: "Requires the reviewed draftHash. Optional message and deploymentStrategy Immediate or GradualRollout.",
     },
     Endpoint {
         id: "config.revisions",
@@ -613,7 +613,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["universe:write"],
         mutating: true,
-        note: "Stages only; publish to apply.",
+        note: "Stages only; publish to apply. The provider declares no request body.",
     },
     // ---- messaging ----
     Endpoint {
@@ -625,7 +625,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["universe-messaging-service:publish"],
         mutating: true,
-        note: "",
+        note: "message is the exact string, at most 1,024 characters. A JSON string is unwrapped once.",
     },
     // ---- analytics alerts ----
     Endpoint {

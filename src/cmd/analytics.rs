@@ -12,26 +12,101 @@ use crate::output::{ErrorBody, Output};
 
 const COMMAND: &str = "analytics metrics";
 
+pub const GRANULARITIES: &[&str] = &[
+    "OneMinute",
+    "HalfHour",
+    "OneHour",
+    "OneDay",
+    "OneWeek",
+    "OneMonth",
+    "None",
+];
+
+const QUERY_FIELDS: &[&str] = &[
+    "metric",
+    "granularity",
+    "startTime",
+    "endTime",
+    "breakdown",
+    "filter",
+    "limit",
+];
+
+const QUERY_EXAMPLE: &str = "{\"metric\":\"DailyActiveUsers\",\"granularity\":\"OneDay\",\"startTime\":\"2026-10-01T00:00:00Z\",\"endTime\":\"2026-10-08T00:00:00Z\"}";
+
+pub fn validate_metrics_query_text(query: &str) -> Result<Value, ErrorBody> {
+    let body: Value = serde_json::from_str(query).map_err(|e| ErrorBody {
+        code: "invalid_query",
+        message: format!("--query is not valid JSON: {e}"),
+        status: None,
+        detail: Some(format!("Example: --query '{QUERY_EXAMPLE}'")),
+        refs: None,
+    })?;
+    let Some(object) = body.as_object() else {
+        return Err(ErrorBody {
+            code: "invalid_query",
+            message: "--query must be a JSON object".into(),
+            status: None,
+            detail: Some(format!("Example: --query '{QUERY_EXAMPLE}'")),
+            refs: None,
+        });
+    };
+    if let Some(key) = object
+        .keys()
+        .find(|key| !QUERY_FIELDS.contains(&key.as_str()))
+    {
+        return Err(ErrorBody {
+            code: "invalid_query",
+            message: format!("--query field {key} is not in QueryRequest"),
+            status: None,
+            detail: Some(
+                "Use singular metric and a granularity such as OneDay. metrics and P1D are not accepted."
+                    .into(),
+            ),
+            refs: None,
+        });
+    }
+    for required in ["metric", "granularity", "startTime", "endTime"] {
+        if !object.contains_key(required) {
+            return Err(ErrorBody {
+                code: "invalid_query",
+                message: format!("--query is missing {required}"),
+                status: None,
+                detail: Some(format!("Example: --query '{QUERY_EXAMPLE}'")),
+                refs: None,
+            });
+        }
+    }
+    if object["metric"]
+        .as_str()
+        .is_none_or(|metric| metric.is_empty())
+    {
+        return Err(ErrorBody {
+            code: "invalid_query",
+            message: "--query metric must be a non-empty string".into(),
+            status: None,
+            detail: Some(format!("Example: --query '{QUERY_EXAMPLE}'")),
+            refs: None,
+        });
+    }
+    let granularity = object["granularity"].as_str().unwrap_or("");
+    if !GRANULARITIES.contains(&granularity) {
+        return Err(ErrorBody {
+            code: "invalid_query",
+            message: format!("--query granularity {granularity} is not accepted"),
+            status: None,
+            detail: Some(format!("Use one of: {}", GRANULARITIES.join(", "))),
+            refs: None,
+        });
+    }
+    Ok(body)
+}
+
 /// Query time-series metrics.
 pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
-    let body: Value = match serde_json::from_str(query) {
-        Ok(v) => v,
-        Err(e) => {
-            return failure(
-                COMMAND,
-                ErrorBody {
-                    code: "invalid_query",
-                    message: format!("--query is not valid JSON: {e}"),
-                    status: None,
-                    detail: Some(
-                        "Example: --query '{\"metrics\":[{\"metric\":\"DailyActiveUsers\"}],\"startTime\":\"2026-10-01T00:00:00Z\",\"endTime\":\"2026-10-08T00:00:00Z\",\"granularity\":\"P1D\"}'"
-                            .into(),
-                    ),
-
-                    refs: None,
-                },
-            );
-        }
+    let body = match validate_metrics_query_text(query) {
+        Ok(body) => body,
+        Err(err) => return failure(COMMAND, err),
     };
 
     let path = format!("/analytics-query-api/v1/universes/{universe_id}/metrics");
