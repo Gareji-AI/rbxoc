@@ -1603,6 +1603,29 @@ async fn datastore_value_updates_preserve_metadata() {
     .await;
     assert_eq!(out.error.unwrap().code, "metadata_conflict");
     assert!(conflict.captured().is_empty());
+
+    let denied = Server::new(|_| Reply::Json(403, json!({"message": "permission denied"})));
+    let out = cmd::datastore::set(
+        &denied.ctx(),
+        123,
+        "store",
+        "player",
+        None,
+        "6",
+        false,
+        cmd::datastore::ValueUpdate::default(),
+    )
+    .await;
+    let error = out.error.unwrap();
+    assert_eq!(error.code, "datastore_read_forbidden");
+    assert!(
+        error
+            .detail
+            .unwrap()
+            .contains("universe-datastores.objects:read")
+    );
+    assert_eq!(denied.captured().len(), 1);
+    assert_eq!(denied.captured()[0].method, "GET");
 }
 
 #[tokio::test]
@@ -1629,8 +1652,18 @@ async fn standalone_asset_files_are_rejected_before_upload() {
         let updated = cmd::asset::update(&ctx, 9, Some(file), None, None, None, None, &[]).await;
         assert!(!updated.ok, "{updated:?}");
     }
+    let directory = dir.path().join("not-a-file.png");
+    std::fs::create_dir(&directory).unwrap();
     assert_eq!(
         cmd::asset::preview_create(&missing, "N", "", Some(1), None, None)
+            .await
+            .error
+            .unwrap()
+            .code,
+        "file_unreadable"
+    );
+    assert_eq!(
+        cmd::asset::preview_create(&directory, "N", "", Some(1), None, None)
             .await
             .error
             .unwrap()

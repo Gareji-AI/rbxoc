@@ -89,6 +89,22 @@ pub async fn set(
     let current = match ctx.get_json(&path).await {
         Ok(data) => Some(data),
         Err(err) if err.status == Some(404) && allow_missing => None,
+        Err(err) if err.status == Some(403) => {
+            return failure(
+                "datastore set",
+                ErrorBody {
+                    code: "datastore_read_forbidden",
+                    message: "the value update reads the entry first, and that read was forbidden"
+                        .into(),
+                    status: Some(403),
+                    detail: Some(
+                        "Grant universe-datastores.objects:read as well as universe-datastores.objects:update. The PATCH was not sent."
+                            .into(),
+                    ),
+                    refs: None,
+                },
+            );
+        }
         Err(err) if err.status == Some(404) => {
             return failure(
                 "datastore set",

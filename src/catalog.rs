@@ -363,7 +363,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey],
         scopes: &["universe-datastores.objects:update"],
         mutating: true,
-        note: "Value updates also send attributes, users, and etag. A missing etag fails locally. --create sends allowMissing=true.",
+        note: "Reads the entry first, which also needs universe-datastores.objects:read, then sends value, attributes, users, and etag. A missing etag fails locally. --create sends allowMissing=true.",
     },
     Endpoint {
         id: "datastore.delete",

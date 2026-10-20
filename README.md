@@ -424,8 +424,10 @@ rbxoc datastore set --universe-id 123 --store players --entry player_42 \
 
 Values retain their JSON types: objects, arrays, strings, numbers, booleans,
 and null are not converted to strings. Quote JSON strings explicitly, for
-example `--value '"hello"'`. A value update reads the entry first and sends
-`value`, `attributes`, `users`, and `etag` together. Omitting attributes or
+example `--value '"hello"'`. A value update reads the entry first, so the key also needs
+`universe-datastores.objects:read`, and then sends
+`value`, `attributes`, `users`, and `etag` together. A forbidden read returns
+`datastore_read_forbidden` and does not PATCH. Omitting attributes or
 users on a PATCH would clear them, so a missing etag fails locally with
 `etag_missing` and sends no PATCH. Pass `--attributes` or `--users` to replace
 them, or `--clear-attributes` and `--clear-users` to store `{}` and `[]`.

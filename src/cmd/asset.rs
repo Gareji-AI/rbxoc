@@ -459,18 +459,24 @@ fn content_type_for(asset_type: &str, file: &std::path::Path) -> Option<&'static
 pub(crate) const MAX_ASSET_BYTES: u64 = 20 * 1024 * 1024;
 
 pub(crate) async fn validate_asset_file(file: &std::path::Path) -> Result<u64, ErrorBody> {
-    let size = match tokio::fs::metadata(file).await {
-        Ok(metadata) => metadata.len(),
-        Err(err) => {
-            return Err(ErrorBody {
-                code: "file_unreadable",
-                message: format!("cannot read the file: {}", file.display()),
-                status: None,
-                detail: Some(err.to_string()),
-                refs: None,
-            });
-        }
+    let unreadable = |detail: String| ErrorBody {
+        code: "file_unreadable",
+        message: format!("cannot read the file: {}", file.display()),
+        status: None,
+        detail: Some(detail),
+        refs: None,
     };
+    let handle = tokio::fs::File::open(file)
+        .await
+        .map_err(|err| unreadable(err.to_string()))?;
+    let metadata = handle
+        .metadata()
+        .await
+        .map_err(|err| unreadable(err.to_string()))?;
+    if !metadata.is_file() {
+        return Err(unreadable("path is not a regular file".into()));
+    }
+    let size = metadata.len();
     if size == 0 || size > MAX_ASSET_BYTES {
         return Err(ErrorBody {
             code: "file_size_invalid",
