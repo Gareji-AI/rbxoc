@@ -14,7 +14,7 @@ pub async fn grant(
     ctx: &Ctx,
     asset_ids: &[u64],
     subject_type: &str,
-    subject_id: u64,
+    subject_id: Option<u64>,
     action: &str,
 ) -> Output {
     const COMMAND: &str = "permissions grant";
@@ -56,6 +56,46 @@ pub async fn grant(
             );
         }
     };
+    let subject_id_api = match subject_type_api {
+        "All" => {
+            if subject_id.is_some() {
+                return failure(
+                    COMMAND,
+                    ErrorBody {
+                        code: "subject_id_forbidden",
+                        message: "--subject-id must be omitted when --subject-type is all".into(),
+                        status: None,
+                        detail: Some(
+                            "SubjectType All requires an empty subjectId. Omit --subject-id."
+                                .into(),
+                        ),
+                        refs: None,
+                    },
+                );
+            }
+            String::new()
+        }
+        _ => {
+            let Some(id) = subject_id.filter(|id| *id > 0) else {
+                return failure(
+                    COMMAND,
+                    ErrorBody {
+                        code: "subject_id_required",
+                        message: format!(
+                            "--subject-id must be a positive ID for subject type {subject_type}"
+                        ),
+                        status: None,
+                        detail: Some(
+                            "Use user, group, group-roleset, or universe with a positive ID. Use all with no --subject-id."
+                                .into(),
+                        ),
+                        refs: None,
+                    },
+                );
+            };
+            id.to_string()
+        }
+    };
     let action_api = match action {
         "use" => "Use",
         "edit" => "Edit",
@@ -77,7 +117,7 @@ pub async fn grant(
 
     let body = json!({
         "subjectType": subject_type_api,
-        "subjectId": subject_id.to_string(),
+        "subjectId": subject_id_api.clone(),
         "action": action_api,
         "assetIds": asset_ids,
     });
@@ -123,7 +163,7 @@ pub async fn grant(
             };
             let evidence = json!({
                 "assetIds": asset_ids, "successAssetIds": successful,
-                "subjectType": subject_type, "subjectId": subject_id,
+                "subjectType": subject_type, "subjectId": subject_id_api,
                 "action": action, "response": data,
             });
             if let Some((code, message)) = problem {
@@ -145,8 +185,13 @@ pub async fn grant(
             Output::success(
                 COMMAND,
                 format!(
-                    "Granted {action} on {} asset(s) to {subject_type} {subject_id}",
-                    requested.len()
+                    "Granted {action} on {} asset(s) to {subject_type}{}",
+                    requested.len(),
+                    if subject_id_api.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {subject_id_api}")
+                    }
                 ),
                 Some(evidence),
             )

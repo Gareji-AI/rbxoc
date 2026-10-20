@@ -14,11 +14,22 @@ use crate::ctx::{Ctx, failure, path_segment};
 use crate::output::Output;
 
 /// List game servers for a place version.
-pub async fn list(ctx: &Ctx, universe_id: u64, place_id: u64, version_number: u64) -> Output {
+pub async fn list(
+    ctx: &Ctx,
+    universe_id: u64,
+    place_id: u64,
+    version_number: u64,
+    page_token: Option<&str>,
+) -> Output {
     let path = format!(
         "/server-management/v1/universes/{universe_id}/places/{place_id}/versions/{version_number}/game-servers"
     );
-    match ctx.get_json(&path).await {
+    let data = if let Some(token) = page_token.filter(|token| !token.is_empty()) {
+        ctx.get_json_query(&path, &[("PageToken", token)]).await
+    } else {
+        ctx.get_json(&path).await
+    };
+    match data {
         Ok(data) => {
             let count = data
                 .get("gameServers")
@@ -27,11 +38,30 @@ pub async fn list(ctx: &Ctx, universe_id: u64, place_id: u64, version_number: u6
                 .map(|a| a.len())
                 .unwrap_or(0);
             let job_ids = extract_job_ids(&data);
+            let next_page_token = data
+                .get("nextPageToken")
+                .and_then(|value| value.as_str())
+                .filter(|token| !token.is_empty())
+                .map(str::to_string);
+            let previous_page_token = data
+                .get("previousPageToken")
+                .and_then(|value| value.as_str())
+                .filter(|token| !token.is_empty())
+                .map(str::to_string);
             let mut out = Output::success(
                 "server list",
                 format!("Fetched {count} game servers"),
-                Some(json!({ "count": count, "jobIds": job_ids, "response": data })),
+                Some(json!({
+                    "count": count,
+                    "jobIds": job_ids,
+                    "nextPageToken": next_page_token,
+                    "previousPageToken": previous_page_token,
+                    "response": data,
+                })),
             );
+            if let Some(token) = next_page_token {
+                out = out.with_hints([format!("Pass --page-token {token} to fetch the next page")]);
+            }
             if let Some(first) = job_ids.first() {
                 out = out.with_hints(vec![format!(
                     "Run `rbxoc server logs --universe-id {universe_id} --place-id {place_id} --version {version_number} --job-id {first}` to fetch logs"
@@ -64,6 +94,7 @@ fn extract_job_ids(data: &Value) -> Vec<String> {
 }
 
 /// Fetch logs for a game server.
+/// `--limit` is `MaxPageSize` (1–100). `0` and `--full` follow `nextPageToken`.
 #[allow(clippy::too_many_arguments)]
 pub async fn logs(
     ctx: &Ctx,
@@ -73,7 +104,29 @@ pub async fn logs(
     job_id: &str,
     limit: usize,
     full: bool,
+    page_token: Option<&str>,
 ) -> Output {
+    let follow = full || limit == 0;
+    let page_size: u32 = if follow {
+        100
+    } else if (1..=100).contains(&limit) {
+        limit as u32
+    } else {
+        return failure(
+            "server logs",
+            crate::output::ErrorBody {
+                code: "invalid_limit",
+                message: "--limit must be from 1 to 100, or 0 with --full to read every page"
+                    .into(),
+                status: None,
+                detail: Some(
+                    "MaxPageSize is 1–100. --full follows nextPageToken until the provider stops."
+                        .into(),
+                ),
+                refs: None,
+            },
+        );
+    };
     let encoded_job = match path_segment(job_id) {
         Ok(value) => value,
         Err(err) => return failure("server logs", err),
@@ -81,35 +134,95 @@ pub async fn logs(
     let path = format!(
         "/server-management/v1/universes/{universe_id}/places/{place_id}/versions/{version_number}/game-servers/{encoded_job}/logs"
     );
-    match ctx.get_json(&path).await {
-        Ok(data) => {
-            let entries = extract_log_entries(&data);
-            let total = entries.len();
-            let shown: Vec<&Value> = if full || limit == 0 {
-                entries.iter().collect()
-            } else {
-                entries.iter().take(limit).collect()
-            };
+    let mut token = page_token
+        .filter(|token| !token.is_empty())
+        .map(str::to_string);
+    let mut seen = Vec::new();
+    let mut entries = Vec::new();
+    let mut pages = 0u32;
+    loop {
+        pages += 1;
+        if pages > 500 {
+            return failure(
+                "server logs",
+                crate::output::ErrorBody {
+                    code: "pagination_incomplete",
+                    message: "stopped after 500 log pages".into(),
+                    status: None,
+                    detail: token
+                        .as_ref()
+                        .map(|token| format!("Resume with --page-token {token}")),
+                    refs: None,
+                },
+            );
+        }
+        let page_size_text = page_size.to_string();
+        let mut query = vec![("MaxPageSize", page_size_text.as_str())];
+        if let Some(token) = token.as_deref() {
+            query.push(("PageToken", token));
+        }
+        let data = match ctx.get_json_query(&path, &query).await {
+            Ok(data) => data,
+            Err(err) => return failure("server logs", err),
+        };
+        entries.extend(extract_log_entries(&data));
+        let next = data
+            .get("nextPageToken")
+            .and_then(Value::as_str)
+            .filter(|token| !token.is_empty())
+            .map(str::to_string);
+        if !follow {
+            let shown = entries.len();
             let mut out = Output::success(
                 "server logs",
-                format!("Fetched {total} log entries (showing {})", shown.len()),
+                format!("Fetched {shown} log entries"),
                 Some(json!({
                     "jobId": job_id,
-                    "total": total,
-                    "shown": shown.len(),
-                    "entries": shown,
+                    "total": shown,
+                    "shown": shown,
+                    "entries": entries,
+                    "nextPageToken": next,
                 })),
             );
-            if total > shown.len() {
-                out = out.with_hints(vec![format!(
-                    "The remaining {} entries need --limit 0 or --full",
-                    total - shown.len()
+            if let Some(token) = next {
+                out = out.with_hints([format!(
+                    "Pass --page-token {token} to fetch the next page, or --full to follow every page"
                 )]);
             }
-            out
+            return out;
         }
-        Err(err) => failure("server logs", err),
+        match next {
+            None => break,
+            Some(next) if seen.iter().any(|seen: &String| seen == &next) => {
+                return failure(
+                    "server logs",
+                    crate::output::ErrorBody {
+                        code: "pagination_loop",
+                        message: "the provider repeated a nextPageToken".into(),
+                        status: None,
+                        detail: Some(format!("Repeated token: {next}")),
+                        refs: None,
+                    },
+                );
+            }
+            Some(next) => {
+                seen.push(next.clone());
+                token = Some(next);
+            }
+        }
     }
+    let shown = entries.len();
+    Output::success(
+        "server logs",
+        format!("Fetched {shown} log entries across {pages} page(s)"),
+        Some(json!({
+            "jobId": job_id,
+            "total": shown,
+            "shown": shown,
+            "entries": entries,
+            "nextPageToken": Value::Null,
+        })),
+    )
 }
 
 /// Pull log entries out. The response shape is not fixed, so find the array.

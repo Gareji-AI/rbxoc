@@ -29,7 +29,19 @@ pub async fn get(
     }
 }
 
+/// Caller-supplied replacement for entry metadata.
+/// When every field is unset, the existing attributes and users are read back
+/// and sent with the entry etag so a value write cannot clear them.
+#[derive(Clone, Copy, Default)]
+pub struct ValueUpdate<'a> {
+    pub attributes_json: Option<&'a str>,
+    pub users_json: Option<&'a str>,
+    pub clear_attributes: bool,
+    pub clear_users: bool,
+}
+
 /// Update an entry, creating it when missing only if `allow_missing` is set.
+#[allow(clippy::too_many_arguments)]
 pub async fn set(
     ctx: &Ctx,
     universe_id: u64,
@@ -38,6 +50,7 @@ pub async fn set(
     scope: Option<&str>,
     value: &str,
     allow_missing: bool,
+    update: ValueUpdate<'_>,
 ) -> Output {
     let parsed: Value = match serde_json::from_str(value) {
         Ok(v) => v,
@@ -55,11 +68,108 @@ pub async fn set(
             );
         }
     };
+    let explicit_attributes = match parse_metadata_field(
+        update.attributes_json,
+        update.clear_attributes,
+        "--attributes",
+        true,
+    ) {
+        Ok(value) => value,
+        Err(err) => return failure("datastore set", err),
+    };
+    let explicit_users =
+        match parse_metadata_field(update.users_json, update.clear_users, "--users", false) {
+            Ok(value) => value,
+            Err(err) => return failure("datastore set", err),
+        };
     let path = match entry_path(universe_id, store, scope, entry) {
         Ok(path) => path,
         Err(err) => return failure("datastore set", err),
     };
-    let body = json!({ "value": parsed });
+    let current = match ctx.get_json(&path).await {
+        Ok(data) => Some(data),
+        Err(err) if err.status == Some(404) && allow_missing => None,
+        Err(err) if err.status == Some(404) => {
+            return failure(
+                "datastore set",
+                ErrorBody {
+                    code: "entry_not_found",
+                    message: format!("{store}/{entry} does not exist"),
+                    status: Some(404),
+                    detail: Some(
+                        "Pass --create to create it, or supply the entry that should be updated. A value-only PATCH would clear attributes and users, so it was not sent."
+                            .into(),
+                    ),
+                    refs: None,
+                },
+            );
+        }
+        Err(err) => return failure("datastore set", err),
+    };
+    let body = if let Some(current) = current {
+        let etag = current
+            .get("etag")
+            .and_then(Value::as_str)
+            .filter(|etag| !etag.is_empty());
+        let Some(etag) = etag else {
+            return failure(
+                "datastore set",
+                ErrorBody {
+                    code: "etag_missing",
+                    message: "the entry has no etag, so its attributes and users cannot be preserved safely".into(),
+                    status: None,
+                    detail: Some(
+                        "Refusing to PATCH value alone. Partial updates clear omitted attributes and users."
+                            .into(),
+                    ),
+                    refs: None,
+                },
+            );
+        };
+        let attributes = match &explicit_attributes {
+            Some(value) => value.clone(),
+            None => current
+                .get("attributes")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        };
+        let users = match &explicit_users {
+            Some(value) => value.clone(),
+            None => current
+                .get("users")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .unwrap_or_else(|| json!([])),
+        };
+        if !attributes.is_object() || !users.is_array() {
+            return failure(
+                "datastore set",
+                ErrorBody {
+                    code: "invalid_entry_metadata",
+                    message: "existing attributes must be an object and users must be an array".into(),
+                    status: None,
+                    detail: Some("Pass --attributes and --users explicitly, or --clear-attributes and --clear-users.".into()),
+                    refs: None,
+                },
+            );
+        }
+        json!({
+            "value": parsed,
+            "attributes": attributes,
+            "users": users,
+            "etag": etag,
+        })
+    } else {
+        let mut body = json!({ "value": parsed });
+        if let Some(attributes) = explicit_attributes {
+            body["attributes"] = attributes;
+        }
+        if let Some(users) = explicit_users {
+            body["users"] = users;
+        }
+        body
+    };
     let mut req = ctx.client.patch(ctx.url(&path)).json(&body);
     if allow_missing {
         req = req.query(&[("allowMissing", "true")]);
@@ -107,27 +217,95 @@ pub async fn delete(
     }
 }
 
+fn parse_metadata_field(
+    json_text: Option<&str>,
+    clear: bool,
+    flag: &str,
+    object: bool,
+) -> Result<Option<Value>, ErrorBody> {
+    if json_text.is_some() && clear {
+        return Err(ErrorBody {
+            code: "metadata_conflict",
+            message: format!("{flag} cannot be combined with its clear flag"),
+            status: None,
+            detail: None,
+            refs: None,
+        });
+    }
+    if clear {
+        return Ok(Some(if object { json!({}) } else { json!([]) }));
+    }
+    let Some(json_text) = json_text else {
+        return Ok(None);
+    };
+    let parsed = serde_json::from_str::<Value>(json_text).map_err(|err| ErrorBody {
+        code: "invalid_value",
+        message: format!("{flag} is not valid JSON: {err}"),
+        status: None,
+        detail: Some(if object {
+            "Pass a JSON object, or --clear-attributes to replace attributes with {}.".into()
+        } else {
+            "Pass a JSON array of users/{id} paths, or --clear-users to replace users with []."
+                .into()
+        }),
+        refs: None,
+    })?;
+    let valid = if object {
+        parsed.is_object()
+    } else {
+        parsed.is_array()
+    };
+    if !valid {
+        return Err(ErrorBody {
+            code: "invalid_value",
+            message: format!(
+                "{flag} must be a JSON {}",
+                if object { "object" } else { "array" }
+            ),
+            status: None,
+            detail: None,
+            refs: None,
+        });
+    }
+    Ok(Some(parsed))
+}
+
 /// List entries.
-pub async fn list(ctx: &Ctx, universe_id: u64, store: &str, max_page_size: u32) -> Output {
+pub async fn list(
+    ctx: &Ctx,
+    universe_id: u64,
+    store: &str,
+    max_page_size: u32,
+    page_token: Option<&str>,
+) -> Output {
     let encoded_store = match path_segment(store) {
         Ok(value) => value,
         Err(err) => return failure("datastore list", err),
     };
-    let path = format!(
-        "/cloud/v2/universes/{universe_id}/data-stores/{encoded_store}/entries?maxPageSize={max_page_size}"
-    );
-    match ctx.get_json(&path).await {
+    let path = format!("/cloud/v2/universes/{universe_id}/data-stores/{encoded_store}/entries");
+    let page_size = max_page_size.to_string();
+    let mut query = vec![("maxPageSize", page_size.as_str())];
+    if let Some(token) = page_token.filter(|token| !token.is_empty()) {
+        query.push(("pageToken", token));
+    }
+    match ctx.get_json_query(&path, &query).await {
         Ok(data) => {
             let count = data
                 .get("dataStoreEntries")
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            Output::success(
+            let mut out = Output::success(
                 "datastore list",
                 format!("Fetched {count} entries from {store}"),
-                Some(data),
-            )
+                Some(data.clone()),
+            );
+            if let Some(token) = data.get("nextPageToken").and_then(|value| value.as_str())
+                && !token.is_empty()
+            {
+                out = out.with_hints([format!("Pass --page-token {token} to fetch the next page")]);
+            }
+            out
         }
         Err(err) => failure("datastore list", err),
     }

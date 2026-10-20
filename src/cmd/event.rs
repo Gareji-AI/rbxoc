@@ -14,9 +14,23 @@ fn events_path(universe_id: u64) -> String {
 }
 
 /// List game events under a universe.
-pub async fn list(ctx: &Ctx, universe_id: u64, page_size: u32) -> Output {
-    let path = format!("{}?pageSize={page_size}", events_path(universe_id));
-    match ctx.get_json(&path).await {
+pub async fn list(
+    ctx: &Ctx,
+    universe_id: u64,
+    page_size: u32,
+    page_token: Option<&str>,
+    reverse: bool,
+) -> Output {
+    let path = events_path(universe_id);
+    let page_size_text = page_size.to_string();
+    let mut query = vec![("pageSize", page_size_text.as_str())];
+    if let Some(token) = page_token.filter(|token| !token.is_empty()) {
+        query.push(("pageToken", token));
+    }
+    if reverse {
+        query.push(("reverse", "true"));
+    }
+    match ctx.get_json_query(&path, &query).await {
         Ok(data) => {
             let count = data
                 .get("gameEvents")
@@ -24,11 +38,26 @@ pub async fn list(ctx: &Ctx, universe_id: u64, page_size: u32) -> Output {
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            Output::success(
+            let mut out = Output::success(
                 "event list",
                 format!("Fetched {count} game events"),
-                Some(data),
-            )
+                Some(data.clone()),
+            );
+            if let Some(token) = data.get("nextPageToken").and_then(|value| value.as_str())
+                && !token.is_empty()
+            {
+                out = out.with_hints([format!("Pass --page-token {token} to fetch the next page")]);
+            }
+            if let Some(token) = data
+                .get("previousPageToken")
+                .and_then(|value| value.as_str())
+                && !token.is_empty()
+            {
+                out = out.with_hints([format!(
+                    "Pass --page-token {token} --reverse to fetch the previous page"
+                )]);
+            }
+            out
         }
         Err(err) => failure("event list", err),
     }
@@ -47,7 +76,7 @@ pub async fn get(ctx: &Ctx, event_id: u64) -> Output {
 pub async fn create(ctx: &Ctx, universe_id: u64, document: &str) -> Output {
     let body: Value = match serde_json::from_str(document) {
         Ok(v) => v,
-        Err(e) => return invalid_document(e),
+        Err(e) => return invalid_document("event create", e),
     };
     let path = events_path(universe_id);
     match ctx.send(ctx.client.post(ctx.url(&path)).json(&body)).await {
@@ -60,7 +89,7 @@ pub async fn create(ctx: &Ctx, universe_id: u64, document: &str) -> Output {
 pub async fn update(ctx: &Ctx, event_id: u64, document: &str) -> Output {
     let body: Value = match serde_json::from_str(document) {
         Ok(v) => v,
-        Err(e) => return invalid_document(e),
+        Err(e) => return invalid_document("event update", e),
     };
     let path = format!("/virtual-events/v3/game-events/{event_id}");
     match ctx.send(ctx.client.patch(ctx.url(&path)).json(&body)).await {
@@ -83,9 +112,9 @@ pub async fn delete(ctx: &Ctx, event_id: u64) -> Output {
     }
 }
 
-fn invalid_document(e: serde_json::Error) -> Output {
+fn invalid_document(command: &str, e: serde_json::Error) -> Output {
     failure(
-        "event",
+        command,
         ErrorBody {
             code: "invalid_document",
             message: format!("--document is not valid JSON: {e}"),

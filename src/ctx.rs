@@ -255,6 +255,11 @@ pub fn failure(command: &str, error: ErrorBody) -> Output {
             "auth_missing" => {
                 hints.push("Set RBXOC_API_KEY".into());
                 hints.push("Run `rbxoc auth check` to inspect the credential state".into());
+                if command != "auth" && command != "auth check" {
+                    hints.push(format!(
+                        "Run `rbxoc {command} --help` for the command that failed"
+                    ));
+                }
             }
             "invalid_query" | "invalid_value" | "invalid_document" | "invalid_message" => {
                 hints.push(format!("Pass valid JSON for the input; run `rbxoc {command} --help` for argument details"));

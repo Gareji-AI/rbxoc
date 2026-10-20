@@ -251,3 +251,225 @@ fn update_eligibility_and_dry_run_are_credential_free() {
     );
     assert!(!dir.path().join("generated").exists());
 }
+
+#[test]
+fn credential_and_document_failures_keep_the_leaf_command() {
+    let missing = run(&[
+        "datastore",
+        "get",
+        "--universe-id",
+        "1",
+        "--store",
+        "test",
+        "--entry",
+        "player",
+    ]);
+    assert_eq!(missing.status.code(), Some(2));
+    let json: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(json["command"], "datastore get");
+    assert_eq!(json["error"]["code"], "auth_missing");
+    assert!(json["hints"].as_array().unwrap().iter().any(|hint| {
+        hint.as_str()
+            .unwrap()
+            .contains("rbxoc datastore get --help")
+    }));
+    let text = String::from_utf8(
+        run(&[
+            "--format",
+            "text",
+            "datastore",
+            "get",
+            "--universe-id",
+            "1",
+            "--store",
+            "test",
+            "--entry",
+            "player",
+        ])
+        .stdout,
+    )
+    .unwrap();
+    assert!(text.contains("datastore get"));
+    assert!(text.contains("rbxoc datastore get --help"));
+
+    let auth = run(&["auth", "check"]);
+    let json: serde_json::Value = serde_json::from_slice(&auth.stdout).unwrap();
+    assert_eq!(json["command"], "auth check");
+
+    for (args, command) in [
+        (
+            vec![
+                "--api-key",
+                "fixture-not-a-real-key",
+                "config",
+                "patch-draft",
+                "--universe-id",
+                "1",
+                "--repository",
+                "InExperienceConfig",
+                "--document",
+                "{",
+            ],
+            "config patch-draft",
+        ),
+        (
+            vec![
+                "--api-key",
+                "fixture-not-a-real-key",
+                "event",
+                "create",
+                "--universe-id",
+                "1",
+                "--document",
+                "{",
+            ],
+            "event create",
+        ),
+        (
+            vec![
+                "--api-key",
+                "fixture-not-a-real-key",
+                "analytics",
+                "alerts",
+                "create",
+                "--universe-id",
+                "1",
+                "--document",
+                "{",
+            ],
+            "analytics alerts create",
+        ),
+    ] {
+        let out = run(&args);
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["command"], command, "{json}");
+        assert_eq!(json["error"]["code"], "invalid_document");
+        assert!(json["hints"].as_array().unwrap().iter().any(|hint| {
+            hint.as_str()
+                .unwrap()
+                .contains(&format!("rbxoc {command} --help"))
+        }));
+        let mut text_args = vec!["--format", "text"];
+        text_args.extend(args);
+        let text = String::from_utf8(run(&text_args).stdout).unwrap();
+        assert!(text.contains(command), "{text}");
+        assert!(text.contains(&format!("rbxoc {command} --help")), "{text}");
+    }
+}
+
+#[test]
+fn closed_enums_fail_before_authentication() {
+    let repository = run(&[
+        "config",
+        "get",
+        "--universe-id",
+        "1",
+        "--repository",
+        "game",
+    ]);
+    let json: serde_json::Value = serde_json::from_slice(&repository.stdout).unwrap();
+    assert_eq!(json["command"], "config get");
+    assert_eq!(json["error"]["code"], "invalid_repository");
+    assert!(
+        json["hints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hint| { hint.as_str().unwrap().contains("rbxoc config get --help") })
+    );
+
+    let query = run(&[
+        "analytics",
+        "metrics",
+        "--universe-id",
+        "1",
+        "--query",
+        r#"{"metric":"DailyActiveUsers","granularity":"P1D","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
+    ]);
+    let json: serde_json::Value = serde_json::from_slice(&query.stdout).unwrap();
+    assert_eq!(json["command"], "analytics metrics");
+    assert_eq!(json["error"]["code"], "invalid_query");
+}
+
+#[test]
+fn asset_size_preflight_is_credential_free() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing.png");
+    let empty = dir.path().join("empty.fbx");
+    std::fs::write(&empty, b"").unwrap();
+    let over = dir.path().join("over.png");
+    std::fs::File::create(&over)
+        .unwrap()
+        .set_len(20 * 1024 * 1024 + 1)
+        .unwrap();
+    let boundary = dir.path().join("boundary.png");
+    std::fs::File::create(&boundary)
+        .unwrap()
+        .set_len(20 * 1024 * 1024)
+        .unwrap();
+
+    for (path, code, dry_run) in [
+        (missing.as_path(), "file_unreadable", true),
+        (empty.as_path(), "file_size_invalid", true),
+        (over.as_path(), "file_size_invalid", false),
+    ] {
+        let mut args = vec![
+            "asset",
+            "create",
+            "--file",
+            path.to_str().unwrap(),
+            "--display-name",
+            "Fixture",
+            "--user-id",
+            "1",
+        ];
+        if dry_run {
+            args.push("--dry-run");
+        }
+        let out = run(&args);
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["error"]["code"], code, "{json}");
+        assert!(!json["ok"].as_bool().unwrap());
+    }
+
+    let out = run(&[
+        "asset",
+        "create",
+        "--file",
+        boundary.to_str().unwrap(),
+        "--display-name",
+        "Fixture",
+        "--user-id",
+        "1",
+        "--dry-run",
+    ]);
+    assert!(out.status.success(), "{out:?}");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["data"]["bytes"], 20 * 1024 * 1024);
+}
+
+#[test]
+fn readme_examples_match_the_openapi_excerpt() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let excerpt: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(root.join("tests/fixtures/openapi-example-contract.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    for snippet in excerpt["rejectedReadmeSnippets"].as_array().unwrap() {
+        let snippet = snippet.as_str().unwrap();
+        assert!(
+            !readme.contains(snippet),
+            "{snippet} is still in the README"
+        );
+    }
+    assert!(readme.contains(excerpt["readmeQuery"].as_str().unwrap()));
+    assert!(readme.contains(excerpt["readmeDraft"].as_str().unwrap()));
+    for name in excerpt["repositories"].as_array().unwrap() {
+        assert!(readme.contains(name.as_str().unwrap()));
+    }
+    for name in excerpt["granularities"].as_array().unwrap() {
+        assert!(readme.contains(name.as_str().unwrap()));
+    }
+}

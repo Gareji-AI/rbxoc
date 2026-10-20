@@ -21,16 +21,20 @@ pub async fn list(
     scope: &str,
     ascending: bool,
     page_size: u32,
+    page_token: Option<&str>,
 ) -> Output {
     let path = match entries_path(universe_id, store, scope) {
         Ok(path) => path,
         Err(err) => return failure("ordered-datastore list", err),
     };
     let page_size = page_size.to_string();
-    let query = [
+    let mut query = vec![
         ("order_by", if ascending { "asc" } else { "desc" }),
         ("max_page_size", page_size.as_str()),
     ];
+    if let Some(token) = page_token.filter(|token| !token.is_empty()) {
+        query.push(("page_token", token));
+    }
     match ctx.get_json_query(&path, &query).await {
         Ok(data) => {
             let count = data
@@ -39,11 +43,17 @@ pub async fn list(
                 .map(|a| a.len())
                 .unwrap_or(0);
             let order = if ascending { "ascending" } else { "descending" };
-            Output::success(
+            let mut out = Output::success(
                 "ordered-datastore list",
                 format!("Fetched {count} entries ({order})"),
-                Some(data),
-            )
+                Some(data.clone()),
+            );
+            if let Some(token) = data.get("nextPageToken").and_then(|value| value.as_str())
+                && !token.is_empty()
+            {
+                out = out.with_hints([format!("Pass --page-token {token} to fetch the next page")]);
+            }
+            out
         }
         Err(err) => failure("ordered-datastore list", err),
     }

@@ -50,9 +50,14 @@ impl MonetizationKind {
     }
 }
 
-async fn list_monetization(ctx: &Ctx, kind: MonetizationKind, universe_id: u64) -> Output {
+async fn list_monetization(
+    ctx: &Ctx,
+    kind: MonetizationKind,
+    universe_id: u64,
+    page_token: Option<&str>,
+) -> Output {
     let (path, command, array_key, label) = kind.list_endpoint(universe_id);
-    list_collection(ctx, command, &path, array_key, label).await
+    list_collection(ctx, command, &path, array_key, label, page_token).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -70,8 +75,8 @@ async fn create_monetization(
 }
 
 /// List Game Passes.
-pub async fn gamepass_list(ctx: &Ctx, universe_id: u64) -> Output {
-    list_monetization(ctx, MonetizationKind::GamePass, universe_id).await
+pub async fn gamepass_list(ctx: &Ctx, universe_id: u64, page_token: Option<&str>) -> Output {
+    list_monetization(ctx, MonetizationKind::GamePass, universe_id, page_token).await
 }
 
 /// Create a Game Pass.
@@ -105,10 +110,14 @@ pub async fn gamepass_update(
     name: Option<&str>,
     description: Option<&str>,
     price: Option<u64>,
+    is_for_sale: Option<bool>,
     image: Option<&std::path::PathBuf>,
 ) -> Output {
     let mut fields: Vec<(&'static str, String)> = Vec::new();
     append_optional_product_fields(&mut fields, name, description, price);
+    if let Some(for_sale) = is_for_sale {
+        fields.push(("isForSale", for_sale.to_string()));
+    }
     if fields.is_empty() && image.is_none() {
         return failure(
             "gamepass update",
@@ -116,7 +125,10 @@ pub async fn gamepass_update(
                 code: "nothing_to_update",
                 message: "no fields to update".into(),
                 status: None,
-                detail: Some("Pass --name, --description, --price, or --image".into()),
+                detail: Some(
+                    "Pass --name, --description, --price, --is-for-sale, or --image. --price does not change sale state."
+                        .into(),
+                ),
 
                 refs: None,
             },
@@ -127,8 +139,8 @@ pub async fn gamepass_update(
 }
 
 /// List Developer Products.
-pub async fn devproduct_list(ctx: &Ctx, universe_id: u64) -> Output {
-    list_monetization(ctx, MonetizationKind::DevProduct, universe_id).await
+pub async fn devproduct_list(ctx: &Ctx, universe_id: u64, page_token: Option<&str>) -> Output {
+    list_monetization(ctx, MonetizationKind::DevProduct, universe_id, page_token).await
 }
 
 /// Create a Developer Product.
@@ -158,15 +170,31 @@ async fn list_collection(
     path: &str,
     array_key: &str,
     label: &str,
+    page_token: Option<&str>,
 ) -> Output {
-    match ctx.get_json(path).await {
+    let data = if let Some(token) = page_token.filter(|token| !token.is_empty()) {
+        ctx.get_json_query(path, &[("pageToken", token)]).await
+    } else {
+        ctx.get_json(path).await
+    };
+    match data {
         Ok(data) => {
             let count = data
                 .get(array_key)
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
-            Output::success(command, format!("Fetched {count} {label}"), Some(data))
+            let mut out = Output::success(
+                command,
+                format!("Fetched {count} {label}"),
+                Some(data.clone()),
+            );
+            if let Some(token) = data.get("nextPageToken").and_then(|v| v.as_str())
+                && !token.is_empty()
+            {
+                out = out.with_hints([format!("Pass --page-token {token} to fetch the next page")]);
+            }
+            out
         }
         Err(err) => failure(command, err),
     }
@@ -182,7 +210,6 @@ fn append_description_and_price(
     }
     if let Some(p) = price {
         fields.push(("price", p.to_string()));
-        fields.push(("isForSale", "true".to_string()));
     }
 }
 
@@ -193,6 +220,11 @@ fn create_product_fields(
 ) -> Vec<(&'static str, String)> {
     let mut fields = vec![("name", name.to_string())];
     append_description_and_price(&mut fields, description, price);
+    // Create is a new product. A supplied price also puts it on sale.
+    // Updates do not inherit this coupling; sale state is an explicit field.
+    if price.is_some() {
+        fields.push(("isForSale", "true".to_string()));
+    }
     fields
 }
 
