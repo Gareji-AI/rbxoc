@@ -189,4 +189,27 @@ jobs:
         run: |
           set -euo pipefail
           gh release view "$RELEASE_TAG" --repo "$REPOSITORY"
-          gh release upload "$RELEASE_TAG" dist/* --repo "$REPOSITORY"
+
+          # Upload only assets the release does not already have. A backfill
+          # exists precisely to add one new archive to a release that already
+          # holds the others, and `gh release upload` refuses the whole batch
+          # when any single name already exists.
+          existing="$(gh release view "$RELEASE_TAG" --repo "$REPOSITORY" --json assets --jq '.assets[].name')"
+
+          to_upload=()
+          for file in dist/*; do
+            name="$(basename "$file")"
+            if grep -Fxq "$name" <<< "$existing"; then
+              echo "already present, skipping: $name"
+            else
+              echo "uploading: $name"
+              to_upload+=("$file")
+            fi
+          done
+
+          if [ "${#to_upload[@]}" -eq 0 ]; then
+            echo "nothing to upload; the release already has every asset"
+            exit 0
+          fi
+
+          gh release upload "$RELEASE_TAG" "${to_upload[@]}" --repo "$REPOSITORY"
