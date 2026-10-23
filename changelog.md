@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.6.0
+
+- Redirects are never followed. A `307`/`308` can no longer replay a mutation,
+  and `x-api-key` is never forwarded to a redirect target. A refused redirect
+  returns `unexpected_redirect` with actionable hints.
+- HTTP 408 on a mutation is treated as an uncertain outcome: the status is
+  preserved, no automatic replay happens, and the hints ask for reconciliation
+  rather than a blind retry. Safe reads keep their bounded retries.
+- A read-only POST query is no longer classified as an unknown mutation.
+  `analytics metrics` transient failures return `read_outcome_unknown` with
+  truthful retry guidance while staying sent-at-most-once.
+- New `place update` changes a place's `displayName`, `description` and
+  `serverSize` with an `updateMask` built only from the supplied flags, plus a
+  credential-free `--dry-run`. The root place is the documented write path
+  because `Universe.displayName` and `Universe.description` are read-only.
+- `place publish` rejects `.rbxl`/`.rbxlx` files above the documented 10 MiB
+  `x-roblox-size-limit` locally, before any request is built. A file exactly at
+  the limit stays eligible.
+- `thumbnail delete` parses the documented per-`thumbnailId` boolean map. Only
+  an explicit `true` counts as removed, so a mixed result reports
+  `data.partial` and a result with no confirmed deletion fails as
+  `thumbnail_delete_failed`. The provider receipt is preserved in `data` either
+  way.
+- `server list` exposes the provider's partial-result signals as `data.partial`
+  and `data.missingSources` instead of summarizing an incomplete page as a
+  complete success.
+- The analytics alert family tracks the current contract path
+  `/resource/{resourceType}/id/{resourceId}/alerts`. The OpenAPI auth fixture is
+  refreshed (2026-10-23, sha256 `bcfdc206...`), and the catalog contract test
+  fails when an implemented route disappears from the snapshot or when an
+  analytics operation `kind` the CLI accepts has no documented route.
+
 ## 0.5.0
 
 - DataStore value updates read the current entry and send `value`, `attributes`,
