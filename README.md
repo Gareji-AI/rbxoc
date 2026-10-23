@@ -172,13 +172,53 @@ envelope on **stdout**, even with `--format text`. Diagnostics are in
 
 ## Install
 
+### Pin the version with Rokit (recommended for Roblox projects)
+
+[Rokit](https://github.com/rojo-rbx/rokit) installs a prebuilt binary from the
+GitHub Release, so there is no Rust toolchain and no native C build environment
+to set up. Pin it next to `rojo`, `stylua`, and `selene` in the same file:
+
+```toml
+# rokit.toml
+[tools]
+rojo = "rojo-rbx/rojo@7.7.1"
+rbxoc = "eiei114/rbxoc@0.6.0"
+```
+
+```bash
+rokit install
+rbxoc --version
+```
+
+Rokit's `aftman.toml` and `foreman.toml` compatibility also works, so an
+existing project does not have to migrate first. Rokit requires an **exact**
+version; a requirement like `^0.6` is rejected.
+
+> [!warning] Intel Macs
+> There is no `macos-x86_64` archive. Rokit 1.2.0 checks the operating system
+> of the downloaded binary but **not** its architecture, so on an Intel Mac
+> `rokit install` reports success and `rbxoc --version` then fails to execute.
+> Use the source build below instead, or skip `rbxoc` in this manifest on
+> Intel Macs (Rokit keeps working for the other tools).
+
+Releases carry `windows-x86_64`, `linux-x86_64`, and `macos-aarch64` archives
+plus a `.sha256` sidecar. **Rokit 1.2.0 does not read the sidecar.** Verify it
+yourself if you need integrity beyond a pinned version, a GitHub Release, and
+Rokit's own trust prompt:
+
+```bash
+sha256sum -c rbxoc-0.6.0-linux-x86_64.tar.gz.sha256
+```
+
 ### From crates.io
 
 ```bash
 cargo install rbxoc
 ```
 
-This is the quickest path. It builds the released version from source.
+This builds from source, so it needs Rust **1.99** or newer. It is the only
+install path for architectures without a prebuilt archive (for example
+`macos-x86_64`).
 
 ### From a checkout
 
