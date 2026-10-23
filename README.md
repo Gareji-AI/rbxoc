@@ -194,17 +194,12 @@ Rokit's `aftman.toml` and `foreman.toml` compatibility also works, so an
 existing project does not have to migrate first. Rokit requires an **exact**
 version; a requirement like `^0.6` is rejected.
 
-> [!warning] Intel Macs
-> There is no `macos-x86_64` archive. Rokit 1.2.0 checks the operating system
-> of the downloaded binary but **not** its architecture, so on an Intel Mac
-> `rokit install` reports success and `rbxoc --version` then fails to execute.
-> Use the source build below instead, or skip `rbxoc` in this manifest on
-> Intel Macs (Rokit keeps working for the other tools).
-
 Releases carry `windows-x86_64`, `linux-x86_64`, and `macos-aarch64` archives
-plus a `.sha256` sidecar. **Rokit 1.2.0 does not read the sidecar.** Verify it
-yourself if you need integrity beyond a pinned version, a GitHub Release, and
-Rokit's own trust prompt:
+plus a `.sha256` sidecar. `macos-x86_64` was added after `0.6.0`, so it is
+present on newer releases and is being backfilled onto `0.6.0`; until that
+lands, Intel Macs on exactly `0.6.0` need the source build below. **Rokit 1.2.0
+does not read the sidecar.** Verify it yourself if you need integrity beyond a
+pinned version, a GitHub Release, and Rokit's own trust prompt:
 
 ```bash
 sha256sum -c rbxoc-0.6.0-linux-x86_64.tar.gz.sha256
@@ -216,9 +211,8 @@ sha256sum -c rbxoc-0.6.0-linux-x86_64.tar.gz.sha256
 cargo install rbxoc
 ```
 
-This builds from source, so it needs Rust **1.99** or newer. It is the only
-install path for architectures without a prebuilt archive (for example
-`macos-x86_64`).
+This builds from source, so it needs Rust **1.99** or newer. It is the fallback
+for architectures without a prebuilt archive, such as Linux arm64.
 
 ### From a checkout
 
