@@ -12,6 +12,7 @@ APPROVED = {
     ("windows", "x86_64"): ("rbxoc.exe", "zip"),
     ("linux", "x86_64"): ("rbxoc", "tar.gz"),
     ("macos", "aarch64"): ("rbxoc", "tar.gz"),
+    ("macos", "x86_64"): ("rbxoc", "tar.gz"),
 }
 LICENSES = ("LICENSE", "license-apache")
 
