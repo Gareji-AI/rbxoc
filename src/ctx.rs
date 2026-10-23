@@ -67,6 +67,25 @@ impl Ctx {
     /// Retry only safe HTTP methods (GET, HEAD, OPTIONS, TRACE). All other
     /// methods are sent once: a cloneable body does not imply idempotency.
     pub async fn send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, ErrorBody> {
+        self.send_classified(req, RequestIntent::Mutating).await
+    }
+
+    /// A read-only query that uses a non-safe HTTP method (`analytics metrics`
+    /// posts a query). It is still sent at most once, but a transient failure
+    /// is not an unknown mutation: nothing was written, so the caller may
+    /// safely repeat the read.
+    pub async fn send_read_only(
+        &self,
+        req: reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response, ErrorBody> {
+        self.send_classified(req, RequestIntent::ReadOnly).await
+    }
+
+    async fn send_classified(
+        &self,
+        req: reqwest::RequestBuilder,
+        intent: RequestIntent,
+    ) -> Result<reqwest::Response, ErrorBody> {
         let req = self.apply_auth(req).build().map_err(|err| ErrorBody {
             code: "invalid_request",
             message: format!("cannot build the request: {err}"),
@@ -76,9 +95,23 @@ impl Ctx {
         })?;
         if !req.method().is_safe() {
             return match self.client.execute(req).await {
+                Ok(resp) if resp.status().is_redirection() => Err(redirect_refused(resp.status())),
+                Ok(resp) if resp.status().as_u16() == 408 => {
+                    let original = auth::error_from_response(resp).await;
+                    Err(uncertain_outcome(
+                        intent,
+                        original.status,
+                        format!(
+                            "{}\n{}",
+                            original.message,
+                            original.detail.unwrap_or_default()
+                        ),
+                    ))
+                }
                 Ok(resp) if resp.status().as_u16() == 429 || resp.status().is_server_error() => {
                     let original = auth::error_from_response(resp).await;
-                    Err(unknown_mutation_error(
+                    Err(uncertain_outcome(
+                        intent,
                         original.status,
                         format!(
                             "{}\n{}",
@@ -88,7 +121,7 @@ impl Ctx {
                     ))
                 }
                 Ok(resp) => Ok(resp),
-                Err(err) => Err(unknown_mutation_error(None, err.to_string())),
+                Err(err) => Err(uncertain_outcome(intent, None, err.to_string())),
             };
         }
         let mut attempt = 0u32;
@@ -111,6 +144,9 @@ impl Ctx {
             };
             match self.client.execute(this).await {
                 Ok(resp) => {
+                    if resp.status().is_redirection() {
+                        return Err(redirect_refused(resp.status()));
+                    }
                     let status = resp.status().as_u16();
                     let retryable = status == 429 || status >= 500;
                     if retryable && attempt < self.retry {
@@ -156,7 +192,7 @@ impl Ctx {
         &self,
         req: reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, ErrorBody> {
-        self.apply_auth(req).send().await.map_err(|err| ErrorBody {
+        let resp = self.apply_auth(req).send().await.map_err(|err| ErrorBody {
             code: "network_error",
             message: format!("cannot send the request: {err}"),
             status: None,
@@ -165,7 +201,11 @@ impl Ctx {
                     .into(),
             ),
             refs: None,
-        })
+        })?;
+        if resp.status().is_redirection() {
+            return Err(redirect_refused(resp.status()));
+        }
+        Ok(resp)
     }
 
     /// GET with query values encoded independently of the route.
@@ -226,6 +266,54 @@ fn unknown_mutation_error(status: Option<u16>, detail: String) -> ErrorBody {
     }
 }
 
+/// Whether a request that uses a non-safe HTTP method can write anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RequestIntent {
+    /// May change provider state. A transient failure is an unknown mutation.
+    Mutating,
+    /// Reads through a non-safe method. Sent once, but nothing was written.
+    ReadOnly,
+}
+
+/// Transient failure for a request that was already sent at most once.
+fn uncertain_outcome(intent: RequestIntent, status: Option<u16>, detail: String) -> ErrorBody {
+    match intent {
+        RequestIntent::Mutating => unknown_mutation_error(status, detail),
+        RequestIntent::ReadOnly => ErrorBody {
+            code: "read_outcome_unknown",
+            message: match status {
+                Some(status) => {
+                    format!("Read-only query returned HTTP {status}; it was sent at most once")
+                }
+                None => "Read-only query did not complete; it was sent at most once".into(),
+            },
+            status,
+            detail: Some(format!(
+                "{detail}\nThis request does not mutate provider state, so repeating the read is safe"
+            )),
+            refs: None,
+        },
+    }
+}
+
+/// A 3xx response is never followed: another request would replay the mutation
+/// and reqwest would forward `x-api-key` to the redirect target.
+fn redirect_refused(status: reqwest::StatusCode) -> ErrorBody {
+    ErrorBody {
+        code: "unexpected_redirect",
+        message: format!(
+            "Open Cloud answered with HTTP {} instead of a final response",
+            status.as_u16()
+        ),
+        status: Some(status.as_u16()),
+        detail: Some(
+            "rbxoc never follows redirects: replaying the request could repeat a mutation and would forward the API key to another origin"
+                .into(),
+        ),
+        refs: None,
+    }
+}
+
 /// Retry wait. Respects `Retry-After`.
 fn backoff_ms(attempt: u32, headers: &reqwest::header::HeaderMap) -> u64 {
     if let Some(v) = headers.get("retry-after").and_then(|v| v.to_str().ok())
@@ -247,6 +335,12 @@ pub fn failure(command: &str, error: ErrorBody) -> Output {
         // Never pair an uncertain mutation with the generic 429/5xx retry advice.
         hints.push("Inspect the target resource, operation receipt, or delivery logs to reconcile whether the mutation took effect".into());
         hints.push("Do not repeat the mutation until its previous outcome is confirmed; automatic retries are disabled for mutations".into());
+    } else if error.code == "unexpected_redirect" {
+        hints.push("Check that the Open Cloud host is the documented one; rbxoc refuses redirects so it never replays a mutation or forwards an API key to another origin".into());
+        hints.push("Inspect the target state before retrying; the request that produced this redirect was not resent".into());
+    } else if error.code == "read_outcome_unknown" {
+        hints.push("This was a read-only query: nothing was written, so running the same read again is safe".into());
+        hints.push("Automatic retries stay disabled for non-safe HTTP methods even when the operation is read-only".into());
     } else {
         if let Some(status) = error.status {
             hints.extend(auth::hints_for_status(status));

@@ -215,6 +215,94 @@ fn catalog_auth_and_permissions_match_official_operations() {
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
 
+/// #54: `implemented: true` must mean "this exact method and route is in the
+/// current official document". A route that silently disappears from the
+/// provider contract must fail here instead of staying advertised.
+#[test]
+fn every_implemented_route_exists_in_the_current_official_snapshot() {
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/openapi-auth-contract.json")).unwrap();
+    let mut routes = BTreeSet::new();
+    for operation in snapshot["operations"].as_array().unwrap() {
+        routes.insert(segments(operation["path"].as_str().unwrap()));
+    }
+    let mut errors = Vec::new();
+    for entry in catalog::ENDPOINTS
+        .iter()
+        .filter(|entry| entry.implemented && entry.method != "LOCAL")
+    {
+        let wanted = segments(entry.path);
+        // A catalog parameter may stand for a documented literal when the
+        // provider lists several variants: `operations/{kind}/{id}` covers
+        // both `operations/metrics/{id}` and `operations/dimension-values/{id}`.
+        // Literal segments must still match, so a removed or renamed route
+        // cannot be hidden.
+        let matched = routes.iter().any(|route| {
+            route.len() == wanted.len()
+                && route
+                    .iter()
+                    .zip(&wanted)
+                    .all(|(actual, wanted)| *wanted == "*" || actual == wanted)
+        });
+        if !matched {
+            errors.push(format!(
+                "{}: {} {} is not in the current official OpenAPI snapshot",
+                entry.id, entry.method, entry.path
+            ));
+        }
+    }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+/// Split a path into segments, replacing every `{parameter}` with `*`.
+fn segments(path: &str) -> Vec<String> {
+    path.split('/')
+        .map(|segment| {
+            if segment.starts_with('{') && segment.ends_with('}') {
+                "*".to_string()
+            } else {
+                segment.to_string()
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn a_route_removed_from_the_official_contract_is_detected() {
+    // Remove the alert family from the snapshot the way the provider would.
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/openapi-auth-contract.json")).unwrap();
+    let operations = snapshot["operations"].as_array_mut().unwrap();
+    operations.retain(|operation| {
+        !operation["path"]
+            .as_str()
+            .unwrap()
+            .contains("analytics-alert-control-plane")
+    });
+    let remaining: Vec<Vec<String>> = operations
+        .iter()
+        .map(|operation| segments(operation["path"].as_str().unwrap()))
+        .collect();
+    let advertised = catalog::ENDPOINTS
+        .iter()
+        .filter(|entry| entry.id.starts_with("analytics.alert."))
+        .filter(|entry| {
+            let wanted = segments(entry.path);
+            !remaining.iter().any(|route| {
+                route.len() == wanted.len()
+                    && route
+                        .iter()
+                        .zip(&wanted)
+                        .all(|(actual, wanted)| *wanted == "*" || actual == wanted)
+            })
+        })
+        .count();
+    assert_eq!(
+        advertised, 5,
+        "every alert operation must be detected as gone"
+    );
+}
+
 #[test]
 fn analytics_catalog_note_does_not_contradict_supported_credentials() {
     let entry = catalog::ENDPOINTS

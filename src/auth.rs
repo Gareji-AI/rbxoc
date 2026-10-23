@@ -206,12 +206,21 @@ pub fn missing_auth_error(message: impl Into<String>) -> ErrorBody {
     }
 }
 
-/// Build the HTTP client. Timeouts are explicit so an agent never waits forever.
-pub fn http_client() -> Result<reqwest::Client> {
+/// Shared client settings. Redirects are never followed: a 307/308 after a
+/// mutation would replay the request, and reqwest cannot treat `x-api-key` as
+/// a sensitive header across origins, so it would forward the credential.
+/// Callers see the 3xx response instead and decide explicitly.
+pub fn http_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .user_agent(concat!("rbxoc/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(120))
         .connect_timeout(std::time::Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+}
+
+/// Build the HTTP client. Timeouts are explicit so an agent never waits forever.
+pub fn http_client() -> Result<reqwest::Client> {
+    http_client_builder()
         .build()
         .context("failed to initialize the HTTP client")
 }
@@ -226,6 +235,7 @@ pub fn status_code(status: &u16) -> &'static str {
     match status {
         400 => "http_400",
         401 => "http_401",
+        408 => "http_408",
         403 => "http_403",
         404 => "http_404",
         409 => "http_409",
@@ -252,6 +262,11 @@ pub fn hints_for_status(status: u16) -> Vec<String> {
             "Check for a swap between universeId and placeId".into(),
         ],
         409 => vec!["Conflicting state. Wait a moment and retry".into()],
+        408 => vec![
+            "The provider reported a request timeout; it may still have processed the request"
+                .into(),
+            "Inspect the target state before repeating a mutation".into(),
+        ],
         429 => vec![
             "Rate limited. Retry with exponential backoff".into(),
             "`--retry 3` adds automatic retries for replay-safe reads only".into(),
@@ -278,8 +293,16 @@ mod tests {
     fn status_codes_are_stable() {
         assert_eq!(status_code(&401), "http_401");
         assert_eq!(status_code(&403), "http_403");
+        assert_eq!(status_code(&408), "http_408");
         assert_eq!(status_code(&503), "http_5xx");
         assert_eq!(status_code(&418), "http_error");
+    }
+
+    #[test]
+    fn the_production_client_is_built_without_redirects() {
+        // The client must build; redirect refusal is covered end-to-end by
+        // `http_contract_tests::redirects_never_replay_mutations_or_forward_the_api_key`.
+        assert!(http_client().is_ok());
     }
 
     #[test]

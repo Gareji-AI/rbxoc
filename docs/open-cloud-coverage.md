@@ -52,7 +52,7 @@ invented scope. Contract support is distinct from live verification and enrollme
 
 ## Current state
 
-63 catalog entries, 59 implemented.
+64 catalog entries, 60 implemented.
 
 | Domain | Implemented | Notes |
 | --- | --- | --- |
@@ -63,7 +63,7 @@ invented scope. Contract support is distinct from live verification and enrollme
 | `ordered-datastore` | 5 | leaderboards |
 | `datastore` | 4 | standard DataStores |
 | `thumbnail` | 4 | experimental API |
-| `place` | 3 | publish, get, version history |
+| `place` | 4 | publish, get, version history, metadata update |
 | `server` | 4 | list, logs, restart, read-only restart forecast |
 | `gamepass` | 3 | list/create/update |
 | `badge` | 2 | create/update |

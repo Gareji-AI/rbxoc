@@ -1,7 +1,7 @@
 {
   "source": "https://create.roblox.com/docs/cloud/openapi.json",
-  "fetched": "2026-10-17",
-  "sourceSha256": "e53153475cb2bf934aa43c6c697ec26796aa6d8405e0623f4e5764a373996848",
+  "fetched": "2026-10-23",
+  "sourceSha256": "bcfdc20689cd557cd745c6ee5e0cd82aa970486e1c56f2057845abb1feee6c5a",
   "operations": [
     {
       "catalogId": "auth.check",
@@ -67,6 +67,31 @@
         }
       ],
       "x-roblox-scopes": []
+    },
+    {
+      "catalogId": "place.update",
+      "method": "PATCH",
+      "path": "/cloud/v2/universes/{universe_id}/places/{place_id}",
+      "operationId": "Cloud_UpdatePlace",
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.place:write"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.place:write",
+          "targetResourceSpecifier": "universes"
+        },
+        {
+          "name": "universe.place:write"
+        }
+      ]
     },
     {
       "catalogId": "asset.create",
@@ -357,10 +382,16 @@
           "roblox-api-key": []
         },
         {
-          "roblox-oauth2": []
+          "roblox-oauth2": [
+            "universe:write"
+          ]
         }
       ],
       "x-roblox-scopes": [
+        {
+          "name": "universe:write",
+          "targetResourceSpecifier": "universes"
+        },
         {
           "name": "universe:write"
         }
@@ -395,6 +426,50 @@
       "catalogId": "analytics.metrics",
       "method": "POST",
       "path": "/analytics-query-api/v1/universes/{universeId}/metrics",
+      "operationId": null,
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.analytics:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.analytics:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "analytics.operation",
+      "method": "GET",
+      "path": "/analytics-query-api/v1/universes/{universeId}/operations/metrics/{operationId}",
+      "operationId": null,
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.analytics:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.analytics:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
+    },
+    {
+      "catalogId": "analytics.operation",
+      "method": "GET",
+      "path": "/analytics-query-api/v1/universes/{universeId}/operations/dimension-values/{operationId}",
       "operationId": null,
       "security": [
         {
@@ -1155,7 +1230,7 @@
       "catalogId": "event.list",
       "method": "GET",
       "path": "/virtual-events/v3/universes/{universeId}/game-events",
-      "operationId": "GameEvents_List",
+      "operationId": "GameEvents_GetGameEvents",
       "security": [
         {
           "roblox-api-key": []
@@ -1177,7 +1252,7 @@
       "catalogId": "event.get",
       "method": "GET",
       "path": "/virtual-events/v3/game-events/{eventId}",
-      "operationId": "GameEvent_Get",
+      "operationId": "GameEvent_GetGameEvent",
       "security": [
         {
           "roblox-api-key": []
@@ -1199,7 +1274,7 @@
       "catalogId": "event.create",
       "method": "POST",
       "path": "/virtual-events/v3/universes/{universeId}/game-events",
-      "operationId": "GameEvents_Create",
+      "operationId": "GameEvents_CreateGameEvent",
       "security": [
         {
           "roblox-api-key": []
@@ -1221,7 +1296,7 @@
       "catalogId": "event.update",
       "method": "PATCH",
       "path": "/virtual-events/v3/game-events/{eventId}",
-      "operationId": "GameEvent_Update",
+      "operationId": "GameEvent_UpdateGameEvent",
       "security": [
         {
           "roblox-api-key": []
@@ -1243,7 +1318,7 @@
       "catalogId": "event.delete",
       "method": "DELETE",
       "path": "/virtual-events/v3/game-events/{eventId}",
-      "operationId": "GameEvent_Delete",
+      "operationId": "GameEvent_DeleteGameEvent",
       "security": [
         {
           "roblox-api-key": []

@@ -46,6 +46,8 @@ impl Request {
 enum Reply {
     Json(u16, Value),
     Raw(u16, String),
+    /// Status plus extra raw response headers, one `Name: value` per entry.
+    RawWithHeaders(u16, Vec<String>, String),
     Disconnect,
 }
 
@@ -126,12 +128,15 @@ impl Server {
                     requests.len()
                 };
                 let response = match handler(count) {
-                    Reply::Json(status, body) => Some((status, body.to_string())),
-                    Reply::Raw(status, body) => Some((status, body)),
+                    Reply::Json(status, body) => Some((status, Vec::new(), body.to_string())),
+                    Reply::Raw(status, body) => Some((status, Vec::new(), body)),
+                    Reply::RawWithHeaders(status, headers, body) => Some((status, headers, body)),
                     Reply::Disconnect => None,
                 };
-                if let Some((status, body)) = response {
-                    write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: 0\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+                if let Some((status, extra, body)) = response {
+                    let extra: String =
+                        extra.iter().map(|header| format!("{header}\r\n")).collect();
+                    write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nRetry-After: 0\r\n{extra}Connection: close\r\n\r\n{body}", body.len()).unwrap();
                 }
             }
         });
@@ -149,7 +154,8 @@ impl Server {
 
     fn ctx(&self) -> Ctx {
         Ctx {
-            client: reqwest::Client::builder()
+            // Match the production client: never follow redirects.
+            client: crate::auth::http_client_builder()
                 .no_proxy()
                 .timeout(std::time::Duration::from_secs(5))
                 .build()
@@ -329,7 +335,8 @@ async fn mutation(ctx: &Ctx, operation: &str) -> crate::output::Output {
 
 #[tokio::test]
 async fn mutations_are_sent_once_after_transient_http_outcomes() {
-    for status in [429, 500, 503] {
+    // 408 is included: a timeout response does not prove the write did not land.
+    for status in [408, 429, 500, 503] {
         for operation in ["increment", "message", "create", "badge", "restart"] {
             let server = Server::new(move |count| {
                 Reply::Json(if count == 1 { status } else { 200 }, json!({}))
@@ -343,6 +350,81 @@ async fn mutations_are_sent_once_after_transient_http_outcomes() {
             assert!(!out.hints.iter().any(|hint| hint.contains("--retry")));
         }
     }
+}
+
+#[tokio::test]
+async fn read_only_queries_are_not_classified_as_unknown_mutations() {
+    let query = r#"{"metric":"DailyActiveUsers","granularity":"OneDay","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#;
+    for status in [408, 429, 500, 503] {
+        let server = Server::new(move |_| Reply::Json(status, json!({"message": "fixture"})));
+        let out = cmd::analytics::metrics(&server.ctx(), 123, query).await;
+        assert_eq!(server.captured().len(), 1, "{status}: {out:?}");
+        let error = out.error.unwrap();
+        assert_eq!(error.code, "read_outcome_unknown", "{status}");
+        assert_eq!(error.status, Some(status));
+        assert!(
+            !out.hints
+                .iter()
+                .any(|hint| hint.to_lowercase().contains("reconcile"))
+        );
+        assert!(
+            out.hints
+                .iter()
+                .any(|hint| hint.contains("read-only query"))
+        );
+    }
+    let lost = Server::new(|_| Reply::Disconnect);
+    let out = cmd::analytics::metrics(&lost.ctx(), 123, query).await;
+    assert_eq!(lost.captured().len(), 1);
+    let error = out.error.unwrap();
+    assert_eq!(error.code, "read_outcome_unknown");
+    assert_eq!(error.status, None);
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("read-only query"))
+    );
+}
+
+#[tokio::test]
+async fn redirects_never_replay_mutations_or_forward_the_api_key() {
+    // Same origin: a followed 307 would send the increment POST twice.
+    let same = Server::new(|_| {
+        Reply::RawWithHeaders(307, vec!["Location: /redirected".into()], String::new())
+    });
+    let out =
+        cmd::ordered_datastore::increment(&same.ctx(), 123, "test", "global", "player", 1).await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(same.captured().len(), 1);
+    let error = out.error.unwrap();
+    assert_eq!(error.code, "unexpected_redirect");
+    assert_eq!(error.status, Some(307));
+    assert!(!out.hints.is_empty());
+
+    // Cross origin: a followed redirect would forward x-api-key to the target.
+    let target = Server::new(|_| Reply::Json(200, json!({"value": 1})));
+    let origin = Server::new({
+        let location = format!("Location: {}/redirected", target.url);
+        move |_| Reply::RawWithHeaders(307, vec![location.clone()], String::new())
+    });
+    let out =
+        cmd::ordered_datastore::increment(&origin.ctx(), 123, "test", "global", "player", 1).await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(origin.captured().len(), 1);
+    assert!(target.captured().is_empty());
+    assert_eq!(out.error.unwrap().code, "unexpected_redirect");
+
+    // Publication requests use send_once and must refuse redirects too.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("place.rbxl");
+    std::fs::write(&file, b"rbxl").unwrap();
+    let publish = Server::new(|_| {
+        Reply::RawWithHeaders(307, vec!["Location: /redirected".into()], String::new())
+    });
+    let out = cmd::place::publish(&publish.ctx(), 123, 456, &file, true).await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(publish.captured().len(), 1);
+    assert_eq!(out.error.unwrap().code, "unexpected_redirect");
 }
 
 #[tokio::test]
@@ -476,7 +558,8 @@ async fn invalid_badge_payment_sources_fail_before_any_paid_request() {
 
 #[tokio::test]
 async fn thumbnail_delete_encodes_repeated_query_ids_without_a_body() {
-    let server = Server::success();
+    let server =
+        Server::new(|_| Reply::Json(200, json!({"one": true, "two": true, "x&?# %": true})));
     let out = cmd::thumbnail::delete(
         &server.ctx(),
         123,
@@ -484,6 +567,7 @@ async fn thumbnail_delete_encodes_repeated_query_ids_without_a_body() {
     )
     .await;
     assert!(out.ok, "{out:?}");
+    assert_eq!(out.summary, "Deleted 3 thumbnails");
     let requests = server.captured();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "DELETE");
@@ -493,6 +577,60 @@ async fn thumbnail_delete_encodes_repeated_query_ids_without_a_body() {
     );
     assert!(requests[0].body.is_empty());
     assert_eq!(requests[0].header("content-type"), None);
+}
+
+#[tokio::test]
+async fn thumbnail_delete_reports_the_documented_per_id_results() {
+    // All true: an unqualified success is correct.
+    let all = Server::new(|_| Reply::Json(200, json!({"a": true, "b": true})));
+    let out = cmd::thumbnail::delete(&all.ctx(), 123, &["a".into(), "b".into()]).await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(out.data.unwrap()["partial"], false);
+
+    // Mixed: one ID was not confirmed deleted.
+    let mixed = Server::new(|_| Reply::Json(200, json!({"a": true, "b": false})));
+    let out = cmd::thumbnail::delete(&mixed.ctx(), 123, &["a".into(), "b".into()]).await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(mixed.captured().len(), 1);
+    assert!(out.summary.contains("partial"), "{}", out.summary);
+    assert!(out.hints.iter().any(|hint| hint.contains("notDeleted")));
+    let data = out.data.unwrap();
+    assert_eq!(data["removed"], 1);
+    assert_eq!(data["partial"], true);
+    assert_eq!(data["deleted"], json!(["a"]));
+    assert_eq!(data["notDeleted"], json!(["b"]));
+    assert_eq!(data["unconfirmed"], json!([]));
+
+    // A missing ID cannot be counted as deleted.
+    let missing = Server::new(|_| Reply::Json(200, json!({"a": true})));
+    let out = cmd::thumbnail::delete(&missing.ctx(), 123, &["a".into(), "b".into()]).await;
+    assert!(out.ok, "{out:?}");
+    let data = out.data.unwrap();
+    assert_eq!(data["removed"], 1);
+    assert_eq!(data["unconfirmed"], json!(["b"]));
+
+    // Nothing confirmed: no unqualified success is possible.
+    let none = Server::new(|_| Reply::Json(200, json!({"a": false, "b": false})));
+    let out = cmd::thumbnail::delete(&none.ctx(), 123, &["a".into(), "b".into()]).await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(none.captured().len(), 1);
+    assert_eq!(out.error.unwrap().code, "thumbnail_delete_failed");
+
+    // Malformed bodies are never reported as success.
+    for body in [json!([true, false]), json!(null), json!("ok")] {
+        let label = body.clone();
+        let bad = Server::new(move |_| Reply::Json(200, body.clone()));
+        let out = cmd::thumbnail::delete(&bad.ctx(), 123, &["a".into()]).await;
+        assert!(!out.ok, "{label}: {out:?}");
+        assert_eq!(bad.captured().len(), 1);
+        assert_eq!(out.error.unwrap().code, "thumbnail_response_invalid");
+    }
+
+    // Non-boolean per-ID values stay unconfirmed rather than counting as gone.
+    let typed = Server::new(|_| Reply::Json(200, json!({"a": "true"})));
+    let out = cmd::thumbnail::delete(&typed.ctx(), 123, &["a".into()]).await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(out.error.unwrap().code, "thumbnail_delete_failed");
 }
 
 #[tokio::test]
@@ -754,6 +892,74 @@ async fn reviewer_permission_grants_reject_unproven_or_malformed_success_receipt
         assert_eq!(out.error.unwrap().code, "invalid_permissions_response");
         assert_eq!(server.captured().len(), 1);
     }
+}
+
+#[tokio::test]
+async fn server_list_surfaces_provider_declared_partial_results() {
+    // Normal responses keep the existing success behavior.
+    for flags in [
+        json!({}),
+        json!({"activeServersFetchError": false, "shutdownServersFetchError": false}),
+        json!({"activeServersFetchError": null, "shutdownServersFetchError": null}),
+    ] {
+        let mut body = json!({"gameServers": [{"jobId": "active-job"}], "nextPageToken": "next"});
+        body.as_object_mut()
+            .unwrap()
+            .extend(flags.as_object().unwrap().clone());
+        let server = Server::new(move |_| Reply::Json(200, body.clone()));
+        let out = cmd::server::list(&server.ctx(), 123, 456, 7, None).await;
+        assert!(out.ok, "{flags}: {out:?}");
+        assert_eq!(out.summary, "Fetched 1 game servers", "{flags}");
+        let data = out.data.unwrap();
+        assert_eq!(data["partial"], false, "{flags}");
+        assert_eq!(data["missingSources"], json!([]), "{flags}");
+    }
+
+    // Each flag independently, then both together.
+    for (flag, missing) in [
+        ("shutdownServersFetchError", "shutdown"),
+        ("activeServersFetchError", "active"),
+    ] {
+        let mut body = json!({"gameServers": [{"jobId": "active-job"}]});
+        body.as_object_mut()
+            .unwrap()
+            .insert(flag.into(), json!(true));
+        let server = Server::new(move |_| Reply::Json(200, body.clone()));
+        let out = cmd::server::list(&server.ctx(), 123, 456, 7, None).await;
+        assert!(out.ok, "{flag}: {out:?}");
+        assert!(out.summary.contains("partial"), "{flag}: {}", out.summary);
+        assert!(
+            out.hints.iter().any(|hint| hint.contains("incomplete")),
+            "{flag}: {out:?}"
+        );
+        let data = out.data.unwrap();
+        assert_eq!(data["partial"], true);
+        assert_eq!(data["missingSources"], json!([missing]));
+        assert_eq!(data[flag], true);
+        // Available rows stay usable for reconciliation.
+        assert_eq!(data["count"], 1);
+        assert_eq!(data["jobIds"], json!(["active-job"]));
+    }
+
+    let both = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({
+                "gameServers": [{"jobId": "active-job"}],
+                "shutdownServersFetchError": true,
+                "activeServersFetchError": true
+            }),
+        )
+    });
+    let out = cmd::server::list(&both.ctx(), 123, 456, 7, None).await;
+    assert!(out.ok, "{out:?}");
+    assert!(out.summary.contains("partial"));
+    let data = out.data.unwrap();
+    assert_eq!(data["partial"], true);
+    assert_eq!(data["missingSources"], json!(["active", "shutdown"]));
+    assert_eq!(data["response"]["activeServersFetchError"], true);
+    assert_eq!(data["response"]["shutdownServersFetchError"], true);
+    assert_eq!(both.captured().len(), 1);
 }
 
 #[tokio::test]
@@ -1216,6 +1422,166 @@ async fn place_publish_sets_media_type_and_rejects_other_extensions() {
     let out = cmd::place::publish(&server.ctx(), 123, 456, &other, true).await;
     assert_eq!(out.error.unwrap().code, "unsupported_place_file");
     assert!(server.captured().is_empty());
+}
+
+#[tokio::test]
+async fn oversized_place_files_fail_locally_before_any_request() {
+    const LIMIT: u64 = crate::cmd::place::PLACE_PUBLISH_LIMIT_BYTES;
+    let dir = tempfile::tempdir().unwrap();
+
+    // Exactly at the documented limit stays eligible in both modes.
+    let at_limit = dir.path().join("at-limit.rbxl");
+    std::fs::File::create(&at_limit)
+        .unwrap()
+        .set_len(LIMIT)
+        .unwrap();
+    for published in [false, true] {
+        let server = Server::new(|_| Reply::Json(200, json!({"versionNumber": 7})));
+        let out = cmd::place::publish(&server.ctx(), 123, 456, &at_limit, published).await;
+        assert!(out.ok, "{published}: {out:?}");
+        let requests = server.captured();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].body.len() as u64, LIMIT);
+    }
+
+    // One byte over the limit never reaches the network, in either mode and
+    // for both documented extensions.
+    for published in [false, true] {
+        for extension in ["rbxl", "rbxlx"] {
+            let oversized = dir
+                .path()
+                .join(format!("oversized-{published}.{extension}"));
+            std::fs::File::create(&oversized)
+                .unwrap()
+                .set_len(LIMIT + 1)
+                .unwrap();
+            let server = Server::success();
+            let out = cmd::place::publish(&server.ctx(), 123, 456, &oversized, published).await;
+            assert!(!out.ok, "{extension} {published}: {out:?}");
+            assert!(server.captured().is_empty());
+            let error = out.error.unwrap();
+            assert_eq!(error.code, "place_file_too_large");
+            assert!(!out.hints.is_empty());
+            let detail = error.detail.unwrap();
+            assert!(detail.contains(&(LIMIT + 1).to_string()), "{detail}");
+            assert!(detail.contains(&LIMIT.to_string()), "{detail}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn place_update_sends_only_the_supplied_fields() {
+    let reply = |_| {
+        Reply::Json(
+            200,
+            json!({
+                "path": "universes/123/places/456",
+                "displayName": "Deep Digging",
+                "description": "From a file",
+                "serverSize": 20,
+                "root": true
+            }),
+        )
+    };
+
+    // One field: the mask carries exactly that field.
+    let single = Server::new(reply);
+    let out = cmd::place::update(&single.ctx(), 123, 456, Some("Deep Digging"), None, None).await;
+    assert!(out.ok, "{out:?}");
+    let requests = single.captured();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "PATCH");
+    assert_eq!(
+        requests[0].target,
+        "/cloud/v2/universes/123/places/456?updateMask=displayName"
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&requests[0].body).unwrap(),
+        json!({"displayName": "Deep Digging"})
+    );
+
+    // Several fields, including a description read from a file on the CLI side.
+    let many = Server::new(reply);
+    let out = cmd::place::update(
+        &many.ctx(),
+        123,
+        456,
+        Some("Deep Digging"),
+        Some("From a file"),
+        Some(20),
+    )
+    .await;
+    assert!(out.ok, "{out:?}");
+    let request = &many.captured()[0];
+    // reqwest percent-encodes the comma separators; the decoded value is the
+    // documented field mask.
+    assert_eq!(
+        request.target,
+        "/cloud/v2/universes/123/places/456?updateMask=displayName%2Cdescription%2CserverSize"
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&request.body).unwrap(),
+        json!({"displayName": "Deep Digging", "description": "From a file", "serverSize": 20})
+    );
+
+    // A response that does not report the new value is not a success.
+    let mismatch = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({"path": "universes/123/places/456", "displayName": "Old name"}),
+        )
+    });
+    let out = cmd::place::update(&mismatch.ctx(), 123, 456, Some("Deep Digging"), None, None).await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(mismatch.captured().len(), 1);
+    assert_eq!(out.error.unwrap().code, "place_response_mismatch");
+
+    // A non-object success body is rejected too.
+    let malformed = Server::new(|_| Reply::Json(200, json!([])));
+    let out =
+        cmd::place::update(&malformed.ctx(), 123, 456, Some("Deep Digging"), None, None).await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(out.error.unwrap().code, "place_response_invalid");
+
+    // Missing scope: the failure names universe.place:write.
+    let forbidden = Server::new(|_| Reply::Json(403, json!({"message": "forbidden"})));
+    let out =
+        cmd::place::update(&forbidden.ctx(), 123, 456, Some("Deep Digging"), None, None).await;
+    assert!(!out.ok, "{out:?}");
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("universe.place:write")),
+        "{out:?}"
+    );
+}
+
+#[tokio::test]
+async fn place_update_never_looks_clearable_or_empty() {
+    let server = Server::success();
+    let ctx = server.ctx();
+    // No field flags: fail before any cloud call.
+    let out = cmd::place::update(&ctx, 123, 456, None, None, None).await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(out.error.unwrap().code, "invalid_value");
+    // Blank and zero values are rejected rather than sent.
+    for (name, description, size) in [(Some("  "), None, None), (None, None, Some(0))] {
+        let out = cmd::place::update(&ctx, 123, 456, name, description, size).await;
+        assert!(!out.ok, "{name:?} {size:?}: {out:?}");
+        assert_eq!(out.error.unwrap().code, "invalid_value");
+    }
+    assert!(server.captured().is_empty());
+
+    // The dry-run plan needs no credentials and sends nothing.
+    let plan = cmd::place::preview_update(123, 456, Some("Deep Digging"), Some("text"), Some(20));
+    assert!(plan.ok, "{plan:?}");
+    assert_eq!(plan.command, "place update (dry-run)");
+    let data = plan.data.unwrap();
+    assert_eq!(data["updateMask"], "displayName,description,serverSize");
+    assert_eq!(data["dryRun"], true);
+    assert_eq!(data["body"]["serverSize"], 20);
+    assert!(server.captured().is_empty());
+    assert!(!cmd::place::preview_update(123, 456, None, None, None).ok);
 }
 
 #[tokio::test]

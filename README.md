@@ -93,9 +93,13 @@ same failure object. HTTP failures also receive status-specific next actions:
 
 - `401` — reissue the API key, run `auth check`
 - `403` — check permissions and scopes, note when OAuth2 is required
+- `408` — the provider reported a timeout; it may still have processed the request
 - `429` / `5xx` on replay-safe reads — bounded retry/backoff
 - `mutation_outcome_unknown` — reconcile the target state or receipt before
   submitting again; never blindly repeat a mutation
+- `read_outcome_unknown` — a read-only query failed transiently; nothing was
+  written, so repeating the read is safe
+- `unexpected_redirect` — Open Cloud answered with a 3xx; rbxoc refuses it
 
 `--retry` defaults to `2` additional attempts, **only** for safe HTTP methods
 (GET, HEAD, OPTIONS, TRACE) after transport errors, 429, or 5xx. Other methods
@@ -105,6 +109,17 @@ body is not proof of idempotency. Uncertain mutation outcomes preserve the
 HTTP status (when known) and return reconciliation guidance rather than
 automatic retry advice. Asset sync retains its durable publication receipts
 and recovery flow.
+
+"Sent at most once" is a retry policy, not a claim that the request mutated
+anything. A read-only query such as `analytics metrics` uses POST but writes
+nothing, so its transient failures return `read_outcome_unknown` with retry
+advice that is truthful. `POST`, `PATCH`, `PUT` and `DELETE` that receive HTTP
+408 are treated like a lost response: the status is preserved, no automatic
+replay happens, and the failure asks the caller to reconcile the target first.
+
+Redirects are never followed. A `307`/`308` could replay a mutation and reqwest
+would forward the `x-api-key` header to whatever origin the response points at,
+so rbxoc returns `unexpected_redirect` instead of sending a second request.
 
 ### 4. Secret handling
 
@@ -216,6 +231,29 @@ rbxoc place publish --universe-id 123 --place-id 456 --file build/game.rbxlx
 rbxoc place publish --universe-id 123 --place-id 456 --file build/game.rbxlx --published
 rbxoc place history --place-id 456
 ```
+
+The place-version operation declares `x-roblox-size-limit` 10485760 (10 MiB), so
+a `.rbxl` / `.rbxlx` file above that size fails locally as
+`place_file_too_large` before any request is built. A file exactly at the limit
+is still accepted.
+
+### Rename a place or change its description
+
+The Cloud v2 `Universe.displayName` and `Universe.description` are read-only:
+the name and description consumers see come from the **root place**. Write them
+through the place:
+
+```bash
+rbxoc place update --universe-id 123 --place-id 456 --display-name "Deep Digging"
+rbxoc place update --universe-id 123 --place-id 456 --description-file description.txt
+rbxoc place update --universe-id 123 --place-id 456 --server-size 20
+rbxoc place update --universe-id 123 --place-id 456 --display-name "Deep Digging" --dry-run
+```
+
+`updateMask` contains exactly the flags you pass, so omitted fields keep their
+current value; a call with no field flags fails before any cloud call.
+`--dry-run` prints the planned mask and body, needs no credentials, and sends
+nothing. Requires `universe.place:write`. A Team Create session returns HTTP 409.
 
 ### Assets
 
@@ -394,7 +432,12 @@ rbxoc thumbnail delete --universe-id 123 --thumbnail-ids one,two
 ```
 
 Deletion repeats the `homepageThumbnailIds` query parameter once per ID;
-empty IDs fail locally. No JSON body is sent.
+empty IDs fail locally. No JSON body is sent. The documented 200 body maps each
+requested ID to a boolean, so `data.deleted`, `data.notDeleted` and
+`data.unconfirmed` report the provider's per-ID result. A `false`, absent or
+non-boolean entry is never counted as deleted: a mixed result keeps
+`ok: true` with `data.partial` and `"the result is partial"` in the summary,
+and a result with no confirmed deletion fails as `thumbnail_delete_failed`.
 
 ### Server logs
 
@@ -414,6 +457,12 @@ those posts send no JSON object.
 `--limit` is `MaxPageSize` (1–100), not a client-side trim. `0` or `--full`
 follows `nextPageToken` with `MaxPageSize=100`. A later page uses
 `--page-token`. `server list` uses the query name `PageToken`.
+
+`server list` exposes the documented partial-result signals. When the provider
+sets `activeServersFetchError` or `shutdownServersFetchError`, the summary says
+the result is partial and `data.partial` / `data.missingSources` name which half
+of the combined stream is missing. The returned `gameServers`, `jobIds`,
+`totalCount` and page tokens stay usable for reconciliation.
 
 ### Standard DataStores
 
