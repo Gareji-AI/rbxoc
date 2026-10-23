@@ -46,6 +46,16 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && inputs.tag || github.sha }}
           persist-credentials: false
 
+      # A tag that predates this workflow has no scripts/package-release.py in
+      # its tree, so the packer is taken from the dispatch commit instead. This
+      # is what makes backfilling assets onto an older release possible.
+      - name: Check out packaging tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+
       - name: Record the built commit
         shell: bash
         env:
@@ -91,7 +101,7 @@ jobs:
         run: |
           set -euo pipefail
           version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
-          python scripts/package-release.py \
+          python tooling/scripts/package-release.py \
             --version "$version" \
             --os "${{ matrix.target_os }}" \
             --arch "${{ matrix.arch }}" \
