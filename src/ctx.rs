@@ -130,16 +130,22 @@ impl Ctx {
             let this = match req.try_clone() {
                 Some(ok) => ok,
                 None => {
-                    return self.client.execute(req).await.map_err(|err| ErrorBody {
-                        code: "network_error",
-                        message: format!("cannot send the request: {err}"),
-                        status: None,
-                        detail: Some(
-                            "This request streams a body, so it cannot be retried automatically"
-                                .into(),
-                        ),
-                        refs: None,
-                    });
+                    return match self.client.execute(req).await {
+                        Ok(resp) if resp.status().is_redirection() => {
+                            Err(redirect_refused(resp.status()))
+                        }
+                        Ok(resp) => Ok(resp),
+                        Err(err) => Err(ErrorBody {
+                            code: "network_error",
+                            message: format!("cannot send the request: {err}"),
+                            status: None,
+                            detail: Some(
+                                "This request streams a body, so it cannot be retried automatically"
+                                    .into(),
+                            ),
+                            refs: None,
+                        }),
+                    };
                 }
             };
             match self.client.execute(this).await {
@@ -360,6 +366,14 @@ pub fn failure(command: &str, error: ErrorBody) -> Output {
             }
             "invalid_json" | "read_error" | "operation_id_missing" | "asset_id_missing" => {
                 hints.push("Inspect the provider response and verify the target state before repeating any mutation".into());
+            }
+            // These codes mean the mutation was already sent but its result is
+            // not usable as success. Never suggest generic input correction.
+            "place_response_invalid"
+            | "place_response_mismatch"
+            | "thumbnail_response_invalid"
+            | "thumbnail_delete_failed" => {
+                hints.push("Inspect the target state before repeating this mutation; the request was sent at most once".into());
             }
             "payment_source_missing" | "invalid_payment_source" => {
                 hints.push("Pass --payment-source user or group only after confirming who pays the Robux fee".into());

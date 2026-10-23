@@ -266,7 +266,9 @@ pub async fn delete(ctx: &Ctx, universe_id: u64, thumbnail_ids: &[String]) -> Ou
 /// look like an unqualified success.
 fn summarize_delete(universe_id: u64, requested: &[String], data: &Value) -> Output {
     let Some(results) = data.as_object() else {
-        return failure(
+        // The body is unusable, but the caller still needs to know the request
+        // was sent and what came back.
+        let mut out = failure(
             "thumbnail delete",
             ErrorBody {
                 code: "thumbnail_response_invalid",
@@ -279,6 +281,12 @@ fn summarize_delete(universe_id: u64, requested: &[String], data: &Value) -> Out
                 refs: None,
             },
         );
+        out.data = Some(json!({
+            "universeId": universe_id,
+            "requested": requested,
+            "response": data,
+        }));
+        return out;
     };
     let mut deleted = Vec::new();
     let mut not_deleted = Vec::new();
@@ -309,7 +317,9 @@ fn summarize_delete(universe_id: u64, requested: &[String], data: &Value) -> Out
         );
     }
     if deleted.is_empty() {
-        return failure(
+        // Keep the provider's per-ID result: this is a provider-confirmed but
+        // unresolved mutation, so the caller needs the receipt to reconcile.
+        let mut out = failure(
             "thumbnail delete",
             ErrorBody {
                 code: "thumbnail_delete_failed",
@@ -325,6 +335,8 @@ fn summarize_delete(universe_id: u64, requested: &[String], data: &Value) -> Out
                 refs: None,
             },
         );
+        out.data = Some(data);
+        return out;
     }
     Output::success(
         "thumbnail delete",

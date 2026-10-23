@@ -616,7 +616,8 @@ async fn thumbnail_delete_reports_the_documented_per_id_results() {
     assert_eq!(none.captured().len(), 1);
     assert_eq!(out.error.unwrap().code, "thumbnail_delete_failed");
 
-    // Malformed bodies are never reported as success.
+    // Malformed bodies are never reported as success, and the raw body is
+    // preserved for reconciliation.
     for body in [json!([true, false]), json!(null), json!("ok")] {
         let label = body.clone();
         let bad = Server::new(move |_| Reply::Json(200, body.clone()));
@@ -624,7 +625,27 @@ async fn thumbnail_delete_reports_the_documented_per_id_results() {
         assert!(!out.ok, "{label}: {out:?}");
         assert_eq!(bad.captured().len(), 1);
         assert_eq!(out.error.unwrap().code, "thumbnail_response_invalid");
+        assert_eq!(out.data.unwrap()["response"], label);
     }
+
+    // The per-ID receipt survives a failure so the caller can reconcile.
+    let none2 = Server::new(|_| Reply::Json(200, json!({"a": false, "b": false})));
+    let out = cmd::thumbnail::delete(&none2.ctx(), 123, &["a".into(), "b".into()]).await;
+    assert!(!out.ok);
+    let data = out.data.unwrap();
+    assert_eq!(data["notDeleted"], json!(["a", "b"]));
+    assert_eq!(data["results"]["b"], false);
+    assert!(!out.hints.is_empty());
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("sent at most once"))
+    );
+    assert!(
+        !out.hints
+            .iter()
+            .any(|hint| hint.contains("correct the input"))
+    );
 
     // Non-boolean per-ID values stay unconfirmed rather than counting as gone.
     let typed = Server::new(|_| Reply::Json(200, json!({"a": "true"})));

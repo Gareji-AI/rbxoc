@@ -28,15 +28,18 @@ analytics metric list are excluded. Rust regression tests independently walk
 the clap command tree and prove that same-count substitutions cannot hide a
 missing command/endpoint mapping.
 
-### Authentication and permission contract (2026-10-17)
+### Authentication and permission contract (2026-10-23)
 
 `tests/fixtures/openapi-auth-contract.json` preserves security and scope excerpts
 from the official document, with its source URL, date and SHA-256. It covers all
-57 implemented cloud catalog entries (58 operations, since analytics operation
-reads dispatch to metrics or dimension-values). Local composites are excluded.
+58 implemented cloud catalog entries (61 operations, since `analytics operation`
+reads dispatch to `metrics` or `dimension-values` and the five alert operations are
+recorded individually). Local composites are excluded.
 `cargo test catalog_contract_tests` compares auth, method, route and the union of
 OAuth security scopes / `x-roblox-scopes`, and proves credential/scope drift is
-detected. Refresh the fixture from the official operation, not from catalog data.
+detected. The same suite fails when an implemented catalog route disappears from
+this snapshot. Refresh the fixture from the official operation, not from catalog
+data.
 
 API-key-only families: thumbnails, asset permissions, standard and ordered
 DataStores, place publish/history. Both API keys and OAuth are documented for

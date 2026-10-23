@@ -263,9 +263,11 @@ pub fn hints_for_status(status: u16) -> Vec<String> {
         ],
         409 => vec!["Conflicting state. Wait a moment and retry".into()],
         408 => vec![
-            "The provider reported a request timeout; it may still have processed the request"
+            // Applies to reads and mutations alike: a timeout response proves
+            // neither that a write landed nor that it did not.
+            "The provider reported a request timeout; the request may still have been processed"
                 .into(),
-            "Inspect the target state before repeating a mutation".into(),
+            "Inspect the target state before repeating a mutation; repeating a read is safe".into(),
         ],
         429 => vec![
             "Rate limited. Retry with exponential backoff".into(),
