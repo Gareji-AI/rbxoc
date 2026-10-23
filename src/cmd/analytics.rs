@@ -111,7 +111,9 @@ pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
 
     let path = format!("/analytics-query-api/v1/universes/{universe_id}/metrics");
     let req = ctx.client.post(ctx.url(&path)).json(&body);
-    match ctx.send(req).await {
+    // A POST that only queries time-series data. Sent at most once like every
+    // non-safe method, but a transient failure is not an unknown mutation.
+    match ctx.send_read_only(req).await {
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;

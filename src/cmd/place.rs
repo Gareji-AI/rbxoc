@@ -8,10 +8,13 @@
 
 use serde_json::json;
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, failure_for_endpoint};
 use crate::output::Output;
 
 const COMMAND: &str = "place publish";
+
+/// `x-roblox-size-limit` on the official place-version operation.
+pub const PLACE_PUBLISH_LIMIT_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Save or publish a place.
 pub async fn publish(
@@ -25,6 +28,11 @@ pub async fn publish(
         Ok(media_type) => media_type,
         Err(err) => return failure(COMMAND, err),
     };
+    // Reject an oversized file before reading it, so the CLI never builds a
+    // request the provider documents as too large.
+    if let Err(err) = check_place_file_size(file).await {
+        return failure(COMMAND, err);
+    }
     let bytes = match tokio::fs::read(file).await {
         Ok(b) => b,
         Err(e) => {
@@ -102,6 +110,38 @@ pub async fn publish(
     }
 }
 
+/// Enforce the documented `x-roblox-size-limit` locally so an oversized file
+/// never reaches the network. A file exactly at the limit is still eligible.
+async fn check_place_file_size(file: &std::path::Path) -> Result<(), crate::output::ErrorBody> {
+    let size = match tokio::fs::metadata(file).await {
+        Ok(metadata) => metadata.len(),
+        Err(err) => {
+            return Err(crate::output::ErrorBody {
+                code: "file_unreadable",
+                message: format!("cannot read the file: {}", file.display()),
+                status: None,
+                detail: Some(err.to_string()),
+                refs: None,
+            });
+        }
+    };
+    if size <= PLACE_PUBLISH_LIMIT_BYTES {
+        return Ok(());
+    }
+    Err(crate::output::ErrorBody {
+        code: "place_file_too_large",
+        message: format!(
+            "Place file is {size} bytes, above the documented {PLACE_PUBLISH_LIMIT_BYTES} byte limit"
+        ),
+        status: None,
+        detail: Some(format!(
+            "{} is {size} bytes; the Open Cloud place-version operation declares x-roblox-size-limit {PLACE_PUBLISH_LIMIT_BYTES} (10 MiB)",
+            file.display()
+        )),
+        refs: None,
+    })
+}
+
 /// Fetch a place's metadata.
 pub async fn get(ctx: &Ctx, universe_id: u64, place_id: u64) -> Output {
     let path = format!("/cloud/v2/universes/{universe_id}/places/{place_id}");
@@ -136,6 +176,195 @@ fn place_media_type(file: &std::path::Path) -> Result<&'static str, crate::outpu
             detail: Some(".rbxlx is application/xml and .rbxl is application/octet-stream".into()),
             refs: None,
         }),
+    }
+}
+
+/// Change a place's name, description, or server size.
+///
+/// The Cloud v2 `Universe.displayName` and `Universe.description` are
+/// read-only; the writable fields live on `Place`, so this is a
+/// `Cloud_UpdatePlace` PATCH with an explicit `updateMask` built only from the
+/// flags the caller supplied. Omitted fields are never cleared.
+pub async fn update(
+    ctx: &Ctx,
+    universe_id: u64,
+    place_id: u64,
+    display_name: Option<&str>,
+    description: Option<&str>,
+    server_size: Option<u32>,
+) -> Output {
+    update_with_command(
+        ctx,
+        "place update",
+        universe_id,
+        place_id,
+        display_name,
+        description,
+        server_size,
+    )
+    .await
+}
+
+/// Dry-run planning for `place update`. Needs no credentials and sends nothing.
+pub fn preview_update(
+    universe_id: u64,
+    place_id: u64,
+    display_name: Option<&str>,
+    description: Option<&str>,
+    server_size: Option<u32>,
+) -> Output {
+    match plan_update(display_name, description, server_size) {
+        Ok((mask, body)) => Output::success(
+            "place update (dry-run)",
+            format!("Would update place {place_id} fields: {mask}"),
+            Some(json!({
+                "universeId": universe_id,
+                "placeId": place_id,
+                "updateMask": mask,
+                "body": body,
+                "dryRun": true,
+            })),
+        )
+        .with_hints(vec![
+            "No cloud call was made and no credentials were read".into(),
+            "Re-run without --dry-run to apply the update".into(),
+        ]),
+        Err(err) => failure("place update (dry-run)", err),
+    }
+}
+
+async fn update_with_command(
+    ctx: &Ctx,
+    command: &str,
+    universe_id: u64,
+    place_id: u64,
+    display_name: Option<&str>,
+    description: Option<&str>,
+    server_size: Option<u32>,
+) -> Output {
+    let (mask, body) = match plan_update(display_name, description, server_size) {
+        Ok(planned) => planned,
+        Err(err) => return failure(command, err),
+    };
+    let path = format!("/cloud/v2/universes/{universe_id}/places/{place_id}");
+    let req = ctx
+        .client
+        .patch(ctx.url(&path))
+        .query(&[("updateMask", mask.as_str())])
+        .json(&body);
+    match ctx.send(req).await {
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                let err = crate::auth::error_from_response(resp).await;
+                return failure_for_endpoint(command, "place.update", err, &ctx.auth);
+            }
+            let data = match ctx.json_or_error(resp).await {
+                Ok(data) => data,
+                Err(err) => {
+                    return failure_for_endpoint(command, "place.update", err, &ctx.auth);
+                }
+            };
+            // The provider returns the updated Place resource. Validate that it
+            // is an object so a malformed success cannot be reported as done.
+            if !data.is_object() {
+                return failure(
+                    command,
+                    crate::output::ErrorBody {
+                        code: "place_response_invalid",
+                        message: "place update response is not a Place resource".into(),
+                        status: None,
+                        detail: Some(
+                            "Inspect the place with `rbxoc place get` before repeating this mutation"
+                                .into(),
+                        ),
+                        refs: None,
+                    },
+                );
+            }
+            for (field, expected) in [
+                ("displayName", display_name.map(str::to_string)),
+                ("description", description.map(str::to_string)),
+            ] {
+                if let Some(expected) = expected
+                    && data.get(field).and_then(|value| value.as_str()) != Some(expected.as_str())
+                {
+                    return failure(
+                        command,
+                        crate::output::ErrorBody {
+                            code: "place_response_mismatch",
+                            message: format!("place update response does not report the new {field}"),
+                            status: None,
+                            detail: Some(
+                                "Inspect the place with `rbxoc place get` before repeating this mutation"
+                                    .into(),
+                            ),
+                            refs: None,
+                        },
+                    );
+                }
+            }
+            let updated = data
+                .get("displayName")
+                .and_then(|value| value.as_str())
+                .unwrap_or("(unnamed)");
+            let mut out = Output::success(
+                command,
+                format!("Updated place: {updated} (fields: {mask})"),
+                Some(data),
+            );
+            out = out.with_hints(vec![
+                "The root place's displayName and description are what `universe get` reports"
+                    .into(),
+            ]);
+            out
+        }
+        Err(err) => failure_for_endpoint(command, "place.update", err, &ctx.auth),
+    }
+}
+
+/// Build the `updateMask` and body from the supplied fields only.
+fn plan_update(
+    display_name: Option<&str>,
+    description: Option<&str>,
+    server_size: Option<u32>,
+) -> Result<(String, serde_json::Value), crate::output::ErrorBody> {
+    let mut mask = Vec::new();
+    let mut body = serde_json::Map::new();
+    if let Some(name) = display_name {
+        if name.trim().is_empty() {
+            return Err(invalid_update("--display-name must not be blank"));
+        }
+        mask.push("displayName");
+        body.insert("displayName".into(), json!(name));
+    }
+    if let Some(text) = description {
+        mask.push("description");
+        body.insert("description".into(), json!(text));
+    }
+    if let Some(size) = server_size {
+        if size == 0 {
+            return Err(invalid_update("--server-size must be at least 1"));
+        }
+        mask.push("serverSize");
+        body.insert("serverSize".into(), json!(size));
+    }
+    if mask.is_empty() {
+        return Err(invalid_update(
+            "Pass at least one of --display-name, --description, --description-file or --server-size",
+        ));
+    }
+    Ok((mask.join(","), serde_json::Value::Object(body)))
+}
+
+fn invalid_update(message: &str) -> crate::output::ErrorBody {
+    crate::output::ErrorBody {
+        code: "invalid_value",
+        message: message.into(),
+        status: None,
+        detail: Some(
+            "`place update` sends only the fields you pass and never clears the others".into(),
+        ),
+        refs: None,
     }
 }
 

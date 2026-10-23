@@ -185,6 +185,30 @@ pub enum PlaceCommand {
         #[arg(long)]
         cursor: Option<String>,
     },
+    /// Change a place's name, description, or server size
+    ///
+    /// Only the fields you pass are sent; omitted fields keep their value.
+    Update {
+        #[arg(long)]
+        universe_id: u64,
+        #[arg(long)]
+        place_id: u64,
+        /// New place name (the root place's name is the universe's name)
+        #[arg(long)]
+        display_name: Option<String>,
+        /// New description
+        #[arg(long)]
+        description: Option<String>,
+        /// Read the new description from a file (long or multi-line text)
+        #[arg(long, value_name = "PATH")]
+        description_file: Option<std::path::PathBuf>,
+        /// Maximum players per server
+        #[arg(long)]
+        server_size: Option<u32>,
+        /// Print the planned updateMask and body without any cloud call
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -995,6 +1019,36 @@ pub enum UniverseCommand {
     },
 }
 
+/// Resolve the description for `place update`. A long or multi-line text is
+/// easier to keep in a file, so `--description-file` is supported alongside
+/// the inline flag. Passing both is a usage error rather than a silent pick.
+fn read_description(
+    description: Option<String>,
+    description_file: Option<std::path::PathBuf>,
+) -> Result<Option<String>, crate::output::ErrorBody> {
+    match (description, description_file) {
+        (Some(_), Some(_)) => Err(crate::output::ErrorBody {
+            code: "invalid_value",
+            message: "Pass either --description or --description-file, not both".into(),
+            status: None,
+            detail: None,
+            refs: None,
+        }),
+        (Some(text), None) => Ok(Some(text)),
+        (None, Some(path)) => {
+            let raw = std::fs::read_to_string(&path).map_err(|err| crate::output::ErrorBody {
+                code: "file_unreadable",
+                message: format!("cannot read the description file: {}", path.display()),
+                status: None,
+                detail: Some(err.to_string()),
+                refs: None,
+            })?;
+            Ok(Some(raw))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
 fn requested_leaf(command: &Command) -> &'static str {
     match command {
         Command::Auth(_) => "auth check",
@@ -1007,6 +1061,13 @@ fn requested_leaf(command: &Command) -> &'static str {
             PlaceCommand::Publish { .. } => "place publish",
             PlaceCommand::Get { .. } => "place get",
             PlaceCommand::History { .. } => "place history",
+            PlaceCommand::Update { dry_run, .. } => {
+                if *dry_run {
+                    "place update (dry-run)"
+                } else {
+                    "place update"
+                }
+            }
         },
         Command::Asset(AssetArgs { command }) => match command {
             AssetCommand::Create { .. } => "asset create",
@@ -1105,6 +1166,33 @@ fn requested_leaf(command: &Command) -> &'static str {
 
 fn preflight_before_auth(command: &Command) -> Option<Output> {
     match command {
+        // `place update --dry-run` only plans a request, so it must work
+        // without credentials and must never touch the network.
+        Command::Place(PlaceArgs {
+            command:
+                PlaceCommand::Update {
+                    universe_id,
+                    place_id,
+                    display_name,
+                    description,
+                    description_file,
+                    server_size,
+                    dry_run: true,
+                },
+        }) => {
+            let description = match read_description(description.clone(), description_file.clone())
+            {
+                Ok(description) => description,
+                Err(err) => return Some(failure("place update (dry-run)", err)),
+            };
+            Some(cmd::place::preview_update(
+                *universe_id,
+                *place_id,
+                display_name.as_deref(),
+                description.as_deref(),
+                *server_size,
+            ))
+        }
         Command::Config(ConfigArgs { command }) => {
             let repository = match command {
                 ConfigCommand::Get { repository, .. }
@@ -1323,6 +1411,32 @@ impl Cli {
                     limit,
                     cursor,
                 } => cmd::place::history(&ctx, place_id, limit, cursor.as_deref()).await,
+                PlaceCommand::Update {
+                    universe_id,
+                    place_id,
+                    display_name,
+                    description,
+                    description_file,
+                    server_size,
+                    dry_run: false,
+                } => {
+                    let description = match read_description(description, description_file) {
+                        Ok(description) => description,
+                        Err(err) => return failure("place update", err),
+                    };
+                    cmd::place::update(
+                        &ctx,
+                        universe_id,
+                        place_id,
+                        display_name.as_deref(),
+                        description.as_deref(),
+                        server_size,
+                    )
+                    .await
+                }
+                PlaceCommand::Update { dry_run: true, .. } => {
+                    unreachable!("handled without credentials")
+                }
             },
             Command::Asset(args) => match args.command {
                 AssetCommand::ImageId { .. } => unreachable!("handled without credentials"),

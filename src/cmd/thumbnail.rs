@@ -246,14 +246,111 @@ pub async fn delete(ctx: &Ctx, universe_id: u64, thumbnail_ids: &[String]) -> Ou
         .map(|id| ("homepageThumbnailIds", id.as_str()))
         .collect();
     let req = ctx.client.delete(ctx.url(&path)).query(&query);
-    match ctx.send_empty(req).await {
-        Ok(_) => Output::success(
-            "thumbnail delete",
-            format!("Deleted {} thumbnails", thumbnail_ids.len()),
-            Some(json!({ "universeId": universe_id, "removed": thumbnail_ids.len() })),
-        ),
-        Err(err) => failure("thumbnail delete", err),
+    let resp = match ctx.send(req).await {
+        Ok(resp) => resp,
+        Err(err) => return failure("thumbnail delete", err),
+    };
+    if !resp.status().is_success() {
+        let err = crate::auth::error_from_response(resp).await;
+        return failure("thumbnail delete", err);
     }
+    let data = match ctx.json_or_error(resp).await {
+        Ok(data) => data,
+        Err(err) => return failure("thumbnail delete", err),
+    };
+    summarize_delete(universe_id, thumbnail_ids, &data)
+}
+
+/// The documented 200 body maps each requested thumbnail ID to a boolean.
+/// Only an explicit `true` counts as deleted, so a partial result can never
+/// look like an unqualified success.
+fn summarize_delete(universe_id: u64, requested: &[String], data: &Value) -> Output {
+    let Some(results) = data.as_object() else {
+        // The body is unusable, but the caller still needs to know the request
+        // was sent and what came back.
+        let mut out = failure(
+            "thumbnail delete",
+            ErrorBody {
+                code: "thumbnail_response_invalid",
+                message: "thumbnail delete response is not a JSON object".into(),
+                status: None,
+                detail: Some(
+                    "Inspect `rbxoc thumbnail list` before repeating this mutation; the request was sent at most once"
+                        .into(),
+                ),
+                refs: None,
+            },
+        );
+        out.data = Some(json!({
+            "universeId": universe_id,
+            "requested": requested,
+            "response": data,
+        }));
+        return out;
+    };
+    let mut deleted = Vec::new();
+    let mut not_deleted = Vec::new();
+    let mut unconfirmed = Vec::new();
+    for id in requested {
+        match results.get(id) {
+            Some(Value::Bool(true)) => deleted.push(id.clone()),
+            Some(Value::Bool(false)) => not_deleted.push(id.clone()),
+            // Absent or non-boolean entries cannot prove anything was removed.
+            _ => unconfirmed.push(id.clone()),
+        }
+    }
+    let data = json!({
+        "universeId": universe_id,
+        "requested": requested,
+        "deleted": deleted,
+        "notDeleted": not_deleted,
+        "unconfirmed": unconfirmed,
+        "removed": deleted.len(),
+        "partial": !not_deleted.is_empty() || !unconfirmed.is_empty(),
+        "results": results,
+    });
+    if not_deleted.is_empty() && unconfirmed.is_empty() {
+        return Output::success(
+            "thumbnail delete",
+            format!("Deleted {} thumbnails", deleted.len()),
+            Some(data),
+        );
+    }
+    if deleted.is_empty() {
+        // Keep the provider's per-ID result: this is a provider-confirmed but
+        // unresolved mutation, so the caller needs the receipt to reconcile.
+        let mut out = failure(
+            "thumbnail delete",
+            ErrorBody {
+                code: "thumbnail_delete_failed",
+                message: format!(
+                    "No requested thumbnail was confirmed deleted ({} not deleted, {} unconfirmed)",
+                    not_deleted.len(),
+                    unconfirmed.len()
+                ),
+                status: None,
+                detail: Some(
+                    "The provider answered 200 but reported no successful deletion".into(),
+                ),
+                refs: None,
+            },
+        );
+        out.data = Some(data);
+        return out;
+    }
+    Output::success(
+        "thumbnail delete",
+        format!(
+            "Deleted {} of {} thumbnails; the result is partial",
+            deleted.len(),
+            requested.len()
+        ),
+        Some(data),
+    )
+    .with_hints([
+        "Read `data.notDeleted` and `data.unconfirmed` and reconcile them before retrying".into(),
+        "Run `rbxoc thumbnail list` to confirm which thumbnails still exist".into(),
+    ])
 }
 
 #[cfg(test)]

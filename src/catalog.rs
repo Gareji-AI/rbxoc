@@ -95,6 +95,17 @@ pub const ENDPOINTS: &[Endpoint] = &[
         mutating: false,
         note: "",
     },
+    Endpoint {
+        id: "place.update",
+        method: "PATCH",
+        path: "/cloud/v2/universes/{universe_id}/places/{place_id}",
+        summary: "Change a place's name, description, or server size",
+        implemented: true,
+        auth: &[ApiKey, OAuth],
+        scopes: &["universe.place:write"],
+        mutating: true,
+        note: "updateMask carries only the supplied fields. The root place's displayName and description are what `universe get` reports, because Universe.displayName and Universe.description are read-only. A Team Create session returns 409.",
+    },
     // ---- assets ----
     Endpoint {
         id: "asset.create",
@@ -631,7 +642,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
     Endpoint {
         id: "analytics.alert.list",
         method: "GET",
-        path: "/analytics-alert-control-plane/v1/resource/Universe/id/{resourceId}/alerts",
+        path: "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts",
         summary: "List metric alert configurations for a universe",
         implemented: true,
         auth: &[ApiKey, OAuth],
@@ -642,7 +653,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
     Endpoint {
         id: "analytics.alert.create",
         method: "POST",
-        path: "/analytics-alert-control-plane/v1/resource/Universe/id/{resourceId}/alerts",
+        path: "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts",
         summary: "Create a metric alert configuration",
         implemented: true,
         auth: &[ApiKey, OAuth],
@@ -653,7 +664,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
     Endpoint {
         id: "analytics.alert.update",
         method: "PATCH",
-        path: "/analytics-alert-control-plane/v1/resource/Universe/id/{resourceId}/alerts/{alertId}",
+        path: "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts/{alertId}",
         summary: "Update a metric alert configuration",
         implemented: true,
         auth: &[ApiKey, OAuth],
@@ -664,7 +675,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
     Endpoint {
         id: "analytics.alert.delete",
         method: "DELETE",
-        path: "/analytics-alert-control-plane/v1/resource/Universe/id/{resourceId}/alerts/{alertId}",
+        path: "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts/{alertId}",
         summary: "Delete a metric alert configuration",
         implemented: true,
         auth: &[ApiKey, OAuth],
@@ -675,7 +686,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
     Endpoint {
         id: "analytics.alert.incidents",
         method: "GET",
-        path: "/analytics-alert-control-plane/v1/resource/Universe/id/{resourceId}/alerts/incidents",
+        path: "/analytics-alert-control-plane/v1/resource/{resourceType}/id/{resourceId}/alerts/incidents",
         summary: "List alert incidents in a time window",
         implemented: true,
         auth: &[ApiKey, OAuth],

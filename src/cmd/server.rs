@@ -48,17 +48,47 @@ pub async fn list(
                 .and_then(|value| value.as_str())
                 .filter(|token| !token.is_empty())
                 .map(str::to_string);
+            // The provider can return valid rows while declaring that one
+            // half of the combined stream could not be fetched. Two booleans
+            // keep the available rows and the missing half machine-readable.
+            let active_missing = flag(&data, "activeServersFetchError");
+            let shutdown_missing = flag(&data, "shutdownServersFetchError");
+            let missing_sources: Vec<&str> =
+                [(active_missing, "active"), (shutdown_missing, "shutdown")]
+                    .into_iter()
+                    .filter_map(|(missing, label)| missing.then_some(label))
+                    .collect();
+            let partial = !missing_sources.is_empty();
+            let summary = if partial {
+                format!(
+                    "Fetched {count} game servers; the result is partial ({} rows unavailable)",
+                    missing_sources.join(" and ")
+                )
+            } else {
+                format!("Fetched {count} game servers")
+            };
             let mut out = Output::success(
                 "server list",
-                format!("Fetched {count} game servers"),
+                summary,
                 Some(json!({
                     "count": count,
                     "jobIds": job_ids,
                     "nextPageToken": next_page_token,
                     "previousPageToken": previous_page_token,
+                    "totalCount": data.get("totalCount").and_then(Value::as_u64),
+                    "partial": partial,
+                    "missingSources": missing_sources,
+                    "activeServersFetchError": active_missing,
+                    "shutdownServersFetchError": shutdown_missing,
                     "response": data,
                 })),
             );
+            if partial {
+                out = out.with_hints([format!(
+                    "This list is incomplete: the provider could not fetch {} rows. The returned gameServers and page tokens are still usable",
+                    missing_sources.join(" and ")
+                )]);
+            }
             if let Some(token) = next_page_token {
                 out = out.with_hints([format!("Pass --page-token {token} to fetch the next page")]);
             }
@@ -71,6 +101,11 @@ pub async fn list(
         }
         Err(err) => failure("server list", err),
     }
+}
+
+/// Read a provider fetch-error flag. Absent and `null` both mean "not declared".
+fn flag(data: &Value, key: &str) -> bool {
+    data.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
 
 /// Pull jobIds out of the response. Key names vary, so check several.

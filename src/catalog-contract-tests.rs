@@ -215,6 +215,159 @@ fn catalog_auth_and_permissions_match_official_operations() {
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
 
+/// #54: `implemented: true` must mean "this exact method and route is in the
+/// current official document". A route that silently disappears from the
+/// provider contract must fail here instead of staying advertised.
+#[test]
+fn every_implemented_route_exists_in_the_current_official_snapshot() {
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/openapi-auth-contract.json")).unwrap();
+    let mut routes = BTreeSet::new();
+    for operation in snapshot["operations"].as_array().unwrap() {
+        routes.insert(segments(operation["path"].as_str().unwrap()));
+    }
+    let mut errors = Vec::new();
+    for entry in catalog::ENDPOINTS
+        .iter()
+        .filter(|entry| entry.implemented && entry.method != "LOCAL")
+    {
+        // A catalog parameter may stand for a documented literal when the
+        // provider lists several variants. Literal segments must still match,
+        // so a removed or renamed route cannot be hidden -- but every value the
+        // command actually accepts has to exist in the snapshot.
+        for wanted in expand_catalog_path(entry.path) {
+            let matched = routes.iter().any(|route| {
+                route.len() == wanted.len()
+                    && route
+                        .iter()
+                        .zip(&wanted)
+                        .all(|(actual, wanted)| *wanted == "*" || actual == wanted)
+            });
+            if !matched {
+                errors.push(format!(
+                    "{}: {} {} is not in the current official OpenAPI snapshot",
+                    entry.id,
+                    entry.method,
+                    wanted.join("/")
+                ));
+            }
+        }
+    }
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
+/// Expand a catalog path into every concrete route the CLI can send.
+///
+/// `{kind}` is not an opaque identifier: `analytics operation` maps it to
+/// `metrics` and `dimension-values`, so both must exist in the snapshot. Other
+/// parameters stay wildcards.
+fn expand_catalog_path(path: &str) -> Vec<Vec<String>> {
+    let mut expanded: Vec<Vec<String>> = vec![Vec::new()];
+    for segment in path.split('/') {
+        let options: Vec<String> = match segment {
+            // Keep in sync with `cmd::analytics::operation`.
+            "{kind}" => vec!["metrics".into(), "dimension-values".into()],
+            _ if segment.starts_with('{') && segment.ends_with('}') => vec!["*".into()],
+            _ => vec![segment.to_string()],
+        };
+        expanded = expanded
+            .into_iter()
+            .flat_map(|prefix| {
+                options.iter().map(move |option| {
+                    let mut route = prefix.clone();
+                    route.push(option.clone());
+                    route
+                })
+            })
+            .collect();
+    }
+    expanded
+}
+
+/// Split a path into segments, replacing every `{parameter}` with `*`.
+fn segments(path: &str) -> Vec<String> {
+    path.split('/')
+        .map(|segment| {
+            if segment.starts_with('{') && segment.ends_with('}') {
+                "*".to_string()
+            } else {
+                segment.to_string()
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn a_missing_analytics_operation_kind_is_detected() {
+    // `analytics operation` accepts metrics and dimension-values. If the
+    // provider drops one of those literal routes, the wildcard match alone
+    // would hide it.
+    let snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/openapi-auth-contract.json")).unwrap();
+    let mut routes: Vec<Vec<String>> = snapshot["operations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|operation| segments(operation["path"].as_str().unwrap()))
+        .collect();
+    routes.retain(|route| !route.iter().any(|segment| segment == "dimension-values"));
+    let entry = catalog::ENDPOINTS
+        .iter()
+        .find(|entry| entry.id == "analytics.operation")
+        .unwrap();
+    let missing: Vec<String> = expand_catalog_path(entry.path)
+        .into_iter()
+        .filter(|wanted| {
+            !routes.iter().any(|route| {
+                route.len() == wanted.len()
+                    && route
+                        .iter()
+                        .zip(wanted)
+                        .all(|(actual, wanted)| wanted == "*" || actual == wanted)
+            })
+        })
+        .map(|wanted| wanted.join("/"))
+        .collect();
+    assert_eq!(missing.len(), 1, "{missing:?}");
+    assert!(missing[0].contains("dimension-values"), "{missing:?}");
+}
+
+#[test]
+fn a_route_removed_from_the_official_contract_is_detected() {
+    // Remove the alert family from the snapshot the way the provider would.
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/openapi-auth-contract.json")).unwrap();
+    let operations = snapshot["operations"].as_array_mut().unwrap();
+    operations.retain(|operation| {
+        !operation["path"]
+            .as_str()
+            .unwrap()
+            .contains("analytics-alert-control-plane")
+    });
+    let remaining: Vec<Vec<String>> = operations
+        .iter()
+        .map(|operation| segments(operation["path"].as_str().unwrap()))
+        .collect();
+    let advertised = catalog::ENDPOINTS
+        .iter()
+        .filter(|entry| entry.id.starts_with("analytics.alert."))
+        .filter(|entry| {
+            let wanted = segments(entry.path);
+            !remaining.iter().any(|route| {
+                route.len() == wanted.len()
+                    && route
+                        .iter()
+                        .zip(&wanted)
+                        .all(|(actual, wanted)| *wanted == "*" || actual == wanted)
+            })
+        })
+        .count();
+    assert_eq!(
+        advertised, 5,
+        "every alert operation must be detected as gone"
+    );
+}
+
 #[test]
 fn analytics_catalog_note_does_not_contradict_supported_credentials() {
     let entry = catalog::ENDPOINTS
