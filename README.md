@@ -194,10 +194,12 @@ Rokit's `aftman.toml` and `foreman.toml` compatibility also works, so an
 existing project does not have to migrate first. Rokit requires an **exact**
 version; a requirement like `^0.6` is rejected.
 
-Releases carry `windows-x86_64`, `linux-x86_64`, `macos-aarch64`, and
-`macos-x86_64` archives plus a `.sha256` sidecar. **Rokit 1.2.0 does not read
-the sidecar.** Verify it yourself if you need integrity beyond a pinned
-version, a GitHub Release, and Rokit's own trust prompt:
+Releases carry `windows-x86_64`, `linux-x86_64`, and `macos-aarch64` archives
+plus a `.sha256` sidecar. `macos-x86_64` was added after `0.6.0`, so it is
+present on newer releases and is being backfilled onto `0.6.0`; until that
+lands, Intel Macs on exactly `0.6.0` need the source build below. **Rokit 1.2.0
+does not read the sidecar.** Verify it yourself if you need integrity beyond a
+pinned version, a GitHub Release, and Rokit's own trust prompt:
 
 ```bash
 sha256sum -c rbxoc-0.6.0-linux-x86_64.tar.gz.sha256
