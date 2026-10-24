@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.1
+
+Distribution-only patch. No CLI behavior, command surface, API contract, or
+credential handling changed; the crate contents differ only in the version and
+this changelog.
+
+- Publish prebuilt archives, so a Roblox project can install rbxoc through
+  Rokit alongside `rojo`, `stylua`, and `selene` instead of needing Rust 1.99
+  and a native C toolchain. Previously every GitHub Release from `v0.3.4` to
+  `v0.6.0` had an empty asset list, so
+  `rbxoc = "eiei114/rbxoc@<version>"` failed with `No compatible artifact
+  found`.
+- Add a `macos-x86_64` archive. Rokit validates the operating system of a
+  downloaded binary but not its architecture, so an Intel Mac previously
+  installed the aarch64 build, reported success, and then could not execute.
+- Package only the assets a release does not already contain. `gh release
+  upload` rejects an entire batch when any single name exists, which made
+  adding one archive to an existing release impossible.
+- Take the packaging script from the dispatch commit rather than the release
+  tag, so backfilling an older tag does not run that tag's stale copy.
+
+Approved archive matrix: Windows x86_64 (`.zip`), Linux x86_64 (`.tar.gz`),
+macOS aarch64 (`.tar.gz`), macOS x86_64 (`.tar.gz`).
+
 ## 0.6.0
 
 - Redirects are never followed. A `307`/`308` can no longer replay a mutation,
