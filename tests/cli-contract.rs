@@ -193,6 +193,79 @@ fn help_and_version_remain_successful_human_readable_output() {
     }
 }
 
+fn run_in(dir: &std::path::Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_rbxoc"));
+    cmd.args(args)
+        .current_dir(dir)
+        .env_remove("RBXOC_API_KEY")
+        .env_remove("RBXOC_OAUTH_TOKEN")
+        .env_remove("RBXOC_FORMAT");
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    cmd.output().unwrap()
+}
+
+fn assert_secret_absent(out: &Output, secret: &str) {
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stdout.contains(secret), "stdout leaked a credential");
+    assert!(!stderr.contains(secret), "stderr leaked a credential");
+}
+
+#[test]
+fn dotenv_supplies_the_api_key_and_a_preset_env_wins() {
+    let dir = tempfile::tempdir().unwrap();
+    let file_secret = "abcd-from-dotenv";
+    std::fs::write(
+        dir.path().join(".env"),
+        format!("RBXOC_API_KEY={file_secret}\n"),
+    )
+    .unwrap();
+
+    let from_file = run_in(dir.path(), &["auth", "check"], &[]);
+    assert_secret_absent(&from_file, file_secret);
+    assert!(from_file.status.success(), "{}", from_file.status);
+    let json: serde_json::Value = serde_json::from_slice(&from_file.stdout).unwrap();
+    let source = json["data"]["source"].as_str().unwrap();
+    assert!(source.ends_with("(RBXOC_API_KEY)"), "{source}");
+    assert!(source.contains(dir.path().join(".env").display().to_string().as_str()));
+    assert!(json["summary"].as_str().unwrap().contains("abcd****"));
+
+    let env_secret = "envv-wins-over-file";
+    let from_env = run_in(
+        dir.path(),
+        &["auth", "check"],
+        &[("RBXOC_API_KEY", env_secret)],
+    );
+    assert_secret_absent(&from_env, env_secret);
+    assert_secret_absent(&from_env, file_secret);
+    assert!(from_env.status.success(), "{}", from_env.status);
+    let json: serde_json::Value = serde_json::from_slice(&from_env.stdout).unwrap();
+    assert_eq!(json["data"]["source"], "RBXOC_API_KEY");
+    assert!(json["summary"].as_str().unwrap().contains("envv****"));
+}
+
+#[test]
+fn nested_dotenv_does_not_inherit_the_parent_api_key() {
+    let root = tempfile::tempdir().unwrap();
+    let parent_secret = "parent-key-value";
+    std::fs::write(
+        root.path().join(".env"),
+        format!("RBXOC_API_KEY={parent_secret}\n"),
+    )
+    .unwrap();
+    let child = root.path().join("child");
+    std::fs::create_dir(&child).unwrap();
+    std::fs::write(child.join(".env"), "OTHER=1\n").unwrap();
+
+    let out = run_in(&child, &["auth", "check"], &[]);
+    assert_secret_absent(&out, parent_secret);
+    assert_eq!(out.status.code(), Some(2), "{}", out.status);
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["error"]["code"], "auth_missing");
+}
+
 #[test]
 fn auth_check_handles_unicode_and_reports_the_exact_file() {
     let dir = tempfile::tempdir().unwrap();

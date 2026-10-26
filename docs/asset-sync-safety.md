@@ -151,7 +151,7 @@ Writes use a flushed temporary file in the same directory and atomic
 replacement (plus parent-directory sync on Unix). A process lock in
 `.rbxoc-assets-sync.lock` prevents concurrent registry mutations. Keep this
 empty, persistent local guard out of version control (add it to `.gitignore`).
-It deliberately does not create `.rbxoc`, which would change project-local
+It deliberately does not create `.env`, which would change project-local
 credential discovery boundaries. A crash may
 leave an unused temporary file, but cannot expose a partially written lockfile.
 
