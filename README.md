@@ -13,6 +13,54 @@ A Rust CLI for the Roblox Open Cloud API, **designed for coding agents**.
 
 Unofficial; not affiliated with or endorsed by Roblox.
 
+Announcement: [rbxoc on the Roblox DevForum](https://devforum.roblox.com/t/rbxoc-a-cli-for-the-roblox-open-cloud-api/4959453).
+
+## Setup
+
+One Open Cloud API key per game. rbxoc reads it from that project's `.env`.
+
+### 1. Install
+
+[Rokit](https://github.com/rojo-rbx/rokit) installs a prebuilt binary. No Rust toolchain.
+
+```toml
+# rokit.toml
+[tools]
+rojo = "rojo-rbx/rojo@7.7.1"
+rbxoc = "Gareji-AI/rbxoc@0.7.1"
+```
+
+```bash
+rokit install
+rbxoc --version
+```
+
+Rokit needs that exact version. Other install paths are under [Install](#install).
+
+### 2. Create a key for this universe
+
+Create the key in the [Creator Dashboard credentials](https://create.roblox.com/dashboard/credentials) page. Scope it to this universe. A key from another game will run that game's commands here.
+
+### 3. Save the key in the project
+
+Open `.env` in the project root with an editor and add one line:
+
+```text
+RBXOC_API_KEY=your-api-key
+```
+
+Add `.env` to `.gitignore`. Do not write the key with `echo` or another shell command. That line stays in shell history.
+
+rbxoc loads the nearest `.env` the same way Asphalt loads `ASPHALT_API_KEY`. It walks up from the working directory, uses the first file, and does not replace a variable that is already set. A nested directory with its own `.env` does not inherit the parent's key. There is no key in the home directory.
+
+### 4. Check
+
+```bash
+rbxoc auth check --universe-id 123456
+```
+
+The report names the file or variable that supplied the key. The value is masked (`abcd****`).
+
 ## Why this exists
 
 The existing [`rbxcloud`](https://github.com/Sleitnick/rbxcloud) (139 stars) is a solid CLI, but its last commit was 2025-03-23 and it does not cover the APIs added since.
@@ -74,11 +122,11 @@ On failure:
 {
   "ok": false,
   "command": "auth check",
-  "summary": "no credentials found. Set RBXOC_API_KEY, or create .rbxoc/api-key in this project (see `rbxoc auth check`)",
+  "summary": "no credentials found. Set RBXOC_API_KEY, or add RBXOC_API_KEY to the project's .env (see `rbxoc auth check`)",
   "hints": ["Set RBXOC_API_KEY", "Run `rbxoc auth check` to inspect the credential state"],
   "error": {
     "code": "auth_missing",
-    "message": "no credentials found. Set RBXOC_API_KEY, or create .rbxoc/api-key in this project (see `rbxoc auth check`)"
+    "message": "no credentials found. Set RBXOC_API_KEY, or add RBXOC_API_KEY to the project's .env (see `rbxoc auth check`)"
   }
 }
 ```
@@ -130,25 +178,22 @@ game's key. Credentials are resolved from the current project first.
 Lookup order:
 
 1. `--api-key` (discouraged; it lands in shell history)
-2. `RBXOC_API_KEY` environment variable
+2. `RBXOC_API_KEY` — already in the environment, or loaded from the nearest
+   `.env` when that variable is unset
 3. `--api-key-file <path>`
-4. `RBXOC_OAUTH_TOKEN` (non-empty; used if no API key above was selected)
-5. `.rbxoc/api-key`, walking up from the working directory and stopping at the
-   first `.rbxoc` found
-6. `.rbxoc/oauth-token` in that same first directory, if it has no API key
+4. `RBXOC_OAUTH_TOKEN` (non-empty; used if no API key above was selected).
+   The same `.env` load can set this when the process does not already have it.
 
-Empty environment values are skipped. An explicitly selected empty or unreadable
-key file is an error, not a reason to fall back to another project's credential.
+rbxoc loads the nearest `.env` the same way Asphalt loads `ASPHALT_API_KEY`:
+`dotenvy` walks up from the working directory, applies the first file, and
+does not override a variable that is already set. A missing or unreadable
+`.env` is ignored. Empty environment values are skipped. An explicitly
+selected empty or unreadable key file is an error, not a reason to fall back
+to another project's credential.
 
-Place the key beside the project:
-
-```bash
-echo "your-api-key" > .rbxoc/api-key
-```
-
-Add `.rbxoc/` to the project's `.gitignore`. There is no home-directory
-fallback, so a key never leaks from one repository into another, and a nested
-project with its own `.rbxoc` never inherits its parent's key.
+The project file is the `.env` from [Setup](#setup). There is no
+home-directory fallback, so a key never leaks from one repository into another,
+and a nested directory with its own `.env` never inherits its parent's key.
 
 `rbxoc auth check` reports the exact selected file path, environment variable,
 or `--api-key` from the credential resolver itself, so a wrong-project key is
@@ -182,7 +227,7 @@ to set up. Pin it next to `rojo`, `stylua`, and `selene` in the same file:
 # rokit.toml
 [tools]
 rojo = "rojo-rbx/rojo@7.7.1"
-rbxoc = "Gareji-AI/rbxoc@0.6.0"
+rbxoc = "Gareji-AI/rbxoc@0.7.1"
 ```
 
 ```bash
@@ -194,15 +239,14 @@ Rokit's `aftman.toml` and `foreman.toml` compatibility also works, so an
 existing project does not have to migrate first. Rokit requires an **exact**
 version; a requirement like `^0.6` is rejected.
 
-Releases carry `windows-x86_64`, `linux-x86_64`, and `macos-aarch64` archives
-plus a `.sha256` sidecar. `macos-x86_64` was added after `0.6.0`, so it is
-present on newer releases and is being backfilled onto `0.6.0`; until that
-lands, Intel Macs on exactly `0.6.0` need the source build below. **Rokit 1.2.0
-does not read the sidecar.** Verify it yourself if you need integrity beyond a
-pinned version, a GitHub Release, and Rokit's own trust prompt:
+`0.7.1` carries `windows-x86_64`, `linux-x86_64`, `macos-aarch64`, and
+`macos-x86_64` archives, each with a `.sha256` sidecar. `macos-x86_64` was
+added after `0.6.0`. **Rokit 1.2.0 does not read the sidecar.** Verify it
+yourself if you need integrity beyond a pinned version, a GitHub Release, and
+Rokit's own trust prompt:
 
 ```bash
-sha256sum -c rbxoc-0.6.0-linux-x86_64.tar.gz.sha256
+sha256sum -c rbxoc-0.7.1-linux-x86_64.tar.gz.sha256
 ```
 
 ### From crates.io
@@ -232,22 +276,20 @@ mise run install-local  # into ~/.local/bin
 
 ### Check credentials
 
-Put the key beside the project, then verify it:
+Put the key in the project `.env`, then verify it:
 
 ```bash
-mkdir -p .rbxoc
-echo "your-api-key" > .rbxoc/api-key
 rbxoc auth check --universe-id 123456
 ```
 
-The check reports which file or variable supplied the key, so a key meant for
-another game is obvious:
+The `.env` line is `RBXOC_API_KEY=your-api-key`. The check reports which file
+or variable supplied the key, so a key meant for another game is obvious:
 
 ```json
 {
   "ok": true,
   "summary": "Credentials work (api-key / abcd****)",
-  "data": { "source": "/work/my-game/.rbxoc/api-key" }
+  "data": { "source": "/work/my-game/.env (RBXOC_API_KEY)" }
 }
 ```
 
@@ -278,10 +320,10 @@ the name and description consumers see come from the **root place**. Write them
 through the place:
 
 ```bash
-rbxoc place update --universe-id 123 --place-id 456 --display-name "Deep Digging"
+rbxoc place update --universe-id 123 --place-id 456 --display-name "Example Place"
 rbxoc place update --universe-id 123 --place-id 456 --description-file description.txt
 rbxoc place update --universe-id 123 --place-id 456 --server-size 20
-rbxoc place update --universe-id 123 --place-id 456 --display-name "Deep Digging" --dry-run
+rbxoc place update --universe-id 123 --place-id 456 --display-name "Example Place" --dry-run
 ```
 
 `updateMask` contains exactly the flags you pass, so omitted fields keep their

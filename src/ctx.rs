@@ -353,7 +353,7 @@ pub fn failure(command: &str, error: ErrorBody) -> Output {
         }
         match error.code {
             "auth_missing" => {
-                hints.push("Set RBXOC_API_KEY".into());
+                hints.push("Set RBXOC_API_KEY, or add RBXOC_API_KEY to the project's .env".into());
                 hints.push("Run `rbxoc auth check` to inspect the credential state".into());
                 if command != "auth" && command != "auth check" {
                     hints.push(format!(

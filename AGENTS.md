@@ -28,7 +28,7 @@ Do not commit API keys, OAuth tokens, or live universe/place IDs invented for te
 
 1. **Catalog first.** New Open Cloud surface → new `Endpoint` in `catalog.rs` with `id`, scopes, `auth`, `implemented`, and `note`. Keep `scripts/check-coverage.mjs` passing after changes.
 2. **Output contract.** Success and failure go through `output::Output` / `ErrorBody`. Prefer stable `error.code` values; extend `open_cloud_errors.rs` when Roblox returns structured enrollment/OAuth cases.
-3. **Credentials are project-local.** Resolution order: `--api-key` → `RBXOC_API_KEY` → `--api-key-file` → walk up to first `.rbxoc/api-key`. OAuth: `RBXOC_OAUTH_TOKEN` or `.rbxoc/oauth-token`. No home-directory fallback (keys are universe-scoped).
+3. **Credentials are project-local.** Resolution order: `--api-key` → `RBXOC_API_KEY` → `--api-key-file` → `RBXOC_OAUTH_TOKEN`. `RBXOC_API_KEY` is the process environment, or the nearest `.env` loaded by dotenvy before parsing when that variable is unset (same load as Asphalt; an existing variable is not overridden). No home-directory fallback (keys are universe-scoped).
 4. **Multipart uploads.** Bodies that cannot `try_clone()` must still send once (`ctx.rs`); do not require clone for retry on streaming uploads.
 5. **English** for user-facing CLI strings, README, and agent docs in this repo.
 6. **Replay safety.** `Ctx::send` retries only safe HTTP methods (GET/HEAD/OPTIONS/TRACE). All other methods are sent once, even when the body is cloneable. Transport/429/5xx outcomes return `mutation_outcome_unknown`; reconcile the target or receipt before resubmitting. Keep publication-specific `send_once` receipt recovery intact.
@@ -41,7 +41,7 @@ Do not commit API keys, OAuth tokens, or live universe/place IDs invented for te
 - **Format / lint:** `cargo fmt`; `cargo clippy --all-targets -- -D warnings` (warnings are errors).
 - **Tests:** Unit tests beside modules (`#[cfg(test)]`). Prefer testing path builders, parsers, and hint text without live API calls.
 - **Dependencies:** Keep the dependency set minimal; no Roblox toolchain pins in `mise.toml` unless a task needs them.
-- **Secrets:** Never log or commit credentials. Mask in summaries (`auth.rs` patterns). Do not add `~/.rbxoc` home fallback.
+- **Secrets:** Never log or commit credentials. Mask in summaries (`auth.rs` patterns). Do not add a home-directory `.env` fallback.
 
 ## Testing and CI
 

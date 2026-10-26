@@ -33,9 +33,9 @@ pub struct Cli {
     #[arg(long, value_enum, global = true)]
     pub format: Option<Format>,
 
-    /// API key. Prefer RBXOC_API_KEY or the project's .rbxoc/api-key; passing
-    /// a key here records it in shell history.
-    #[arg(long, global = true, hide_env_values = true)]
+    /// Open Cloud API key. Also read from `RBXOC_API_KEY`, including a value
+    /// loaded from the nearest `.env`. Passing it here records it in shell history.
+    #[arg(long, global = true, env = "RBXOC_API_KEY", hide_env_values = true)]
     pub api_key: Option<String>,
 
     /// File containing the API key.
@@ -1245,7 +1245,34 @@ fn preflight_before_auth(command: &Command) -> Option<Output> {
     }
 }
 
+/// True when argv passed `--api-key` or `--api-key=...`.
+///
+/// Clap also fills `api_key` from `RBXOC_API_KEY`. That value must not be
+/// reported as the command-line flag.
+fn argv_has_api_key_flag<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .take_while(|arg| arg.as_ref() != "--")
+        .any(|arg| {
+            let arg = arg.as_ref();
+            arg == "--api-key" || arg.starts_with("--api-key=")
+        })
+}
+
 impl Cli {
+    /// The API key only when the user passed `--api-key`. An environment or
+    /// `.env` value stays in `RBXOC_API_KEY` for the resolver.
+    fn passed_api_key(&self) -> Option<&str> {
+        if argv_has_api_key_flag(std::env::args().skip(1)) {
+            self.api_key.as_deref()
+        } else {
+            None
+        }
+    }
+
     /// Resolve the output format. Argument > environment > default.
     pub fn resolve_format(&self) -> Format {
         self.format.unwrap_or_else(Format::from_env_or_json)
@@ -1284,7 +1311,7 @@ impl Cli {
         }
 
         if let Command::Auth(AuthArgs { command }) = &self.command {
-            return run_auth(self.api_key.as_deref(), self.api_key_file.as_ref(), command).await;
+            return run_auth(self.passed_api_key(), self.api_key_file.as_ref(), command).await;
         }
 
         // `asset create --dry-run` only inspects a local file, so it must work
@@ -1364,7 +1391,7 @@ impl Cli {
         }
 
         let leaf = requested_leaf(&self.command);
-        let auth = match auth::resolve(self.api_key.as_deref(), self.api_key_file.as_ref()) {
+        let auth = match auth::resolve(self.passed_api_key(), self.api_key_file.as_ref()) {
             Ok(a) => a,
             Err(e) => {
                 return failure(leaf, auth::missing_auth_error(format!("{e:#}")));
@@ -2612,6 +2639,19 @@ fn import_asphalt_lock(
 #[cfg(test)]
 mod asset_workflow_tests {
     use super::*;
+
+    #[test]
+    fn api_key_file_is_not_the_api_key_flag() {
+        assert!(argv_has_api_key_flag(["--api-key", "value"]));
+        assert!(argv_has_api_key_flag(["--api-key=value"]));
+        assert!(!argv_has_api_key_flag(["--api-key-file", "key.txt"]));
+        assert!(!argv_has_api_key_flag([
+            "--api-key-file=key.txt",
+            "auth",
+            "check"
+        ]));
+        assert!(!argv_has_api_key_flag(["--", "--api-key", "value"]));
+    }
 
     #[tokio::test]
     async fn image_id_command_is_explicitly_offline() {

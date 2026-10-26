@@ -31,6 +31,10 @@ use output::Format;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // Asphalt does this before parsing: load the nearest .env without
+    // overriding variables the process already has.
+    auth::load_dotenv();
+
     let (format, out) = match Cli::try_parse() {
         Ok(cli) => (cli.resolve_format(), cli.run().await),
         Err(err)

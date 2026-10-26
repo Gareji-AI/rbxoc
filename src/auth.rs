@@ -15,15 +15,16 @@
 //! 2. `RBXOC_API_KEY` environment variable
 //! 3. the file given by `--api-key-file`
 //! 4. non-empty `RBXOC_OAUTH_TOKEN`
-//! 5. `.rbxoc/api-key` walking up from the working directory, stopping at the
-//!    first `.rbxoc` found. This keeps one key per project.
-//! 6. `.rbxoc/oauth-token` in that same first directory, if it has no API key.
 //!
-//! OAuth2 comes from `RBXOC_OAUTH_TOKEN` or `.rbxoc/oauth-token` in the same
-//! project-local directory. There is deliberately no home-directory fallback:
-//! a key that applies to every repository invites cross-game mistakes.
+//! The API key is loaded the same way Asphalt loads `ASPHALT_API_KEY`.
+//! `load_dotenv` runs before argument parsing and calls `dotenvy::dotenv`:
+//! the nearest `.env`, walking up from the working directory, is applied to
+//! the process environment and does not override a variable that is already
+//! set. A nested directory with its own `.env` therefore does not inherit the
+//! parent's key. There is no home-directory fallback.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 
@@ -62,8 +63,25 @@ impl Auth {
     }
 }
 
-/// Directory name that marks a project's credentials.
-pub const CREDENTIAL_DIR: &str = ".rbxoc";
+/// Path of the `.env` that supplied `RBXOC_API_KEY`, when the process did not
+/// already have that variable.
+static LOADED_DOTENV_KEY: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// Load the nearest `.env` the way Asphalt does.
+///
+/// `dotenvy::dotenv` walks upward, parses with its own rules, and leaves an
+/// existing variable untouched. A missing file is ignored.
+pub fn load_dotenv() {
+    let already_set = std::env::var("RBXOC_API_KEY")
+        .ok()
+        .is_some_and(|value| !value.trim().is_empty());
+    let path = dotenvy::dotenv().ok();
+    let from_file = !already_set
+        && std::env::var("RBXOC_API_KEY")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty());
+    let _ = LOADED_DOTENV_KEY.set(path.filter(|_| from_file));
+}
 
 /// The credential and the exact artifact selected by the same resolution pass.
 #[derive(Debug, PartialEq, Eq)]
@@ -96,7 +114,7 @@ pub fn resolve_with_source(
         api_key_file,
         std::env::var("RBXOC_API_KEY").ok().as_deref(),
         std::env::var("RBXOC_OAUTH_TOKEN").ok().as_deref(),
-        find_credential_dir(),
+        LOADED_DOTENV_KEY.get().and_then(|path| path.as_deref()),
     )
 }
 
@@ -105,7 +123,7 @@ fn resolve_with_sources(
     api_key_file: Option<&PathBuf>,
     env_key: Option<&str>,
     env_token: Option<&str>,
-    credential_dir: Option<PathBuf>,
+    dotenv_key_path: Option<&Path>,
 ) -> Result<ResolvedAuth> {
     if let Some(key) = api_key {
         let key = key.trim();
@@ -121,7 +139,11 @@ fn resolve_with_sources(
     if let Some(key) = env_key {
         let key = key.trim().to_string();
         if !key.is_empty() {
-            return Ok(ResolvedAuth::new(Auth::ApiKey(key), "RBXOC_API_KEY"));
+            let source = match dotenv_key_path {
+                Some(path) => format!("{} (RBXOC_API_KEY)", path.display()),
+                None => "RBXOC_API_KEY".to_string(),
+            };
+            return Ok(ResolvedAuth::new(Auth::ApiKey(key), source));
         }
     }
 
@@ -139,49 +161,10 @@ fn resolve_with_sources(
         }
     }
 
-    // Project-local lookup. An API key is scoped to one universe, so it belongs
-    // beside the project it targets, not in the home directory.
-    if let Some(dir) = credential_dir {
-        let key_path = dir.join("api-key");
-        if key_path.exists() {
-            return Ok(ResolvedAuth::new(
-                read_secret(&key_path, Auth::ApiKey)?,
-                key_path.display().to_string(),
-            ));
-        }
-        let token_path = dir.join("oauth-token");
-        if token_path.exists() {
-            return Ok(ResolvedAuth::new(
-                read_secret(&token_path, Auth::OAuth)?,
-                token_path.display().to_string(),
-            ));
-        }
-    }
-
     bail!(
-        "no credentials found. Set RBXOC_API_KEY, or create {CREDENTIAL_DIR}/api-key \
-         in this project (see `rbxoc auth check`)"
+        "no credentials found. Set RBXOC_API_KEY, or add RBXOC_API_KEY to the \
+         project's .env (see `rbxoc auth check`)"
     )
-}
-
-/// Walk up from the working directory to the first `.rbxoc` directory.
-///
-/// Stopping at the first match is what keeps keys per-project: a nested
-/// repository with its own `.rbxoc` never inherits the parent's key.
-pub fn find_credential_dir() -> Option<PathBuf> {
-    find_credential_dir_from(std::env::current_dir().ok()?)
-}
-
-fn find_credential_dir_from(mut dir: PathBuf) -> Option<PathBuf> {
-    loop {
-        let candidate = dir.join(CREDENTIAL_DIR);
-        if candidate.is_dir() {
-            return Some(candidate);
-        }
-        if !dir.pop() {
-            return None;
-        }
-    }
 }
 
 /// Read a secret file. Uses the first line and strips the newline.
@@ -316,39 +299,6 @@ mod tests {
     }
 
     #[test]
-    fn credential_dir_is_found_beside_the_project() {
-        // A `.rbxoc` directory in the working tree is picked up.
-        let dir = tempfile::tempdir().unwrap();
-        let creds = dir.path().join(CREDENTIAL_DIR);
-        std::fs::create_dir(&creds).unwrap();
-        std::fs::write(
-            creds.join("api-key"),
-            "test-key-value
-",
-        )
-        .unwrap();
-
-        let found = find_credential_dir_from(dir.path().to_path_buf());
-
-        assert_eq!(found.as_deref(), Some(creds.as_path()));
-    }
-
-    #[test]
-    fn nested_project_does_not_inherit_a_parent_key() {
-        // A child directory with its own `.rbxoc` must win over the parent's.
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join(CREDENTIAL_DIR)).unwrap();
-        let child = root.path().join("child");
-        std::fs::create_dir(&child).unwrap();
-        let child_creds = child.join(CREDENTIAL_DIR);
-        std::fs::create_dir(&child_creds).unwrap();
-
-        let found = find_credential_dir_from(child);
-
-        assert_eq!(found.as_deref(), Some(child_creds.as_path()));
-    }
-
-    #[test]
     fn secret_file_uses_only_the_first_line() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("api-key");
@@ -365,19 +315,9 @@ ignored-trailing-line
 
     #[test]
     fn env_var_takes_priority_over_project_file() {
-        // The environment is the CI path, so it must win over a checked-in
-        // project file. The reported source then names the variable.
-        let dir = tempfile::tempdir().unwrap();
-        let creds = dir.path().join(CREDENTIAL_DIR);
-        std::fs::create_dir(&creds).unwrap();
-        std::fs::write(
-            creds.join("api-key"),
-            "from-file
-",
-        )
-        .unwrap();
-
-        let resolved = resolve_with_sources(None, None, Some("from-env"), None, Some(creds));
+        // A variable already in the process wins. dotenvy does not override it,
+        // so the source names the variable rather than the file.
+        let resolved = resolve_with_sources(None, None, Some("from-env"), None, None);
 
         assert_eq!(
             resolved.unwrap(),
@@ -404,13 +344,11 @@ ignored-trailing-line
     fn every_resolution_branch_reports_the_selected_artifact() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("explicit-key");
-        let key = dir.path().join("api-key");
-        let token = dir.path().join("oauth-token");
         std::fs::write(&file, "explicit-file").unwrap();
-        std::fs::write(&key, "project-key").unwrap();
-        std::fs::write(&token, "project-token").unwrap();
+        let dotenv = dir.path().join(".env");
+        let source = format!("{} (RBXOC_API_KEY)", dotenv.display());
         let resolve = |arg, file, env, oauth| {
-            resolve_with_sources(arg, file, env, oauth, Some(dir.path().to_path_buf())).unwrap()
+            resolve_with_sources(arg, file, env, oauth, Some(&dotenv)).unwrap()
         };
         assert_eq!(
             resolve(Some("arg"), Some(&file), Some("env"), Some("oauth")),
@@ -418,7 +356,7 @@ ignored-trailing-line
         );
         assert_eq!(
             resolve(None, Some(&file), Some("env"), Some("oauth")),
-            ResolvedAuth::new(Auth::ApiKey("env".into()), "RBXOC_API_KEY")
+            ResolvedAuth::new(Auth::ApiKey("env".into()), source.clone())
         );
         for env in [None, Some(""), Some("  ")] {
             assert_eq!(
@@ -433,33 +371,68 @@ ignored-trailing-line
                 ResolvedAuth::new(Auth::OAuth("oauth".into()), "RBXOC_OAUTH_TOKEN")
             );
             for oauth in [None, Some(""), Some("  ")] {
-                assert_eq!(
-                    resolve(None, None, env, oauth),
-                    ResolvedAuth::new(
-                        Auth::ApiKey("project-key".into()),
-                        key.display().to_string()
-                    )
-                );
+                let missing = resolve_with_sources(None, None, env, oauth, Some(&dotenv))
+                    .unwrap_err()
+                    .to_string();
+                assert!(missing.contains("RBXOC_API_KEY"));
+                assert!(!missing.contains("explicit-file"));
             }
         }
-        std::fs::remove_file(key).unwrap();
-        assert_eq!(
-            resolve(None, None, Some(""), Some("")),
-            ResolvedAuth::new(
-                Auth::OAuth("project-token".into()),
-                token.display().to_string()
-            )
-        );
-        std::fs::remove_file(token).unwrap();
         assert!(resolve_with_sources(None, None, Some(""), Some(""), None).is_err());
         assert!(resolve_with_sources(Some(" "), None, Some("env"), None, None).is_err());
-        // An explicit file wins even without a project directory.
+        // An explicit file wins even without a project `.env`.
         assert_eq!(
             resolve_with_sources(None, Some(&file), None, None, None)
                 .unwrap()
                 .source,
             file.display().to_string()
         );
+    }
+
+    #[test]
+    fn dotenvy_reads_the_quoted_api_key() {
+        // Same parser Asphalt uses. A later empty assignment replaces the
+        // earlier value; other keys stay in the file and are not the API key.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        std::fs::write(
+            &path,
+            "\
+# comment
+OTHER=secret
+export RBXOC_API_KEY=\"quoted key\" # not part of the key
+RBXOC_OAUTH_TOKEN='token value'
+",
+        )
+        .unwrap();
+        let pairs: Vec<(String, String)> = dotenvy::from_path_iter(&path)
+            .unwrap()
+            .map(|pair| pair.unwrap())
+            .collect();
+        assert_eq!(
+            pairs
+                .iter()
+                .find(|(key, _)| key == "RBXOC_API_KEY")
+                .map(|(_, value)| value.as_str()),
+            Some("quoted key")
+        );
+        assert!(pairs.iter().any(|(key, _)| key == "OTHER"));
+    }
+
+    #[test]
+    fn dotenv_path_is_reported_only_for_the_loaded_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        let resolved =
+            resolve_with_sources(None, None, Some("from-dotenv"), None, Some(&path)).unwrap();
+        assert_eq!(resolved.auth, Auth::ApiKey("from-dotenv".into()));
+        assert!(resolved.source.ends_with("(RBXOC_API_KEY)"));
+        assert!(
+            resolved
+                .source
+                .contains(path.display().to_string().as_str())
+        );
+        assert!(!resolved.source.contains("from-dotenv"));
     }
 
     #[test]

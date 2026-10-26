@@ -1519,7 +1519,7 @@ async fn place_update_sends_only_the_supplied_fields() {
             200,
             json!({
                 "path": "universes/123/places/456",
-                "displayName": "Deep Digging",
+                "displayName": "Example Place",
                 "description": "From a file",
                 "serverSize": 20,
                 "root": true
@@ -1529,7 +1529,7 @@ async fn place_update_sends_only_the_supplied_fields() {
 
     // One field: the mask carries exactly that field.
     let single = Server::new(reply);
-    let out = cmd::place::update(&single.ctx(), 123, 456, Some("Deep Digging"), None, None).await;
+    let out = cmd::place::update(&single.ctx(), 123, 456, Some("Example Place"), None, None).await;
     assert!(out.ok, "{out:?}");
     let requests = single.captured();
     assert_eq!(requests.len(), 1);
@@ -1540,7 +1540,7 @@ async fn place_update_sends_only_the_supplied_fields() {
     );
     assert_eq!(
         serde_json::from_str::<Value>(&requests[0].body).unwrap(),
-        json!({"displayName": "Deep Digging"})
+        json!({"displayName": "Example Place"})
     );
 
     // Several fields, including a description read from a file on the CLI side.
@@ -1549,7 +1549,7 @@ async fn place_update_sends_only_the_supplied_fields() {
         &many.ctx(),
         123,
         456,
-        Some("Deep Digging"),
+        Some("Example Place"),
         Some("From a file"),
         Some(20),
     )
@@ -1564,7 +1564,7 @@ async fn place_update_sends_only_the_supplied_fields() {
     );
     assert_eq!(
         serde_json::from_str::<Value>(&request.body).unwrap(),
-        json!({"displayName": "Deep Digging", "description": "From a file", "serverSize": 20})
+        json!({"displayName": "Example Place", "description": "From a file", "serverSize": 20})
     );
 
     // A response that does not report the new value is not a success.
@@ -1574,22 +1574,37 @@ async fn place_update_sends_only_the_supplied_fields() {
             json!({"path": "universes/123/places/456", "displayName": "Old name"}),
         )
     });
-    let out = cmd::place::update(&mismatch.ctx(), 123, 456, Some("Deep Digging"), None, None).await;
+    let out =
+        cmd::place::update(&mismatch.ctx(), 123, 456, Some("Example Place"), None, None).await;
     assert!(!out.ok, "{out:?}");
     assert_eq!(mismatch.captured().len(), 1);
     assert_eq!(out.error.unwrap().code, "place_response_mismatch");
 
     // A non-object success body is rejected too.
     let malformed = Server::new(|_| Reply::Json(200, json!([])));
-    let out =
-        cmd::place::update(&malformed.ctx(), 123, 456, Some("Deep Digging"), None, None).await;
+    let out = cmd::place::update(
+        &malformed.ctx(),
+        123,
+        456,
+        Some("Example Place"),
+        None,
+        None,
+    )
+    .await;
     assert!(!out.ok, "{out:?}");
     assert_eq!(out.error.unwrap().code, "place_response_invalid");
 
     // Missing scope: the failure names universe.place:write.
     let forbidden = Server::new(|_| Reply::Json(403, json!({"message": "forbidden"})));
-    let out =
-        cmd::place::update(&forbidden.ctx(), 123, 456, Some("Deep Digging"), None, None).await;
+    let out = cmd::place::update(
+        &forbidden.ctx(),
+        123,
+        456,
+        Some("Example Place"),
+        None,
+        None,
+    )
+    .await;
     assert!(!out.ok, "{out:?}");
     assert!(
         out.hints
@@ -1616,7 +1631,7 @@ async fn place_update_never_looks_clearable_or_empty() {
     assert!(server.captured().is_empty());
 
     // The dry-run plan needs no credentials and sends nothing.
-    let plan = cmd::place::preview_update(123, 456, Some("Deep Digging"), Some("text"), Some(20));
+    let plan = cmd::place::preview_update(123, 456, Some("Example Place"), Some("text"), Some(20));
     assert!(plan.ok, "{plan:?}");
     assert_eq!(plan.command, "place update (dry-run)");
     let data = plan.data.unwrap();
@@ -2247,7 +2262,7 @@ async fn place_update_checks_server_size_before_success() {
         Reply::Json(
             200,
             json!({
-                "displayName": "Deep Digging",
+                "displayName": "Example Place",
                 "description": "From a file",
                 "serverSize": 20
             }),
@@ -2257,7 +2272,7 @@ async fn place_update_checks_server_size_before_success() {
         &combined.ctx(),
         123,
         456,
-        Some("Deep Digging"),
+        Some("Example Place"),
         Some("From a file"),
         Some(20),
     )

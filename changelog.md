@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1
+
+- API keys are loaded the same way Asphalt loads `ASPHALT_API_KEY`. dotenvy
+  reads the nearest `.env` before argument parsing and does not override an
+  existing environment variable. The variable is `RBXOC_API_KEY`.
+  `.rbxoc/api-key` and `.rbxoc/oauth-token` are no longer consulted.
+- The README setup walks through install, a universe API key, and the project
+  `.env`. The DevForum announcement is linked from the README and the crate
+  homepage.
+
 ## 0.7.0
 
 - Endpoint failures name the catalog permission and a concrete
