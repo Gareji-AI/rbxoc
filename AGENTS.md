@@ -60,6 +60,7 @@ mise run verify
 - **Do not track:** `.rbxoc/`, `.ralph/`, `.pi/`, `target/`.
 - **Do not commit** local agent transcripts, sweep scripts output, or `.env` from consumer projects.
 - Release versioning lives in `Cargo.toml`; tag releases as `vX.Y.Z` on GitHub when publishing to crates.io.
+- A published version bump also updates the DevForum announcement in the same release: https://devforum.roblox.com/t/rbxoc-a-cli-for-the-roblox-open-cloud-api/4959453 . The post's current version, Rokit pin, `.env` / `RBXOC_API_KEY` setup, and command screenshot must match the release. Do not leave the previous version or `.rbxoc/api-key` in that post.
 
 ## Boundaries (do not do without explicit ask)
 
