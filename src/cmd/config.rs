@@ -13,7 +13,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure, path_segment};
+use crate::ctx::{Ctx, failure, failure_for_endpoint, path_segment};
 use crate::output::{ErrorBody, Output};
 
 pub const REPOSITORIES: &[&str] = &[
@@ -100,7 +100,7 @@ pub async fn get(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
             format!("Fetched published config for {repository}"),
             Some(data),
         ),
-        Err(err) => failure("config get", err),
+        Err(err) => failure_for_endpoint("config get", "config.get", err, &ctx.auth),
     }
 }
 
@@ -119,7 +119,7 @@ pub async fn draft(ctx: &Ctx, universe_id: u64, repository: &str) -> Output {
             format!("Fetched the draft for {repository}"),
             Some(data),
         ),
-        Err(err) => failure("config draft", err),
+        Err(err) => failure_for_endpoint("config draft", "config.draft", err, &ctx.auth),
     }
 }
 
@@ -137,8 +137,19 @@ pub async fn patch_draft(ctx: &Ctx, universe_id: u64, repository: &str, document
         Err(err) => return failure("config patch-draft", err),
     };
     match ctx.send(ctx.client.patch(ctx.url(&path)).json(&body)).await {
-        Ok(resp) => finish_write(ctx, resp, "config patch-draft", repository).await,
-        Err(err) => failure("config patch-draft", err),
+        Ok(resp) => {
+            finish_write(
+                ctx,
+                resp,
+                "config patch-draft",
+                "config.patch-draft",
+                repository,
+            )
+            .await
+        }
+        Err(err) => {
+            failure_for_endpoint("config patch-draft", "config.patch-draft", err, &ctx.auth)
+        }
     }
 }
 
@@ -156,8 +167,17 @@ pub async fn overwrite(ctx: &Ctx, universe_id: u64, repository: &str, document: 
         Err(err) => return failure("config overwrite", err),
     };
     match ctx.send(ctx.client.put(ctx.url(&path)).json(&body)).await {
-        Ok(resp) => finish_write(ctx, resp, "config overwrite", repository).await,
-        Err(err) => failure("config overwrite", err),
+        Ok(resp) => {
+            finish_write(
+                ctx,
+                resp,
+                "config overwrite",
+                "config.overwrite",
+                repository,
+            )
+            .await
+        }
+        Err(err) => failure_for_endpoint("config overwrite", "config.overwrite", err, &ctx.auth),
     }
 }
 
@@ -218,11 +238,18 @@ pub async fn publish(
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure("config publish", err);
+                return failure_for_endpoint("config publish", "config.publish", err, &ctx.auth);
             }
             let data = match ctx.json_or_error(resp).await {
                 Ok(data) => data,
-                Err(err) => return failure("config publish", err),
+                Err(err) => {
+                    return failure_for_endpoint(
+                        "config publish",
+                        "config.publish",
+                        err,
+                        &ctx.auth,
+                    );
+                }
             };
             Output::success(
                 "config publish",
@@ -233,7 +260,7 @@ pub async fn publish(
                 "The running game reads these values after it refreshes them".into(),
             ])
         }
-        Err(err) => failure("config publish", err),
+        Err(err) => failure_for_endpoint("config publish", "config.publish", err, &ctx.auth),
     }
 }
 
@@ -259,7 +286,7 @@ pub async fn revisions(ctx: &Ctx, universe_id: u64, repository: &str) -> Output 
                 Some(data),
             )
         }
-        Err(err) => failure("config revisions", err),
+        Err(err) => failure_for_endpoint("config revisions", "config.revisions", err, &ctx.auth),
     }
 }
 
@@ -281,11 +308,18 @@ pub async fn restore(ctx: &Ctx, universe_id: u64, repository: &str, revision_id:
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure("config restore", err);
+                return failure_for_endpoint("config restore", "config.restore", err, &ctx.auth);
             }
             let data = match ctx.json_or_error(resp).await {
                 Ok(data) => data,
-                Err(err) => return failure("config restore", err),
+                Err(err) => {
+                    return failure_for_endpoint(
+                        "config restore",
+                        "config.restore",
+                        err,
+                        &ctx.auth,
+                    );
+                }
             };
             Output::success(
                 "config restore",
@@ -296,7 +330,7 @@ pub async fn restore(ctx: &Ctx, universe_id: u64, repository: &str, revision_id:
                 "This stages the change. Run `rbxoc config publish` to make it live".into(),
             ])
         }
-        Err(err) => failure("config restore", err),
+        Err(err) => failure_for_endpoint("config restore", "config.restore", err, &ctx.auth),
     }
 }
 
@@ -305,15 +339,16 @@ async fn finish_write(
     ctx: &Ctx,
     resp: reqwest::Response,
     command: &str,
+    endpoint_id: &str,
     repository: &str,
 ) -> Output {
     if !resp.status().is_success() {
         let err = crate::auth::error_from_response(resp).await;
-        return failure(command, err);
+        return failure_for_endpoint(command, endpoint_id, err, &ctx.auth);
     }
     let data = match ctx.json_or_error(resp).await {
         Ok(data) => data,
-        Err(err) => return failure(command, err),
+        Err(err) => return failure_for_endpoint(command, endpoint_id, err, &ctx.auth),
     };
     Output::success(
         command,

@@ -4,7 +4,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure, path_segment};
+use crate::ctx::{Ctx, failure, failure_for_endpoint, path_segment};
 use crate::output::{ErrorBody, Output};
 
 /// Read an entry.
@@ -25,7 +25,7 @@ pub async fn get(
             format!("Fetched {store}/{entry}"),
             Some(data),
         ),
-        Err(err) => failure("datastore get", err),
+        Err(err) => failure_for_endpoint("datastore get", "datastore.get", err, &ctx.auth),
     }
 }
 
@@ -90,8 +90,9 @@ pub async fn set(
         Ok(data) => Some(data),
         Err(err) if err.status == Some(404) && allow_missing => None,
         Err(err) if err.status == Some(403) => {
-            return failure(
+            return failure_for_endpoint(
                 "datastore set",
+                "datastore.get",
                 ErrorBody {
                     code: "datastore_read_forbidden",
                     message: "the value update reads the entry first, and that read was forbidden"
@@ -103,6 +104,7 @@ pub async fn set(
                     ),
                     refs: None,
                 },
+                &ctx.auth,
             );
         }
         Err(err) if err.status == Some(404) => {
@@ -120,7 +122,9 @@ pub async fn set(
                 },
             );
         }
-        Err(err) => return failure("datastore set", err),
+        Err(err) => {
+            return failure_for_endpoint("datastore set", "datastore.get", err, &ctx.auth);
+        }
     };
     let body = if let Some(current) = current {
         let etag = current
@@ -194,11 +198,13 @@ pub async fn set(
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure("datastore set", err);
+                return failure_for_endpoint("datastore set", "datastore.set", err, &ctx.auth);
             }
             let data = match ctx.json_or_error(resp).await {
                 Ok(data) => data,
-                Err(err) => return failure("datastore set", err),
+                Err(err) => {
+                    return failure_for_endpoint("datastore set", "datastore.set", err, &ctx.auth);
+                }
             };
             Output::success(
                 "datastore set",
@@ -206,7 +212,7 @@ pub async fn set(
                 Some(data),
             )
         }
-        Err(err) => failure("datastore set", err),
+        Err(err) => failure_for_endpoint("datastore set", "datastore.set", err, &ctx.auth),
     }
 }
 
@@ -229,7 +235,7 @@ pub async fn delete(
             format!("Deleted {store}/{entry}"),
             Some(json!({ "store": store, "entry": entry })),
         ),
-        Err(err) => failure("datastore delete", err),
+        Err(err) => failure_for_endpoint("datastore delete", "datastore.delete", err, &ctx.auth),
     }
 }
 
@@ -323,7 +329,7 @@ pub async fn list(
             }
             out
         }
-        Err(err) => failure("datastore list", err),
+        Err(err) => failure_for_endpoint("datastore list", "datastore.list", err, &ctx.auth),
     }
 }
 

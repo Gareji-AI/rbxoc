@@ -2,7 +2,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure, path_segment};
+use crate::ctx::{Ctx, failure, failure_for_endpoint, path_segment};
 use crate::output::{ErrorBody, Output};
 
 /// Fetch a universe. Also doubles as a connectivity probe.
@@ -20,7 +20,7 @@ pub async fn get(ctx: &Ctx, universe_id: u64) -> Output {
                 Some(data),
             )
         }
-        Err(err) => failure("universe get", err),
+        Err(err) => failure_for_endpoint("universe get", "universe.get", err, &ctx.auth),
     }
 }
 
@@ -66,7 +66,12 @@ pub async fn publish_message(ctx: &Ctx, universe_id: u64, topic: &str, message: 
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure("universe publish-message", err);
+                return failure_for_endpoint(
+                    "universe publish-message",
+                    "messaging.publish",
+                    err,
+                    &ctx.auth,
+                );
             }
             Output::success(
                 "universe publish-message",
@@ -74,6 +79,11 @@ pub async fn publish_message(ctx: &Ctx, universe_id: u64, topic: &str, message: 
                 Some(json!({ "universeId": universe_id, "topic": topic })),
             )
         }
-        Err(err) => failure("universe publish-message", err),
+        Err(err) => failure_for_endpoint(
+            "universe publish-message",
+            "messaging.publish",
+            err,
+            &ctx.auth,
+        ),
     }
 }

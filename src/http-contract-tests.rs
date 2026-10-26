@@ -320,6 +320,21 @@ async fn datastore_create_flags_use_only_documented_query_parameters() {
     }
 }
 
+fn paid_badge<'a>(
+    name: &'a str,
+    description: &'a str,
+    payment_source: Option<&'a str>,
+) -> cmd::badge::BadgeCreate<'a> {
+    cmd::badge::BadgeCreate {
+        name,
+        description,
+        payment_source,
+        expected_cost: Some(100),
+        active: Some(true),
+        icon: None,
+    }
+}
+
 async fn mutation(ctx: &Ctx, operation: &str) -> crate::output::Output {
     match operation {
         "increment" => {
@@ -327,7 +342,7 @@ async fn mutation(ctx: &Ctx, operation: &str) -> crate::output::Output {
         }
         "message" => cmd::universe::publish_message(ctx, 123, "test", "{}").await,
         "create" => cmd::event::create(ctx, 123, "{}").await,
-        "badge" => cmd::badge::create(ctx, 123, "Test", "Test", Some("user")).await,
+        "badge" => cmd::badge::create(ctx, 123, paid_badge("Test", "Test", Some("user"))).await,
         "restart" => cmd::server::restart(ctx, 123, false).await,
         _ => unreachable!(),
     }
@@ -511,7 +526,12 @@ async fn real_restart_omits_the_unsupported_dry_run_field() {
 async fn badge_creation_uses_multipart_and_numeric_payment_sources() {
     let server = Server::success();
     for (source, expected) in [("user", "1"), ("group", "2")] {
-        let out = cmd::badge::create(&server.ctx(), 123, "Test", "Description", Some(source)).await;
+        let out = cmd::badge::create(
+            &server.ctx(),
+            123,
+            paid_badge("Test", "Description", Some(source)),
+        )
+        .await;
         assert!(out.ok, "{out:?}");
         assert!(out.hints.iter().any(|hint| hint.contains("Robux")));
         let requests = server.captured();
@@ -527,11 +547,13 @@ async fn badge_creation_uses_multipart_and_numeric_payment_sources() {
             .split(&format!("--{boundary}"))
             .filter(|part| part.contains("Content-Disposition"))
             .collect();
-        assert_eq!(parts.len(), 3);
+        assert_eq!(parts.len(), 5);
         for (name, value) in [
             ("name", "Test"),
             ("description", "Description"),
             ("paymentSourceType", expected),
+            ("expectedCost", "100"),
+            ("isActive", "true"),
         ] {
             assert!(
                 parts
@@ -549,7 +571,7 @@ async fn badge_creation_uses_multipart_and_numeric_payment_sources() {
 async fn invalid_badge_payment_sources_fail_before_any_paid_request() {
     let server = Server::success();
     for source in [None, Some("invalid"), Some(""), Some("1")] {
-        let out = cmd::badge::create(&server.ctx(), 123, "Test", "Test", source).await;
+        let out = cmd::badge::create(&server.ctx(), 123, paid_badge("Test", "Test", source)).await;
         assert!(!out.ok, "{source:?}: {out:?}");
         assert!(out.error.is_some());
     }
@@ -1158,7 +1180,7 @@ async fn required_json_mutations_reject_malformed_and_empty_success_bodies() {
         for out in [
             cmd::event::create(&ctx, 123, "{}").await,
             cmd::event::update(&ctx, 456, "{}").await,
-            cmd::badge::create(&ctx, 123, "Fixture", "", Some("user")).await,
+            cmd::badge::create(&ctx, 123, paid_badge("Fixture", "", Some("user"))).await,
             cmd::badge::update(&ctx, 456, Some("Fixture"), None, None).await,
             cmd::datastore::set(&ctx, 123, "store", "entry", None, "1", false, cmd::datastore::ValueUpdate::default()).await,
             cmd::ordered_datastore::set(&ctx, 123, "store", "global", "entry", 1, false).await,
@@ -2077,4 +2099,290 @@ async fn standalone_asset_files_are_rejected_before_upload() {
     assert!(preview.ok, "{preview:?}");
     assert_eq!(preview.data.unwrap()["bytes"], cmd::asset::MAX_ASSET_BYTES);
     assert!(server.captured().is_empty());
+}
+
+fn metrics_query() -> &'static str {
+    r#"{"metric":"DailyActiveUsers","granularity":"OneDay","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#
+}
+
+fn operation_id_from_hint(hint: &str) -> &str {
+    hint.split("--operation-id ")
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .trim_matches('`')
+}
+
+#[tokio::test]
+async fn datastore_403_includes_its_catalog_permission() {
+    let server = Server::new(|_| Reply::Json(403, json!({"message": "forbidden"})));
+    let out = cmd::datastore::get(&server.ctx(), 123, "store", "entry", None).await;
+    assert!(!out.ok);
+    assert_eq!(out.error.as_ref().unwrap().status, Some(403));
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("universe-datastores.objects:read"))
+    );
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("rbxoc api show datastore.get"))
+    );
+}
+
+#[tokio::test]
+async fn event_get_403_names_its_dual_auth_scope() {
+    let server = Server::new(|_| Reply::Json(403, json!({"message": "forbidden"})));
+    let out = cmd::event::get(&server.ctx(), 456).await;
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("universe.event:read"))
+    );
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("rbxoc api show event.get"))
+    );
+}
+
+#[tokio::test]
+async fn datastore_set_403_names_the_mutation_scope() {
+    let server = Server::new(|count| {
+        if count == 1 {
+            Reply::Json(
+                200,
+                json!({"etag": "etag-1", "value": 1, "attributes": {}, "users": []}),
+            )
+        } else {
+            Reply::Json(403, json!({"message": "forbidden"}))
+        }
+    });
+    let out = cmd::datastore::set(
+        &server.ctx(),
+        123,
+        "store",
+        "entry",
+        None,
+        "1",
+        false,
+        cmd::datastore::ValueUpdate::default(),
+    )
+    .await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(server.captured().len(), 2);
+    assert_eq!(server.captured()[1].method, "PATCH");
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("universe-datastores.objects:update"))
+    );
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("rbxoc api show datastore.set"))
+    );
+}
+
+#[tokio::test]
+async fn universe_get_without_scopes_keeps_generic_hints() {
+    let server = Server::new(|_| Reply::Json(403, json!({"message": "forbidden"})));
+    let out = cmd::universe::get(&server.ctx(), 123).await;
+    assert!(!out.ok);
+    assert!(!out.hints.is_empty());
+    assert!(
+        !out.hints
+            .iter()
+            .any(|hint| hint.contains("Creator Dashboard → API keys → Permissions:"))
+    );
+}
+
+#[tokio::test]
+async fn place_update_checks_server_size_before_success() {
+    let matched = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({"path": "universes/123/places/456", "displayName": "Fixture", "serverSize": 20}),
+        )
+    });
+    let out = cmd::place::update(&matched.ctx(), 123, 456, None, None, Some(20)).await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(matched.captured().len(), 1);
+    assert_eq!(
+        serde_json::from_str::<Value>(&matched.captured()[0].body).unwrap(),
+        json!({"serverSize": 20})
+    );
+
+    let mismatch = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({"path": "universes/123/places/456", "displayName": "Fixture", "serverSize": 10}),
+        )
+    });
+    let out = cmd::place::update(&mismatch.ctx(), 123, 456, None, None, Some(20)).await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(out.error.as_ref().unwrap().code, "place_response_mismatch");
+    assert!(!out.hints.is_empty());
+    assert_eq!(mismatch.captured().len(), 1);
+
+    for body in [
+        json!({"path": "universes/123/places/456", "displayName": "Fixture"}),
+        json!({"serverSize": "20"}),
+        json!({"serverSize": 0}),
+    ] {
+        let server = Server::new({
+            let body = body.clone();
+            move |_| Reply::Json(200, body.clone())
+        });
+        let out = cmd::place::update(&server.ctx(), 123, 456, None, None, Some(20)).await;
+        assert!(!out.ok, "{body} {out:?}");
+        assert_eq!(out.error.unwrap().code, "place_response_mismatch");
+        assert_eq!(server.captured().len(), 1);
+    }
+
+    let combined = Server::new(|_| {
+        Reply::Json(
+            200,
+            json!({
+                "displayName": "Deep Digging",
+                "description": "From a file",
+                "serverSize": 20
+            }),
+        )
+    });
+    let out = cmd::place::update(
+        &combined.ctx(),
+        123,
+        456,
+        Some("Deep Digging"),
+        Some("From a file"),
+        Some(20),
+    )
+    .await;
+    assert!(out.ok, "{out:?}");
+    let preview = cmd::place::preview_update(123, 456, None, None, Some(20));
+    assert!(preview.ok, "{preview:?}");
+    assert_eq!(preview.data.unwrap()["dryRun"], true);
+    assert_eq!(combined.captured().len(), 1);
+}
+
+#[tokio::test]
+async fn analytics_operation_paths_round_trip() {
+    let server = Server::new(|_| {
+        Reply::Json(
+            202,
+            json!({"path": "v1/universes/123/operations/metrics/abc123", "done": false}),
+        )
+    });
+    let out = cmd::analytics::metrics(&server.ctx(), 123, metrics_query()).await;
+    assert!(out.ok, "{out:?}");
+    let hint = out
+        .hints
+        .iter()
+        .find(|hint| hint.contains("--operation-id"))
+        .expect("poll hint");
+    let id = operation_id_from_hint(hint);
+    assert_eq!(id, "abc123");
+    let _polled = cmd::analytics::operation(&server.ctx(), 123, "metrics", id).await;
+    let requests = server.captured();
+    assert_eq!(
+        requests.last().unwrap().target,
+        "/analytics-query-api/v1/universes/123/operations/metrics/abc123"
+    );
+    assert_eq!(requests.last().unwrap().method, "GET");
+
+    let dimensions = Server::success();
+    let out = cmd::analytics::operation(
+        &dimensions.ctx(),
+        123,
+        "dimensions",
+        "v1/universes/123/operations/dimension-values/xyz",
+    )
+    .await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(
+        dimensions.captured()[0].target,
+        "/analytics-query-api/v1/universes/123/operations/dimension-values/xyz"
+    );
+
+    let mismatch = Server::success();
+    let out = cmd::analytics::operation(
+        &mismatch.ctx(),
+        123,
+        "metrics",
+        "v1/universes/999/operations/metrics/abc123",
+    )
+    .await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(out.error.unwrap().code, "invalid_operation_path");
+    assert!(mismatch.captured().is_empty());
+    assert!(!out.hints.iter().any(|hint| hint.contains("--operation-id")));
+
+    let malformed = Server::new(|_| {
+        Reply::Json(
+            202,
+            json!({"path": "v1/universes/999/operations/metrics/abc123", "done": false}),
+        )
+    });
+    let out = cmd::analytics::metrics(&malformed.ctx(), 123, metrics_query()).await;
+    assert!(out.ok, "{out:?}");
+    assert!(!out.hints.iter().any(|hint| hint.contains("--operation-id")));
+    assert!(out.hints.iter().any(|hint| hint.contains("Reconcile")));
+    assert_eq!(malformed.captured().len(), 1);
+}
+
+#[tokio::test]
+async fn badge_create_sends_the_full_paid_form_or_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let icon = dir.path().join("badge.png");
+    std::fs::write(&icon, b"png-bytes").unwrap();
+    let server = Server::success();
+    let mut request = paid_badge("Test", "Description", Some("user"));
+    request.icon = Some(&icon);
+    let out = cmd::badge::create(&server.ctx(), 123, request).await;
+    assert!(out.ok, "{out:?}");
+    let body = &server.captured()[0].body;
+    assert!(body.contains("name=\"files\""), "{body}");
+    assert!(body.contains("filename=\"badge.png\""), "{body}");
+    assert!(body.contains("image/png"), "{body}");
+    assert!(
+        body.contains("name=\"expectedCost\"\r\n\r\n100\r\n"),
+        "{body}"
+    );
+    assert!(body.contains("name=\"isActive\"\r\n\r\ntrue\r\n"), "{body}");
+
+    let missing_cost = Server::success();
+    let mut request = paid_badge("Test", "Description", Some("user"));
+    request.expected_cost = None;
+    let out = cmd::badge::create(&missing_cost.ctx(), 123, request).await;
+    assert_eq!(out.error.unwrap().code, "expected_cost_missing");
+    assert!(missing_cost.captured().is_empty());
+
+    let missing_active = Server::success();
+    let mut request = paid_badge("Test", "Description", Some("user"));
+    request.active = None;
+    let out = cmd::badge::create(&missing_active.ctx(), 123, request).await;
+    assert_eq!(out.error.unwrap().code, "active_missing");
+    assert!(missing_active.captured().is_empty());
+
+    let text = dir.path().join("badge.txt");
+    std::fs::write(&text, b"nope").unwrap();
+    let rejected = Server::success();
+    let mut request = paid_badge("Test", "Description", Some("user"));
+    request.icon = Some(&text);
+    let out = cmd::badge::create(&rejected.ctx(), 123, request).await;
+    assert_eq!(out.error.unwrap().code, "invalid_badge_icon");
+    assert!(rejected.captured().is_empty());
+
+    let empty = dir.path().join("empty.png");
+    std::fs::write(&empty, b"").unwrap();
+    let rejected = Server::success();
+    let mut request = paid_badge("Test", "Description", Some("user"));
+    request.icon = Some(&empty);
+    let out = cmd::badge::create(&rejected.ctx(), 123, request).await;
+    assert_eq!(out.error.unwrap().code, "file_size_invalid");
+    assert!(rejected.captured().is_empty());
 }

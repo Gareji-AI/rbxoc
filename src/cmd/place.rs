@@ -64,11 +64,13 @@ pub async fn publish(
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure(COMMAND, err);
+                return failure_for_endpoint(COMMAND, "place.publish", err, &ctx.auth);
             }
             let data = match ctx.json_or_error(resp).await {
                 Ok(data) => data,
-                Err(err) => return failure(COMMAND, err),
+                Err(err) => {
+                    return failure_for_endpoint(COMMAND, "place.publish", err, &ctx.auth);
+                }
             };
             // Current response is {"versionNumber": N}; also preserve the
             // historical numeric response without inventing a missing version.
@@ -106,7 +108,7 @@ pub async fn publish(
             )
             .with_hints(hints)
         }
-        Err(err) => failure(COMMAND, err),
+        Err(err) => failure_for_endpoint(COMMAND, "place.publish", err, &ctx.auth),
     }
 }
 
@@ -153,7 +155,7 @@ pub async fn get(ctx: &Ctx, universe_id: u64, place_id: u64) -> Output {
                 .unwrap_or("(unnamed)");
             Output::success("place get", format!("Fetched place: {name}"), Some(data))
         }
-        Err(err) => failure("place get", err),
+        Err(err) => failure_for_endpoint("place get", "place.get", err, &ctx.auth),
     }
 }
 
@@ -288,19 +290,13 @@ async fn update_with_command(
                 if let Some(expected) = expected
                     && data.get(field).and_then(|value| value.as_str()) != Some(expected.as_str())
                 {
-                    return failure(
-                        command,
-                        crate::output::ErrorBody {
-                            code: "place_response_mismatch",
-                            message: format!("place update response does not report the new {field}"),
-                            status: None,
-                            detail: Some(
-                                "Inspect the place with `rbxoc place get` before repeating this mutation"
-                                    .into(),
-                            ),
-                            refs: None,
-                        },
-                    );
+                    return place_response_mismatch(command, field);
+                }
+            }
+            if let Some(expected) = server_size {
+                let actual = data.get("serverSize").and_then(|value| value.as_u64());
+                if actual != Some(u64::from(expected)) {
+                    return place_response_mismatch(command, "serverSize");
                 }
             }
             let updated = data
@@ -356,6 +352,21 @@ fn plan_update(
     Ok((mask.join(","), serde_json::Value::Object(body)))
 }
 
+fn place_response_mismatch(command: &str, field: &str) -> Output {
+    failure(
+        command,
+        crate::output::ErrorBody {
+            code: "place_response_mismatch",
+            message: format!("place update response does not report the new {field}"),
+            status: None,
+            detail: Some(
+                "Inspect the place with `rbxoc place get` before repeating this mutation".into(),
+            ),
+            refs: None,
+        },
+    )
+}
+
 fn invalid_update(message: &str) -> crate::output::ErrorBody {
     crate::output::ErrorBody {
         code: "invalid_value",
@@ -396,6 +407,6 @@ pub async fn history(ctx: &Ctx, place_id: u64, limit: u32, cursor: Option<&str>)
             }
             out
         }
-        Err(err) => failure("place history", err),
+        Err(err) => failure_for_endpoint("place history", "place.history", err, &ctx.auth),
     }
 }

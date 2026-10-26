@@ -9,7 +9,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, failure_for_endpoint};
 use crate::output::{ErrorBody, Output};
 
 const COMMAND: &str = "thumbnail upload";
@@ -91,11 +91,13 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure(COMMAND, err);
+                return failure_for_endpoint(COMMAND, "thumbnail.upload", err, &ctx.auth);
             }
             let data = match ctx.json_or_error(resp).await {
                 Ok(data) => data,
-                Err(err) => return failure(COMMAND, err),
+                Err(err) => {
+                    return failure_for_endpoint(COMMAND, "thumbnail.upload", err, &ctx.auth);
+                }
             };
             let ops = extract_operation_ids(&data);
             if ops.is_empty() {
@@ -127,7 +129,7 @@ pub async fn upload(ctx: &Ctx, universe_id: u64, files: &[std::path::PathBuf]) -
             }
             out
         }
-        Err(err) => failure(COMMAND, err),
+        Err(err) => failure_for_endpoint(COMMAND, "thumbnail.upload", err, &ctx.auth),
     }
 }
 
@@ -193,7 +195,7 @@ pub async fn status(ctx: &Ctx, universe_id: u64, operation_ids: &[String]) -> Ou
             format!("Fetched status for {} operations", operation_ids.len()),
             Some(data),
         ),
-        Err(err) => failure("thumbnail status", err),
+        Err(err) => failure_for_endpoint("thumbnail status", "thumbnail.status", err, &ctx.auth),
     }
 }
 
@@ -221,7 +223,7 @@ pub async fn list(ctx: &Ctx, universe_id: u64, next_cursor: Option<&str>) -> Out
             }
             out
         }
-        Err(err) => failure("thumbnail list", err),
+        Err(err) => failure_for_endpoint("thumbnail list", "thumbnail.list", err, &ctx.auth),
     }
 }
 
@@ -248,15 +250,19 @@ pub async fn delete(ctx: &Ctx, universe_id: u64, thumbnail_ids: &[String]) -> Ou
     let req = ctx.client.delete(ctx.url(&path)).query(&query);
     let resp = match ctx.send(req).await {
         Ok(resp) => resp,
-        Err(err) => return failure("thumbnail delete", err),
+        Err(err) => {
+            return failure_for_endpoint("thumbnail delete", "thumbnail.delete", err, &ctx.auth);
+        }
     };
     if !resp.status().is_success() {
         let err = crate::auth::error_from_response(resp).await;
-        return failure("thumbnail delete", err);
+        return failure_for_endpoint("thumbnail delete", "thumbnail.delete", err, &ctx.auth);
     }
     let data = match ctx.json_or_error(resp).await {
         Ok(data) => data,
-        Err(err) => return failure("thumbnail delete", err),
+        Err(err) => {
+            return failure_for_endpoint("thumbnail delete", "thumbnail.delete", err, &ctx.auth);
+        }
     };
     summarize_delete(universe_id, thumbnail_ids, &data)
 }

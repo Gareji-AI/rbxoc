@@ -3,16 +3,15 @@
 //! Roblox error bodies usually carry `errorCode` and `message`. This module
 //! turns them into stable `ErrorBody` codes and optional doc links.
 
-use serde::Deserialize;
+use serde_json::Value;
 
 use crate::auth;
 use crate::catalog;
 use crate::output::{ErrorBody, ErrorRef};
 
 /// Parsed fields from a JSON error body.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default)]
 struct OpenCloudErrorJson {
-    #[serde(rename = "errorCode")]
     error_code: Option<String>,
     message: Option<String>,
 }
@@ -86,7 +85,11 @@ pub fn apply_endpoint_context(
 ) -> ErrorBody {
     if matches!(
         error.code,
-        "feature_not_enrolled" | "mutation_outcome_unknown"
+        "feature_not_enrolled"
+            | "mutation_outcome_unknown"
+            | "publication_uncertain"
+            | "read_outcome_unknown"
+            | "unexpected_redirect"
     ) {
         return error;
     }
@@ -139,12 +142,38 @@ pub fn permission_hints_for_endpoint(endpoint_id: &str, status: u16) -> Vec<Stri
     vec![hint]
 }
 
+fn nonempty(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_string())
+}
+
 fn parse_error_json(body: &str) -> OpenCloudErrorJson {
     let trimmed = body.trim();
-    if trimmed.is_empty() || !trimmed.starts_with('{') {
+    if trimmed.is_empty() {
         return OpenCloudErrorJson::default();
     }
-    serde_json::from_str(trimmed).unwrap_or_default()
+    let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+        return OpenCloudErrorJson::default();
+    };
+    if let Value::String(message) = value {
+        return OpenCloudErrorJson {
+            message: nonempty(&message),
+            ..OpenCloudErrorJson::default()
+        };
+    }
+    let Some(object) = value.as_object() else {
+        return OpenCloudErrorJson::default();
+    };
+    let field = |key: &str| object.get(key).and_then(Value::as_str).and_then(nonempty);
+    let nested = object
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .and_then(nonempty);
+    OpenCloudErrorJson {
+        error_code: field("errorCode"),
+        message: field("message").or(field("errorMessage")).or(nested),
+    }
 }
 
 fn is_feature_not_enrolled(error_code: Option<&str>, message: Option<&str>, body: &str) -> bool {
@@ -262,5 +291,78 @@ mod tests {
         let err = build_error_body(403, "{}", None);
         let err = apply_endpoint_context(err, "analytics.metrics", "api-key");
         assert_eq!(err.code, "http_403");
+    }
+
+    #[test]
+    fn parses_documented_alternative_error_message_shapes() {
+        for (body, expected) in [
+            (
+                r#"{"errorCode":"InvalidName","errorMessage":"Name is invalid"}"#,
+                "Name is invalid",
+            ),
+            (
+                r#"{"error":{"code":3,"message":"Query is invalid"}}"#,
+                "Query is invalid",
+            ),
+            (
+                r#""Thumbnail request is invalid""#,
+                "Thumbnail request is invalid",
+            ),
+        ] {
+            let err = build_error_body(400, body, None);
+            assert_eq!(err.code, "http_400", "{body}");
+            assert_eq!(err.status, Some(400));
+            assert!(err.message.contains(expected), "{body}: {err:?}");
+            assert_eq!(err.detail.as_deref(), Some(body));
+            assert!(!err.message.is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_and_malformed_bodies_keep_the_generic_summary() {
+        for body in ["", "   ", "not-json", "{", r#"{"errorMessage":"  "}"#, "[]"] {
+            let err = build_error_body(400, body, None);
+            assert_eq!(
+                err.message, "Open Cloud returned HTTP 400",
+                "{body}: {err:?}"
+            );
+            assert_eq!(err.code, "http_400");
+        }
+    }
+
+    #[test]
+    fn top_level_message_wins_over_alternate_fields() {
+        let err = build_error_body(
+            400,
+            r#"{"message":"primary","errorMessage":"other","error":{"message":"nested"}}"#,
+            None,
+        );
+        assert!(err.message.contains("primary"));
+        assert!(!err.message.contains("other"));
+        assert!(!err.message.contains("nested"));
+    }
+
+    #[test]
+    fn specialized_codes_are_not_rewritten_by_endpoint_context() {
+        for code in [
+            "publication_uncertain",
+            "read_outcome_unknown",
+            "unexpected_redirect",
+            "mutation_outcome_unknown",
+        ] {
+            let err = apply_endpoint_context(
+                ErrorBody {
+                    code,
+                    message: "keep".into(),
+                    status: Some(403),
+                    detail: None,
+                    refs: None,
+                },
+                "analytics.dimensions",
+                "api-key",
+            );
+            assert_eq!(err.code, code);
+            assert_eq!(err.message, "keep");
+        }
     }
 }

@@ -591,16 +591,22 @@ rbxoc gamepass list --universe-id 123
 rbxoc gamepass create --universe-id 123 --name "VIP" --price 499 --image vip.png
 rbxoc gamepass update --universe-id 123 --game-pass-id 456 --price 499
 
+rbxoc badge create --universe-id 123 --name "Wave 10" --description "Reach wave 10" \
+  --payment-source user --expected-cost 100 --active true --icon badge.png
 rbxoc badge update --badge-id 456 --description "Reach wave 10"
 
 rbxoc event list --universe-id 123
 rbxoc event create --universe-id 123 --document '{"title":"Winter","startTime":"2026-12-01T00:00:00Z"}'
 ```
 
-`badge create` spends Robux, so it requires `--payment-source` and says so in
-its result. Only `user` (provider enum `1`) and `group` (`2`) are accepted;
-other values fail locally before any paid request. Badge creation uses
-multipart fields `name`, `description`, and numeric `paymentSourceType`.
+`badge create` spends Robux. It requires `--payment-source`, `--expected-cost`,
+and `--active true|false` before it builds a request. Only `user` (provider
+enum `1`) and `group` (`2`) are accepted. The multipart body sends `name`,
+`description`, numeric `paymentSourceType`, numeric `expectedCost`, and
+`isActive`. `--icon` is optional and, when present, is validated locally as a
+nonempty `.png`, `.jpg`, or `.jpeg` file and sent as the `files` part. Omit
+`--icon` only when the universe already has a curated default badge icon.
+Missing or invalid confirmation sends nothing.
 `gamepass create --price` also sends `isForSale=true`. `gamepass update --price`
 changes only the price; sale state changes only with `--is-for-sale true` or
 `--is-for-sale false`.

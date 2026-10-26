@@ -6,7 +6,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, failure_for_endpoint};
 use crate::output::{ErrorBody, Output};
 
 /// Grant a subject access to a set of assets.
@@ -130,11 +130,13 @@ pub async fn grant(
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure(COMMAND, err);
+                return failure_for_endpoint(COMMAND, "permissions.grant", err, &ctx.auth);
             }
             let data = match ctx.json_or_error(resp).await {
                 Ok(data) => data,
-                Err(err) => return failure(COMMAND, err),
+                Err(err) => {
+                    return failure_for_endpoint(COMMAND, "permissions.grant", err, &ctx.auth);
+                }
             };
             let successful: Option<Vec<u64>> = match data.get("successAssetIds") {
                 None | Some(Value::Null) => Some(Vec::new()),
@@ -196,7 +198,7 @@ pub async fn grant(
                 Some(evidence),
             )
         }
-        Err(err) => failure(COMMAND, err),
+        Err(err) => failure_for_endpoint(COMMAND, "permissions.grant", err, &ctx.auth),
     }
 }
 

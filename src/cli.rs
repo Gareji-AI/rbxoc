@@ -850,6 +850,15 @@ pub enum BadgeCommand {
         /// Who pays the creation fee: `user` or `group`
         #[arg(long)]
         payment_source: Option<String>,
+        /// Robux cost you expect. Required. Nothing is sent when this is omitted.
+        #[arg(long)]
+        expected_cost: Option<u64>,
+        /// Whether the new badge is active. Required: true or false. No default.
+        #[arg(long, action = clap::ArgAction::Set, num_args = 1, value_name = "BOOL")]
+        active: Option<bool>,
+        /// Badge icon PNG or JPEG, sent as the `files` part. Omit only for a curated default icon.
+        #[arg(long, value_name = "PATH")]
+        icon: Option<std::path::PathBuf>,
     },
     /// Update a badge
     Update {
@@ -1807,13 +1816,21 @@ impl Cli {
                     name,
                     description,
                     payment_source,
+                    expected_cost,
+                    active,
+                    icon,
                 } => {
                     cmd::badge::create(
                         &ctx,
                         universe_id,
-                        &name,
-                        &description,
-                        payment_source.as_deref(),
+                        cmd::badge::BadgeCreate {
+                            name: &name,
+                            description: &description,
+                            payment_source: payment_source.as_deref(),
+                            expected_cost,
+                            active,
+                            icon: icon.as_deref(),
+                        },
                     )
                     .await
                 }

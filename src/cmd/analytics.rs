@@ -34,6 +34,77 @@ const QUERY_FIELDS: &[&str] = &[
 
 const QUERY_EXAMPLE: &str = "{\"metric\":\"DailyActiveUsers\",\"granularity\":\"OneDay\",\"startTime\":\"2026-10-01T00:00:00Z\",\"endTime\":\"2026-10-08T00:00:00Z\"}";
 
+/// Turn a provider operation path into the id `analytics operation` can poll.
+///
+/// Accepts a bare id, `operations/{kind}/{id}`, or the documented
+/// `v1/universes/{universeId}/operations/{kind}/{id}` path. A different
+/// universe or kind is rejected instead of being rebound onto the caller's
+/// query.
+pub fn operation_poll_id(path: &str, universe_id: u64, kind: &str) -> Result<String, String> {
+    let segment = match kind {
+        "metrics" => "metrics",
+        "dimensions" | "dimension-values" => "dimension-values",
+        other => return Err(format!("--kind does not accept {other}")),
+    };
+    let path = path.trim().trim_start_matches('/');
+    if path.is_empty() {
+        return Err(format!("operation path `{path}` is malformed"));
+    }
+    // A value that is not a documented operation path stays one id. `path_segment`
+    // encodes `/`, `?`, `#`, spaces, and `%` so the request target cannot change shape.
+    let documented = path.starts_with("v1/universes/") || path.starts_with("operations/");
+    if !documented {
+        return Ok(path.to_string());
+    }
+    if path.chars().any(|c| matches!(c, '?' | '#' | ' ' | '\\')) {
+        return Err(format!("operation path `{path}` is malformed"));
+    }
+    let id = {
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts
+            .iter()
+            .any(|part| part.is_empty() || *part == "." || *part == "..")
+        {
+            return Err(format!("operation path `{path}` is malformed"));
+        }
+        if parts.len() == 3 && parts[0] == "operations" {
+            if parts[1] != segment {
+                return Err(format!(
+                    "operation path kind {} does not match requested {segment}",
+                    parts[1]
+                ));
+            }
+            parts[2]
+        } else if parts.len() == 6
+            && parts[0] == "v1"
+            && parts[1] == "universes"
+            && parts[3] == "operations"
+        {
+            if parts[2] != universe_id.to_string() {
+                return Err(format!(
+                    "operation path universe {} does not match requested {universe_id}",
+                    parts[2]
+                ));
+            }
+            if parts[4] != segment {
+                return Err(format!(
+                    "operation path kind {} does not match requested {segment}",
+                    parts[4]
+                ));
+            }
+            parts[5]
+        } else {
+            return Err(format!(
+                "operation path `{path}` is not a bare id or a documented analytics operation path"
+            ));
+        }
+    };
+    if id.is_empty() || id.contains('%') || id == "." || id == ".." {
+        return Err(format!("operation id `{id}` is malformed"));
+    }
+    Ok(id.to_string())
+}
+
 pub fn validate_metrics_query_text(query: &str) -> Result<Value, ErrorBody> {
     let body: Value = serde_json::from_str(query).map_err(|e| ErrorBody {
         code: "invalid_query",
@@ -129,10 +200,14 @@ pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
                 Output::success(COMMAND, "Accepted the metrics query", Some(data.clone()));
             // Asynchronous queries return an operation.
             if let Some(op) = data.get("path").and_then(|v| v.as_str()) {
-                out = out.with_hints(vec![format!(
-                    "Run `rbxoc analytics operation --universe-id {universe_id} --kind metrics --operation-id {}` to fetch the result",
-                    op.strip_prefix("operations/").unwrap_or(op)
-                )]);
+                out = match operation_poll_id(op, universe_id, "metrics") {
+                    Ok(id) => out.with_hints(vec![format!(
+                        "Run `rbxoc analytics operation --universe-id {universe_id} --kind metrics --operation-id {id}` to fetch the result"
+                    )]),
+                    Err(reason) => out.with_hints(vec![format!(
+                        "The query was accepted, but its operation path cannot be polled: {reason}. Reconcile `{op}` before polling; no follow-up command was generated."
+                    )]),
+                };
             }
             out
         }
@@ -159,7 +234,25 @@ pub async fn operation(ctx: &Ctx, universe_id: u64, kind: &str, operation_id: &s
             );
         }
     };
-    let encoded_id = match crate::ctx::path_segment(operation_id) {
+    let operation_id = match operation_poll_id(operation_id, universe_id, kind) {
+        Ok(id) => id,
+        Err(reason) => {
+            return failure(
+                "analytics operation",
+                ErrorBody {
+                    code: "invalid_operation_path",
+                    message: reason,
+                    status: None,
+                    detail: Some(
+                        "Pass a bare operation id, or the documented path for this universe and kind. A mismatched path is not polled."
+                            .into(),
+                    ),
+                    refs: None,
+                },
+            );
+        }
+    };
+    let encoded_id = match crate::ctx::path_segment(&operation_id) {
         Ok(value) => value,
         Err(err) => return failure("analytics operation", err),
     };

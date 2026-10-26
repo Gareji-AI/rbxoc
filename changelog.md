@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.7.0
+
+- Endpoint failures name the catalog permission and a concrete
+  `rbxoc api show <endpoint-id>` command. 401/403 hints come from the endpoint
+  that failed. Uncertain mutations, redirects, read-only queries, and
+  feature-enrollment errors keep their existing guidance.
+- `place update` confirms `serverSize` against the returned Place before it
+  reports success. A missing or different value is `place_response_mismatch`
+  and the PATCH is not sent again.
+- `analytics metrics` turns a documented operation path into a pollable
+  operation id. A path for another universe or kind is not rewritten into a
+  command.
+- Open Cloud errors surface `errorMessage`, nested `error.message`, and a JSON
+  string body in the stable summary. The HTTP code and raw detail stay put.
+- `badge create` sends `expectedCost`, `isActive`, and an optional `files`
+  icon. Missing cost, missing active state, or an invalid icon fails locally
+  and sends nothing.
+
 ## 0.6.1
 
 Distribution-only patch. No CLI behavior, command surface, API contract, or

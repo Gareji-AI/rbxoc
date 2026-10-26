@@ -7,7 +7,7 @@
 
 use serde_json::Value;
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, failure_for_endpoint};
 use crate::output::{ErrorBody, Output};
 
 #[derive(Clone, Copy)]
@@ -17,13 +17,23 @@ enum MonetizationKind {
 }
 
 impl MonetizationKind {
-    fn list_endpoint(self, universe_id: u64) -> (String, &'static str, &'static str, &'static str) {
+    fn list_endpoint(
+        self,
+        universe_id: u64,
+    ) -> (
+        String,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    ) {
         match self {
             Self::GamePass => (
                 format!("/game-passes/v1/universes/{universe_id}/game-passes/creator"),
                 "gamepass list",
                 "gamePasses",
                 "Game Passes",
+                "gamepass.list",
             ),
             Self::DevProduct => (
                 format!(
@@ -32,19 +42,22 @@ impl MonetizationKind {
                 "devproduct list",
                 "developerProducts",
                 "Developer Products",
+                "devproduct.list",
             ),
         }
     }
 
-    fn create_endpoint(self, universe_id: u64) -> (String, &'static str) {
+    fn create_endpoint(self, universe_id: u64) -> (String, &'static str, &'static str) {
         match self {
             Self::GamePass => (
                 format!("/game-passes/v1/universes/{universe_id}/game-passes"),
                 "gamepass create",
+                "gamepass.create",
             ),
             Self::DevProduct => (
                 format!("/developer-products/v2/universes/{universe_id}/developer-products"),
                 "devproduct create",
+                "devproduct.create",
             ),
         }
     }
@@ -56,8 +69,17 @@ async fn list_monetization(
     universe_id: u64,
     page_token: Option<&str>,
 ) -> Output {
-    let (path, command, array_key, label) = kind.list_endpoint(universe_id);
-    list_collection(ctx, command, &path, array_key, label, page_token).await
+    let (path, command, array_key, label, endpoint_id) = kind.list_endpoint(universe_id);
+    list_collection(
+        ctx,
+        command,
+        endpoint_id,
+        &path,
+        array_key,
+        label,
+        page_token,
+    )
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -70,8 +92,18 @@ async fn create_monetization(
     price: Option<u64>,
     image: Option<&std::path::PathBuf>,
 ) -> Output {
-    let (path, command) = kind.create_endpoint(universe_id);
-    create_named_product(ctx, command, &path, name, description, price, image).await
+    let (path, command, endpoint_id) = kind.create_endpoint(universe_id);
+    create_named_product(
+        ctx,
+        command,
+        endpoint_id,
+        &path,
+        name,
+        description,
+        price,
+        image,
+    )
+    .await
 }
 
 /// List Game Passes.
@@ -135,7 +167,16 @@ pub async fn gamepass_update(
         );
     }
     let path = format!("/game-passes/v1/universes/{universe_id}/game-passes/{game_pass_id}");
-    submit_multipart(ctx, "gamepass update", &path, "PATCH", fields, image).await
+    submit_multipart(
+        ctx,
+        "gamepass update",
+        "gamepass.update",
+        &path,
+        "PATCH",
+        fields,
+        image,
+    )
+    .await
 }
 
 /// List Developer Products.
@@ -167,6 +208,7 @@ pub async fn devproduct_create(
 async fn list_collection(
     ctx: &Ctx,
     command: &str,
+    endpoint_id: &str,
     path: &str,
     array_key: &str,
     label: &str,
@@ -196,7 +238,7 @@ async fn list_collection(
             }
             out
         }
-        Err(err) => failure(command, err),
+        Err(err) => failure_for_endpoint(command, endpoint_id, err, &ctx.auth),
     }
 }
 
@@ -240,9 +282,11 @@ fn append_optional_product_fields(
     append_description_and_price(fields, description, price);
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_named_product(
     ctx: &Ctx,
     command: &str,
+    endpoint_id: &str,
     path: &str,
     name: &str,
     description: Option<&str>,
@@ -250,13 +294,14 @@ async fn create_named_product(
     image: Option<&std::path::PathBuf>,
 ) -> Output {
     let fields = create_product_fields(name, description, price);
-    submit_multipart(ctx, command, path, "POST", fields, image).await
+    submit_multipart(ctx, command, endpoint_id, path, "POST", fields, image).await
 }
 
 /// Build and send the multipart body. The image is optional.
 async fn submit_multipart(
     ctx: &Ctx,
     command: &str,
+    endpoint_id: &str,
     path: &str,
     method: &str,
     fields: Vec<(&'static str, String)>,
@@ -330,14 +375,16 @@ async fn submit_multipart(
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure(command, err);
+                return failure_for_endpoint(command, endpoint_id, err, &ctx.auth);
             }
             let data = if resp.status() == reqwest::StatusCode::NO_CONTENT && method == "PATCH" {
                 Value::Null
             } else {
                 match ctx.json_or_error(resp).await {
                     Ok(data) => data,
-                    Err(err) => return failure(command, err),
+                    Err(err) => {
+                        return failure_for_endpoint(command, endpoint_id, err, &ctx.auth);
+                    }
                 }
             };
             // The id comes back as a number for monetization resources, but
@@ -370,7 +417,7 @@ async fn submit_multipart(
             )
             .with_hints(vec!["This API is Beta; the schema may change".into()])
         }
-        Err(err) => failure(command, err),
+        Err(err) => failure_for_endpoint(command, endpoint_id, err, &ctx.auth),
     }
 }
 
