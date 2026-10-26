@@ -1,10 +1,10 @@
 # rbxoc
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/eiei114/rbxoc/main/assets/icon.png" alt="rbxoc icon" width="160" height="160">
+  <img src="https://raw.githubusercontent.com/Gareji-AI/rbxoc/main/assets/icon.png" alt="rbxoc icon" width="160" height="160">
 </p>
 
-[![CI](https://github.com/eiei114/rbxoc/actions/workflows/ci.yml/badge.svg)](https://github.com/eiei114/rbxoc/actions/workflows/ci.yml)
+[![CI](https://github.com/Gareji-AI/rbxoc/actions/workflows/ci.yml/badge.svg)](https://github.com/Gareji-AI/rbxoc/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/rbxoc.svg)](https://crates.io/crates/rbxoc)
 [![Crates.io downloads](https://img.shields.io/crates/d/rbxoc.svg)](https://crates.io/crates/rbxoc)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
@@ -182,7 +182,7 @@ to set up. Pin it next to `rojo`, `stylua`, and `selene` in the same file:
 # rokit.toml
 [tools]
 rojo = "rojo-rbx/rojo@7.7.1"
-rbxoc = "eiei114/rbxoc@0.6.0"
+rbxoc = "Gareji-AI/rbxoc@0.6.0"
 ```
 
 ```bash
