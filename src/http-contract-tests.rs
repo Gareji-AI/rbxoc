@@ -1574,22 +1574,37 @@ async fn place_update_sends_only_the_supplied_fields() {
             json!({"path": "universes/123/places/456", "displayName": "Old name"}),
         )
     });
-    let out = cmd::place::update(&mismatch.ctx(), 123, 456, Some("Example Place"), None, None).await;
+    let out =
+        cmd::place::update(&mismatch.ctx(), 123, 456, Some("Example Place"), None, None).await;
     assert!(!out.ok, "{out:?}");
     assert_eq!(mismatch.captured().len(), 1);
     assert_eq!(out.error.unwrap().code, "place_response_mismatch");
 
     // A non-object success body is rejected too.
     let malformed = Server::new(|_| Reply::Json(200, json!([])));
-    let out =
-        cmd::place::update(&malformed.ctx(), 123, 456, Some("Example Place"), None, None).await;
+    let out = cmd::place::update(
+        &malformed.ctx(),
+        123,
+        456,
+        Some("Example Place"),
+        None,
+        None,
+    )
+    .await;
     assert!(!out.ok, "{out:?}");
     assert_eq!(out.error.unwrap().code, "place_response_invalid");
 
     // Missing scope: the failure names universe.place:write.
     let forbidden = Server::new(|_| Reply::Json(403, json!({"message": "forbidden"})));
-    let out =
-        cmd::place::update(&forbidden.ctx(), 123, 456, Some("Example Place"), None, None).await;
+    let out = cmd::place::update(
+        &forbidden.ctx(),
+        123,
+        456,
+        Some("Example Place"),
+        None,
+        None,
+    )
+    .await;
     assert!(!out.ok, "{out:?}");
     assert!(
         out.hints
