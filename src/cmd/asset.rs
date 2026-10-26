@@ -15,7 +15,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, failure_for_endpoint};
 use crate::output::{ErrorBody, Output};
 
 const CMD_CREATE: &str = "asset create";
@@ -158,7 +158,7 @@ pub async fn create(
         .client
         .post(ctx.url("/assets/v1/assets"))
         .multipart(form);
-    submit_operation(ctx, req, CMD_CREATE, &asset_type, type_note).await
+    submit_operation(ctx, req, CMD_CREATE, &asset_type, type_note, "asset.create").await
 }
 
 /// Update an asset.
@@ -204,14 +204,22 @@ pub async fn update(
     }
     let req = req.multipart(form);
     if file.is_some() {
-        return submit_operation(ctx, req, CMD_UPDATE, &plan.asset_type, plan.type_note).await;
+        return submit_operation(
+            ctx,
+            req,
+            CMD_UPDATE,
+            &plan.asset_type,
+            plan.type_note,
+            "asset.update",
+        )
+        .await;
     }
     let data = match ctx.send(req).await {
         Ok(resp) => match ctx.json_or_error(resp).await {
             Ok(data) => data,
-            Err(err) => return failure(CMD_UPDATE, err),
+            Err(err) => return failure_for_endpoint(CMD_UPDATE, "asset.update", err, &ctx.auth),
         },
-        Err(err) => return failure(CMD_UPDATE, err),
+        Err(err) => return failure_for_endpoint(CMD_UPDATE, "asset.update", err, &ctx.auth),
     };
     if data
         .get("path")
@@ -537,13 +545,14 @@ async fn submit_operation(
     command: &str,
     asset_type: &str,
     type_note: Option<String>,
+    endpoint_id: &str,
 ) -> Output {
     let data = match ctx.send(req).await {
         Ok(resp) => match ctx.json_or_error(resp).await {
             Ok(data) => data,
-            Err(err) => return failure(command, err),
+            Err(err) => return failure_for_endpoint(command, endpoint_id, err, &ctx.auth),
         },
-        Err(err) => return failure(command, err),
+        Err(err) => return failure_for_endpoint(command, endpoint_id, err, &ctx.auth),
     };
     operation_output(data, command, asset_type, type_note)
 }
@@ -606,7 +615,7 @@ pub async fn get(ctx: &Ctx, asset_id: u64, read_mask: Option<&str>) -> Output {
                 Some(data),
             )
         }
-        Err(err) => failure("asset get", err),
+        Err(err) => failure_for_endpoint("asset get", "asset.get", err, &ctx.auth),
     }
 }
 
@@ -626,7 +635,7 @@ pub async fn versions(ctx: &Ctx, asset_id: u64, max_page_size: u32) -> Output {
                 Some(data),
             )
         }
-        Err(err) => failure("asset versions", err),
+        Err(err) => failure_for_endpoint("asset versions", "asset.versions", err, &ctx.auth),
     }
 }
 
@@ -645,9 +654,9 @@ pub async fn rollback(ctx: &Ctx, asset_id: u64, version: u64) -> Output {
     let data = match ctx.send(req).await {
         Ok(resp) => match ctx.json_or_error(resp).await {
             Ok(data) => data,
-            Err(err) => return failure(COMMAND, err),
+            Err(err) => return failure_for_endpoint(COMMAND, "asset.rollback", err, &ctx.auth),
         },
-        Err(err) => return failure(COMMAND, err),
+        Err(err) => return failure_for_endpoint(COMMAND, "asset.rollback", err, &ctx.auth),
     };
     let prefix = format!("assets/{asset_id}/versions/");
     if !data
@@ -684,7 +693,7 @@ pub async fn archive(ctx: &Ctx, asset_id: u64) -> Output {
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure("asset archive", err);
+                return failure_for_endpoint("asset archive", "asset.archive", err, &ctx.auth);
             }
             Output::success(
                 "asset archive",
@@ -692,7 +701,7 @@ pub async fn archive(ctx: &Ctx, asset_id: u64) -> Output {
                 Some(json!({ "assetId": asset_id })),
             )
         }
-        Err(err) => failure("asset archive", err),
+        Err(err) => failure_for_endpoint("asset archive", "asset.archive", err, &ctx.auth),
     }
 }
 
@@ -953,7 +962,7 @@ pub async fn operation(ctx: &Ctx, operation_id: &str) -> Output {
             }
             out
         }
-        Err(err) => failure("asset operation", err),
+        Err(err) => failure_for_endpoint("asset operation", "asset.operation", err, &ctx.auth),
     }
 }
 

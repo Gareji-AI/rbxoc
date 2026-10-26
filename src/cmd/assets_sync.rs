@@ -6,7 +6,7 @@ use anyhow::Context;
 use serde_json::json;
 
 use crate::cmd::{asset, assets, model, preprocess};
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, failure_for_endpoint};
 use crate::output::{ErrorBody, Output};
 
 const COMMAND: &str = "assets sync";
@@ -201,7 +201,16 @@ async fn run_mode(ctx: &Ctx, dir: &Path, selection: &[String], mode: Mode) -> Ou
                             if let Err(e) = assets::save_lockfile(dir, &lock) {
                                 return receipt_failure(key, None, e);
                             }
-                            return source_failure(key, err);
+                            return source_failure(
+                                ctx,
+                                key,
+                                Some(if item.target_asset_id.is_some() {
+                                    "asset.update"
+                                } else {
+                                    "asset.create"
+                                }),
+                                err,
+                            );
                         }
                         return failure(
                             COMMAND,
@@ -230,13 +239,15 @@ async fn run_mode(ctx: &Ctx, dir: &Path, selection: &[String], mode: Mode) -> Ou
             let done = match asset::wait_for_operation(ctx, &op_id, 60, 2000).await {
                 Ok(v) => v,
                 Err(err) => {
-                    return source_failure(key, err).with_hints(recovery_hints(key, Some(&op_id)));
+                    return source_failure(ctx, key, Some("asset.operation"), err)
+                        .with_hints(recovery_hints(key, Some(&op_id)));
                 }
             };
             let asset_id = match asset::asset_id_from_operation(&done) {
                 Ok(id) => id,
                 Err(err) => {
-                    return source_failure(key, err).with_hints(recovery_hints(key, Some(&op_id)));
+                    return source_failure(ctx, key, None, err)
+                        .with_hints(recovery_hints(key, Some(&op_id)));
                 }
             };
             if let Some(target) = item.target_asset_id
@@ -653,9 +664,12 @@ fn local_error(code: &'static str, message: String) -> ErrorBody {
     }
 }
 
-fn source_failure(key: &str, mut err: ErrorBody) -> Output {
+fn source_failure(ctx: &Ctx, key: &str, endpoint_id: Option<&str>, mut err: ErrorBody) -> Output {
     err.message = format!("{key}: {}", err.message);
-    failure(COMMAND, err)
+    match endpoint_id {
+        Some(endpoint_id) => failure_for_endpoint(COMMAND, endpoint_id, err, &ctx.auth),
+        None => failure(COMMAND, err),
+    }
 }
 
 fn recovery_hints(key: &str, operation_id: Option<&str>) -> Vec<String> {

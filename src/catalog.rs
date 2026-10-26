@@ -520,7 +520,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey, OAuth],
         scopes: &["legacy-universe.badge:manage-and-spend-robux"],
         mutating: true,
-        note: "Spends Robux. Multipart paymentSourceType is 1 (user) or 2 (group); sent at most once.",
+        note: "Spends Robux. Multipart fields are name, description, paymentSourceType 1 (user) or 2 (group), numeric expectedCost, boolean isActive, and optional files icon. Missing cost, active state, or an invalid icon fails locally before any request. Sent at most once.",
     },
     Endpoint {
         id: "badge.update",

@@ -10,7 +10,7 @@
 
 use serde_json::json;
 
-use crate::ctx::{Ctx, failure, path_segment};
+use crate::ctx::{Ctx, failure, failure_for_endpoint, path_segment};
 use crate::output::{ErrorBody, Output};
 
 /// Read entries, newest-first by value unless `ascending` is set.
@@ -55,7 +55,12 @@ pub async fn list(
             }
             out
         }
-        Err(err) => failure("ordered-datastore list", err),
+        Err(err) => failure_for_endpoint(
+            "ordered-datastore list",
+            "ordered-datastore.list",
+            err,
+            &ctx.auth,
+        ),
     }
 }
 
@@ -71,7 +76,12 @@ pub async fn get(ctx: &Ctx, universe_id: u64, store: &str, scope: &str, entry: &
             format!("Fetched {store}/{entry}"),
             Some(data),
         ),
-        Err(err) => failure("ordered-datastore get", err),
+        Err(err) => failure_for_endpoint(
+            "ordered-datastore get",
+            "ordered-datastore.get",
+            err,
+            &ctx.auth,
+        ),
     }
 }
 
@@ -98,11 +108,23 @@ pub async fn set(
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure("ordered-datastore set", err);
+                return failure_for_endpoint(
+                    "ordered-datastore set",
+                    "ordered-datastore.set",
+                    err,
+                    &ctx.auth,
+                );
             }
             let data = match ctx.json_or_error(resp).await {
                 Ok(data) => data,
-                Err(err) => return failure("ordered-datastore set", err),
+                Err(err) => {
+                    return failure_for_endpoint(
+                        "ordered-datastore set",
+                        "ordered-datastore.set",
+                        err,
+                        &ctx.auth,
+                    );
+                }
             };
             Output::success(
                 "ordered-datastore set",
@@ -110,7 +132,12 @@ pub async fn set(
                 Some(data),
             )
         }
-        Err(err) => failure("ordered-datastore set", err),
+        Err(err) => failure_for_endpoint(
+            "ordered-datastore set",
+            "ordered-datastore.set",
+            err,
+            &ctx.auth,
+        ),
     }
 }
 
@@ -127,7 +154,12 @@ pub async fn delete(ctx: &Ctx, universe_id: u64, store: &str, scope: &str, entry
             format!("Deleted {store}/{entry}"),
             Some(json!({ "store": store, "scope": scope, "entry": entry })),
         ),
-        Err(err) => failure("ordered-datastore delete", err),
+        Err(err) => failure_for_endpoint(
+            "ordered-datastore delete",
+            "ordered-datastore.delete",
+            err,
+            &ctx.auth,
+        ),
     }
 }
 
@@ -150,11 +182,23 @@ pub async fn increment(
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure("ordered-datastore increment", err);
+                return failure_for_endpoint(
+                    "ordered-datastore increment",
+                    "ordered-datastore.increment",
+                    err,
+                    &ctx.auth,
+                );
             }
             let data = match ctx.json_or_error(resp).await {
                 Ok(data) => data,
-                Err(err) => return failure("ordered-datastore increment", err),
+                Err(err) => {
+                    return failure_for_endpoint(
+                        "ordered-datastore increment",
+                        "ordered-datastore.increment",
+                        err,
+                        &ctx.auth,
+                    );
+                }
             };
             Output::success(
                 "ordered-datastore increment",
@@ -162,7 +206,12 @@ pub async fn increment(
                 Some(data),
             )
         }
-        Err(err) => failure("ordered-datastore increment", err),
+        Err(err) => failure_for_endpoint(
+            "ordered-datastore increment",
+            "ordered-datastore.increment",
+            err,
+            &ctx.auth,
+        ),
     }
 }
 

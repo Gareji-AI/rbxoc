@@ -10,7 +10,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure, path_segment};
+use crate::ctx::{Ctx, failure, failure_for_endpoint, path_segment};
 use crate::output::Output;
 
 /// List game servers for a place version.
@@ -99,7 +99,7 @@ pub async fn list(
             }
             out
         }
-        Err(err) => failure("server list", err),
+        Err(err) => failure_for_endpoint("server list", "server.list", err, &ctx.auth),
     }
 }
 
@@ -198,7 +198,9 @@ pub async fn logs(
         }
         let data = match ctx.get_json_query(&path, &query).await {
             Ok(data) => data,
-            Err(err) => return failure("server logs", err),
+            Err(err) => {
+                return failure_for_endpoint("server logs", "server.logs", err, &ctx.auth);
+            }
         };
         entries.extend(extract_log_entries(&data));
         let next = data
@@ -296,15 +298,22 @@ pub async fn restart(ctx: &Ctx, universe_id: u64, dry_run: bool) -> Output {
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure("server restart", err);
+                return failure_for_endpoint("server restart", "server.restart", err, &ctx.auth);
             }
             let data = match ctx.json_or_error(resp).await {
                 Ok(data) => data,
-                Err(err) => return failure("server restart", err),
+                Err(err) => {
+                    return failure_for_endpoint(
+                        "server restart",
+                        "server.restart",
+                        err,
+                        &ctx.auth,
+                    );
+                }
             };
             Output::success("server restart", "Requested a server restart", Some(data))
         }
-        Err(err) => failure("server restart", err),
+        Err(err) => failure_for_endpoint("server restart", "server.restart", err, &ctx.auth),
     }
 }
 
@@ -317,7 +326,12 @@ pub async fn restart_forecast(ctx: &Ctx, universe_id: u64) -> Output {
             "Fetched the restart impact forecast",
             Some(data),
         ),
-        Err(err) => failure("server restart-forecast", err),
+        Err(err) => failure_for_endpoint(
+            "server restart-forecast",
+            "server.restart-forecast",
+            err,
+            &ctx.auth,
+        ),
     }
 }
 

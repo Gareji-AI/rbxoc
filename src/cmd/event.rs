@@ -6,7 +6,7 @@
 
 use serde_json::{Value, json};
 
-use crate::ctx::{Ctx, failure};
+use crate::ctx::{Ctx, failure, failure_for_endpoint};
 use crate::output::{ErrorBody, Output};
 
 fn events_path(universe_id: u64) -> String {
@@ -59,7 +59,7 @@ pub async fn list(
             }
             out
         }
-        Err(err) => failure("event list", err),
+        Err(err) => failure_for_endpoint("event list", "event.list", err, &ctx.auth),
     }
 }
 
@@ -68,7 +68,7 @@ pub async fn get(ctx: &Ctx, event_id: u64) -> Output {
     let path = format!("/virtual-events/v3/game-events/{event_id}");
     match ctx.get_json(&path).await {
         Ok(data) => Output::success("event get", format!("Fetched event {event_id}"), Some(data)),
-        Err(err) => failure("event get", err),
+        Err(err) => failure_for_endpoint("event get", "event.get", err, &ctx.auth),
     }
 }
 
@@ -80,8 +80,17 @@ pub async fn create(ctx: &Ctx, universe_id: u64, document: &str) -> Output {
     };
     let path = events_path(universe_id);
     match ctx.send(ctx.client.post(ctx.url(&path)).json(&body)).await {
-        Ok(resp) => finish(ctx, resp, "event create", "Created the game event").await,
-        Err(err) => failure("event create", err),
+        Ok(resp) => {
+            finish(
+                ctx,
+                resp,
+                "event create",
+                "event.create",
+                "Created the game event",
+            )
+            .await
+        }
+        Err(err) => failure_for_endpoint("event create", "event.create", err, &ctx.auth),
     }
 }
 
@@ -93,8 +102,17 @@ pub async fn update(ctx: &Ctx, event_id: u64, document: &str) -> Output {
     };
     let path = format!("/virtual-events/v3/game-events/{event_id}");
     match ctx.send(ctx.client.patch(ctx.url(&path)).json(&body)).await {
-        Ok(resp) => finish(ctx, resp, "event update", "Updated the game event").await,
-        Err(err) => failure("event update", err),
+        Ok(resp) => {
+            finish(
+                ctx,
+                resp,
+                "event update",
+                "event.update",
+                "Updated the game event",
+            )
+            .await
+        }
+        Err(err) => failure_for_endpoint("event update", "event.update", err, &ctx.auth),
     }
 }
 
@@ -108,7 +126,7 @@ pub async fn delete(ctx: &Ctx, event_id: u64) -> Output {
             Some(json!({ "eventId": event_id })),
         )
         .with_hints(vec!["Deletes are permanent".into()]),
-        Err(err) => failure("event delete", err),
+        Err(err) => failure_for_endpoint("event delete", "event.delete", err, &ctx.auth),
     }
 }
 
@@ -126,14 +144,20 @@ fn invalid_document(command: &str, e: serde_json::Error) -> Output {
     )
 }
 
-async fn finish(ctx: &Ctx, resp: reqwest::Response, command: &str, ok_message: &str) -> Output {
+async fn finish(
+    ctx: &Ctx,
+    resp: reqwest::Response,
+    command: &str,
+    endpoint_id: &str,
+    ok_message: &str,
+) -> Output {
     if !resp.status().is_success() {
         let err = crate::auth::error_from_response(resp).await;
-        return failure(command, err);
+        return failure_for_endpoint(command, endpoint_id, err, &ctx.auth);
     }
     let data = match ctx.json_or_error(resp).await {
         Ok(data) => data,
-        Err(err) => return failure(command, err),
+        Err(err) => return failure_for_endpoint(command, endpoint_id, err, &ctx.auth),
     };
     Output::success(command, ok_message.to_string(), Some(data))
 }
