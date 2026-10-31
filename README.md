@@ -609,6 +609,7 @@ reviewed `--draft-hash`, and may include `--message` and
 ```bash
 rbxoc analytics catalog
 rbxoc analytics metrics --universe-id 123 --query '{"metric":"DailyActiveUsers","granularity":"OneDay","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}'
+rbxoc analytics dimensions --universe-id 123 --query '{"metric":"DailyActiveUsers","dimensions":["Country"],"startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}'
 rbxoc analytics alerts list --universe-id 123
 rbxoc analytics alerts incidents --universe-id 123 --start-time 2026-10-01T00:00:00Z --end-time 2026-10-08T00:00:00Z
 ```
@@ -617,6 +618,11 @@ rbxoc analytics alerts incidents --universe-id 123 --start-time 2026-10-01T00:00
 `endTime`. Granularity is `OneMinute`, `HalfHour`, `OneHour`, `OneDay`,
 `OneWeek`, `OneMonth`, or `None`. A closed-enum miss fails locally before
 authentication.
+
+`DimensionValuesRequest` requires `metric`, a non-empty `dimensions` array,
+`startTime`, and `endTime`. It takes the same optional `granularity`, `filter`,
+and `limit`, and never computes the metric itself. Read the returned values
+back as `breakdown` and `filter` inputs for `analytics metrics`.
 
 The current contract supports API keys and OAuth2 for analytics queries and
 operation reads. Both need the documented `universe.analytics:read` permission.

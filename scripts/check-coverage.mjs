@@ -49,7 +49,7 @@ function checkCommandMapping(binary, entries) {
 		!command.startsWith("api ") && !command.startsWith("assets ") && command !== "analytics catalog");
 	const covered = new Set();
 	const readActions = new Set(["check", "get", "list", "status", "history", "logs", "operation",
-		"versions", "restart-forecast", "metrics", "draft", "revisions", "incidents", "image-id"]);
+		"versions", "restart-forecast", "metrics", "dimensions", "draft", "revisions", "incidents", "image-id"]);
 	for (const command of commands) {
 		const id = command === "universe publish-message" ? "messaging.publish"
 			: command.replace("analytics alerts ", "analytics alert ").replaceAll(" ", ".");

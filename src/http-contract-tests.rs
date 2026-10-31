@@ -2120,6 +2120,10 @@ fn metrics_query() -> &'static str {
     r#"{"metric":"DailyActiveUsers","granularity":"OneDay","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#
 }
 
+fn dimensions_query() -> &'static str {
+    r#"{"metric":"DailyActiveUsers","dimensions":["Country"],"startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#
+}
+
 fn operation_id_from_hint(hint: &str) -> &str {
     hint.split("--operation-id ")
         .nth(1)
@@ -2347,6 +2351,49 @@ async fn analytics_operation_paths_round_trip() {
     assert!(!out.hints.iter().any(|hint| hint.contains("--operation-id")));
     assert!(out.hints.iter().any(|hint| hint.contains("Reconcile")));
     assert_eq!(malformed.captured().len(), 1);
+}
+
+#[tokio::test]
+async fn analytics_dimensions_posts_the_query_and_polls_by_its_own_kind() {
+    let server = Server::new(|_| {
+        Reply::Json(
+            202,
+            json!({"path": "v1/universes/123/operations/dimension-values/dim1", "done": false}),
+        )
+    });
+    let out = cmd::analytics::dimensions(&server.ctx(), 123, dimensions_query()).await;
+    assert!(out.ok, "{out:?}");
+    let request = &server.captured()[0];
+    assert_eq!(
+        request.target,
+        "/analytics-query-api/v1/universes/123/dimension-values"
+    );
+    assert_eq!(request.method, "POST");
+    let body: Value = serde_json::from_str(&request.body).unwrap();
+    assert_eq!(body["dimensions"][0], "Country");
+    let hint = out
+        .hints
+        .iter()
+        .find(|hint| hint.contains("--kind dimensions"))
+        .expect("poll hint names the dimension-values kind");
+    assert_eq!(operation_id_from_hint(hint), "dim1");
+}
+
+#[tokio::test]
+async fn analytics_dimensions_rejects_an_unknown_shape_before_sending() {
+    for query in [
+        r#"{"metric":"DailyActiveUsers","dimensions":[],"startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
+        r#"{"metric":"DailyActiveUsers","dimensions":"Country","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
+        r#"{"metric":"DailyActiveUsers","dimensions":["Country"],"startTime":"2026-10-01T00:00:00Z"}"#,
+        r#"{"metric":"DailyActiveUsers","granularity":"OneDay","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
+        r#"{"metric":"DailyActiveUsers","dimensions":["Country"],"granularity":"day","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
+    ] {
+        let server = Server::success();
+        let out = cmd::analytics::dimensions(&server.ctx(), 123, query).await;
+        assert!(!out.ok, "{query}: {out:?}");
+        assert_eq!(out.error.unwrap().code, "invalid_query", "{query}");
+        assert!(server.captured().is_empty(), "{query} must not be sent");
+    }
 }
 
 #[tokio::test]
