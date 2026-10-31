@@ -533,6 +533,14 @@ pub enum AnalyticsCommand {
         #[arg(long)]
         operation_id: String,
     },
+    /// Query dimension values (for breakdown and filter)
+    Dimensions {
+        #[arg(long)]
+        universe_id: u64,
+        /// Query JSON
+        #[arg(long)]
+        query: String,
+    },
     /// List common metrics
     Catalog,
     /// Manage metric alert configurations
@@ -1114,6 +1122,7 @@ fn requested_leaf(command: &Command) -> &'static str {
         Command::Analytics(AnalyticsArgs { command }) => match command {
             AnalyticsCommand::Metrics { .. } => "analytics metrics",
             AnalyticsCommand::Operation { .. } => "analytics operation",
+            AnalyticsCommand::Dimensions { .. } => "analytics dimensions",
             AnalyticsCommand::Catalog => "analytics catalog",
             AnalyticsCommand::Alerts { command } => match command {
                 AlertCommand::List { .. } => "analytics alerts list",
@@ -1241,6 +1250,11 @@ fn preflight_before_auth(command: &Command) -> Option<Output> {
         }) => cmd::analytics::validate_metrics_query_text(query)
             .err()
             .map(|err| failure("analytics metrics", err)),
+        Command::Analytics(AnalyticsArgs {
+            command: AnalyticsCommand::Dimensions { query, .. },
+        }) => cmd::analytics::validate_dimensions_query_text(query)
+            .err()
+            .map(|err| failure("analytics dimensions", err)),
         _ => None,
     }
 }
@@ -1599,6 +1613,9 @@ impl Cli {
                     kind,
                     operation_id,
                 } => cmd::analytics::operation(&ctx, universe_id, &kind, &operation_id).await,
+                AnalyticsCommand::Dimensions { universe_id, query } => {
+                    cmd::analytics::dimensions(&ctx, universe_id, &query).await
+                }
                 AnalyticsCommand::Catalog => cmd::analytics::catalog().await,
                 AnalyticsCommand::Alerts { command } => match command {
                     AlertCommand::List {

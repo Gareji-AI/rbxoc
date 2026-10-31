@@ -58,6 +58,7 @@ fn contract_errors(entries: &[catalog::Endpoint]) -> Vec<String> {
             "versions",
             "restart-forecast",
             "metrics",
+            "dimensions",
             "draft",
             "revisions",
             "incidents",

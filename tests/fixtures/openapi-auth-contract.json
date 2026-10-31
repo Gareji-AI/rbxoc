@@ -1335,6 +1335,28 @@
           "targetResourceSpecifier": ""
         }
       ]
+    },
+    {
+      "catalogId": "analytics.dimensions",
+      "method": "POST",
+      "path": "/analytics-query-api/v1/universes/{universeId}/dimension-values",
+      "operationId": null,
+      "security": [
+        {
+          "roblox-api-key": []
+        },
+        {
+          "roblox-oauth2": [
+            "universe.analytics:read"
+          ]
+        }
+      ],
+      "x-roblox-scopes": [
+        {
+          "name": "universe.analytics:read",
+          "targetResourceSpecifier": "universes"
+        }
+      ]
     }
   ]
 }

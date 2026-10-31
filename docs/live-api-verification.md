@@ -116,7 +116,7 @@ approved live check; this table is not permission to enable every capability.
 | `universe:write` | `server restart` |
 | `universe-messaging-service:publish` | `universe publish-message` |
 | `legacy-universe.badge:manage-and-spend-robux` | `badge create`; also required with `legacy-universe.badge:write` for `badge update` |
-| `universe.analytics:read` | `analytics metrics/operation` (API key or OAuth2) |
+| `universe.analytics:read` | `analytics metrics/dimensions/operation` (API key or OAuth2) |
 | `universe.analytics.alert:read` / `:write` | Alert reads/writes; feature enrollment may still be required |
 
 Thumbnail, asset-permission, standard/ordered DataStore and place publish/history

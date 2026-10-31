@@ -32,9 +32,8 @@ missing command/endpoint mapping.
 
 `tests/fixtures/openapi-auth-contract.json` preserves security and scope excerpts
 from the official document, with its source URL, date and SHA-256. It covers all
-58 implemented cloud catalog entries (61 operations, since `analytics operation`
-reads dispatch to `metrics` or `dimension-values` and the five alert operations are
-recorded individually). Local composites are excluded.
+`catalog::ENDPOINTS` entries (`analytics.dimensions` now included), so the count
+floats with the catalog instead of being restated here.
 `cargo test catalog_contract_tests` compares auth, method, route and the union of
 OAuth security scopes / `x-roblox-scopes`, and proves credential/scope drift is
 detected. The same suite fails when an implemented catalog route disappears from
@@ -55,13 +54,13 @@ invented scope. Contract support is distinct from live verification and enrollme
 
 ## Current state
 
-64 catalog entries, 60 implemented.
+64 catalog entries, 61 implemented.
 
 | Domain | Implemented | Notes |
 | --- | --- | --- |
 | `asset` | 9 | create/update/get/versions/rollback/archive/operation + the local ID registry + explicit offline Image ID fallback |
 | `config` | 7 | remote config and feature flags, draft/publish |
-| `analytics` | 7 | metrics query, async operation results, and alert configurations |
+| `analytics` | 8 | metrics query, dimension values, async operation results, and alert configurations |
 | `event` | 5 | virtual events v3 |
 | `ordered-datastore` | 5 | leaderboards |
 | `datastore` | 4 | standard DataStores |
@@ -86,6 +85,7 @@ that, so it is not covered there.
 | Thumbnail replacement | no | yes |
 | Game server logs | no | yes |
 | Analytics queries | no | yes |
+| Analytics dimension values | no | yes |
 | Analytics alerts | no | yes |
 | Place version history | no | yes |
 | Remote config | no | yes |

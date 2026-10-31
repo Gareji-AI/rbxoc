@@ -324,11 +324,11 @@ pub const ENDPOINTS: &[Endpoint] = &[
         method: "POST",
         path: "/analytics-query-api/v1/universes/{universeId}/dimension-values",
         summary: "Query dimension values",
-        implemented: false,
-        auth: &[OAuth],
+        implemented: true,
+        auth: &[ApiKey, OAuth],
         scopes: &["universe.analytics:read"],
         mutating: false,
-        note: "Not implemented. Shaped like metrics; add later.",
+        note: "Lists the values a metric's dimensions take, for breakdown and filter. Not covered by rbxcloud.",
     },
     // ---- place version history ----
     Endpoint {

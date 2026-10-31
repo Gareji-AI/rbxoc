@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.2
+
+- `analytics dimensions` queries the documented `dimension-values` endpoint, so
+  `breakdown` and `filter` inputs can be read back instead of guessed. It takes
+  the same `--query` shape as metrics minus `granularity`, rejects unknown
+  fields, an empty or non-array `dimensions`, and a closed-enum granularity miss
+  before authentication, and emits a `--kind dimensions` poll hint. The catalog
+  entry is now `implemented: true` with API-key and OAuth2 alternatives from the
+  official OpenAPI document.
+
 ## 0.7.1
 
 - API keys are loaded the same way Asphalt loads `ASPHALT_API_KEY`. dotenvy

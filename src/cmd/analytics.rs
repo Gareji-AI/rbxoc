@@ -12,6 +12,8 @@ use crate::output::{ErrorBody, Output};
 
 const COMMAND: &str = "analytics metrics";
 
+const DIMENSIONS_COMMAND: &str = "analytics dimensions";
+
 pub const GRANULARITIES: &[&str] = &[
     "OneMinute",
     "HalfHour",
@@ -33,6 +35,18 @@ const QUERY_FIELDS: &[&str] = &[
 ];
 
 const QUERY_EXAMPLE: &str = "{\"metric\":\"DailyActiveUsers\",\"granularity\":\"OneDay\",\"startTime\":\"2026-10-01T00:00:00Z\",\"endTime\":\"2026-10-08T00:00:00Z\"}";
+
+const DIMENSION_FIELDS: &[&str] = &[
+    "metric",
+    "dimensions",
+    "startTime",
+    "endTime",
+    "filter",
+    "granularity",
+    "limit",
+];
+
+const DIMENSION_EXAMPLE: &str = "{\"metric\":\"DailyActiveUsers\",\"dimensions\":[\"Country\"],\"startTime\":\"2026-10-01T00:00:00Z\",\"endTime\":\"2026-10-08T00:00:00Z\"}";
 
 /// Turn a provider operation path into the id `analytics operation` can poll.
 ///
@@ -105,62 +119,66 @@ pub fn operation_poll_id(path: &str, universe_id: u64, kind: &str) -> Result<Str
     Ok(id.to_string())
 }
 
-pub fn validate_metrics_query_text(query: &str) -> Result<Value, ErrorBody> {
+/// Parse and shape-check a query document shared by the metrics and
+/// dimension-values endpoints: JSON object, known fields, required fields, a
+/// non-empty `metric`.
+fn validate_query_shape(
+    query: &str,
+    allowed: &[&str],
+    required: &[&str],
+    example: &str,
+) -> Result<serde_json::Map<String, Value>, ErrorBody> {
+    let invalid = |message: String, detail: String| ErrorBody {
+        code: "invalid_query",
+        message,
+        status: None,
+        detail: Some(detail),
+        refs: None,
+    };
     let body: Value = serde_json::from_str(query).map_err(|e| ErrorBody {
         code: "invalid_query",
         message: format!("--query is not valid JSON: {e}"),
         status: None,
-        detail: Some(format!("Example: --query '{QUERY_EXAMPLE}'")),
+        detail: Some(format!("Example: --query '{example}'")),
         refs: None,
     })?;
     let Some(object) = body.as_object() else {
-        return Err(ErrorBody {
-            code: "invalid_query",
-            message: "--query must be a JSON object".into(),
-            status: None,
-            detail: Some(format!("Example: --query '{QUERY_EXAMPLE}'")),
-            refs: None,
-        });
+        return Err(invalid(
+            "--query must be a JSON object".into(),
+            format!("Example: --query '{example}'"),
+        ));
     };
-    if let Some(key) = object
-        .keys()
-        .find(|key| !QUERY_FIELDS.contains(&key.as_str()))
-    {
-        return Err(ErrorBody {
-            code: "invalid_query",
-            message: format!("--query field {key} is not in QueryRequest"),
-            status: None,
-            detail: Some(
-                "Use singular metric and a granularity such as OneDay. metrics and P1D are not accepted."
-                    .into(),
-            ),
-            refs: None,
-        });
+    if let Some(key) = object.keys().find(|key| !allowed.contains(&key.as_str())) {
+        return Err(invalid(
+            format!("--query field {key} is not accepted"),
+            "Use one of the documented query fields; unknown fields are rejected.".into(),
+        ));
     }
-    for required in ["metric", "granularity", "startTime", "endTime"] {
-        if !object.contains_key(required) {
-            return Err(ErrorBody {
-                code: "invalid_query",
-                message: format!("--query is missing {required}"),
-                status: None,
-                detail: Some(format!("Example: --query '{QUERY_EXAMPLE}'")),
-                refs: None,
-            });
+    for field in required {
+        if !object.contains_key(*field) {
+            return Err(invalid(
+                format!("--query is missing {field}"),
+                format!("Example: --query '{example}'"),
+            ));
         }
     }
     if object["metric"]
         .as_str()
         .is_none_or(|metric| metric.is_empty())
     {
-        return Err(ErrorBody {
-            code: "invalid_query",
-            message: "--query metric must be a non-empty string".into(),
-            status: None,
-            detail: Some(format!("Example: --query '{QUERY_EXAMPLE}'")),
-            refs: None,
-        });
+        return Err(invalid(
+            "--query metric must be a non-empty string".into(),
+            format!("Example: --query '{example}'"),
+        ));
     }
-    let granularity = object["granularity"].as_str().unwrap_or("");
+    Ok(object.clone())
+}
+
+/// Reject a granularity outside the closed enum before any request is sent.
+fn check_granularity(object: &serde_json::Map<String, Value>) -> Result<(), ErrorBody> {
+    let Some(granularity) = object.get("granularity").and_then(|v| v.as_str()) else {
+        return Ok(());
+    };
     if !GRANULARITIES.contains(&granularity) {
         return Err(ErrorBody {
             code: "invalid_query",
@@ -170,39 +188,99 @@ pub fn validate_metrics_query_text(query: &str) -> Result<Value, ErrorBody> {
             refs: None,
         });
     }
-    Ok(body)
+    Ok(())
 }
 
-/// Query time-series metrics.
-pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
-    let body = match validate_metrics_query_text(query) {
-        Ok(body) => body,
-        Err(err) => return failure(COMMAND, err),
-    };
+pub fn validate_metrics_query_text(query: &str) -> Result<Value, ErrorBody> {
+    let object = validate_query_shape(
+        query,
+        QUERY_FIELDS,
+        &["metric", "granularity", "startTime", "endTime"],
+        QUERY_EXAMPLE,
+    )?;
+    check_granularity(&object)?;
+    Ok(Value::Object(object))
+}
 
-    let path = format!("/analytics-query-api/v1/universes/{universe_id}/metrics");
-    let req = ctx.client.post(ctx.url(&path)).json(&body);
+pub fn validate_dimensions_query_text(query: &str) -> Result<Value, ErrorBody> {
+    let object = validate_query_shape(
+        query,
+        DIMENSION_FIELDS,
+        &["metric", "dimensions", "startTime", "endTime"],
+        DIMENSION_EXAMPLE,
+    )?;
+    let dimensions = match object["dimensions"].as_array() {
+        Some(values) if !values.is_empty() => values,
+        _ => {
+            return Err(ErrorBody {
+                code: "invalid_query",
+                message: "--query dimensions must be a non-empty array".into(),
+                status: None,
+                detail: Some(format!("Example: --query '{DIMENSION_EXAMPLE}'")),
+                refs: None,
+            });
+        }
+    };
+    if dimensions
+        .iter()
+        .any(|value| value.as_str().is_none_or(str::is_empty))
+    {
+        return Err(ErrorBody {
+            code: "invalid_query",
+            message: "--query dimensions entries must be non-empty strings".into(),
+            status: None,
+            detail: Some(format!("Example: --query '{DIMENSION_EXAMPLE}'")),
+            refs: None,
+        });
+    }
+    check_granularity(&object)?;
+    Ok(Value::Object(object))
+}
+
+/// The route, command name and catalog entry a query kind maps to.
+fn query_route(kind: &str) -> (&'static str, &'static str, &'static str, &'static str) {
+    match kind {
+        "dimensions" => (
+            "dimension-values",
+            DIMENSIONS_COMMAND,
+            "analytics.dimensions",
+            "Accepted the dimension values query",
+        ),
+        _ => (
+            "metrics",
+            COMMAND,
+            "analytics.metrics",
+            "Accepted the metrics query",
+        ),
+    }
+}
+
+/// POST a query document and turn an asynchronous operation path into a poll
+/// hint.
+async fn post_query(ctx: &Ctx, universe_id: u64, kind: &str, body: &Value) -> Output {
+    let (route, command, endpoint, summary) = query_route(kind);
+    let path = format!("/analytics-query-api/v1/universes/{universe_id}/{route}");
+    let req = ctx.client.post(ctx.url(&path)).json(body);
     // A POST that only queries time-series data. Sent at most once like every
     // non-safe method, but a transient failure is not an unknown mutation.
     match ctx.send_read_only(req).await {
         Ok(resp) => {
             if !resp.status().is_success() {
                 let err = crate::auth::error_from_response(resp).await;
-                return failure_for_endpoint(COMMAND, "analytics.metrics", err, &ctx.auth);
+                return failure_for_endpoint(command, endpoint, err, &ctx.auth);
             }
             let data = match ctx.json_or_error(resp).await {
                 Ok(data) => data,
                 Err(err) => {
-                    return failure_for_endpoint(COMMAND, "analytics.metrics", err, &ctx.auth);
+                    return failure_for_endpoint(command, endpoint, err, &ctx.auth);
                 }
             };
-            let mut out =
-                Output::success(COMMAND, "Accepted the metrics query", Some(data.clone()));
+            let mut out = Output::success(command, summary, Some(data.clone()));
             // Asynchronous queries return an operation.
             if let Some(op) = data.get("path").and_then(|v| v.as_str()) {
-                out = match operation_poll_id(op, universe_id, "metrics") {
+                out = match operation_poll_id(op, universe_id, kind) {
                     Ok(id) => out.with_hints(vec![format!(
-                        "Run `rbxoc analytics operation --universe-id {universe_id} --kind metrics --operation-id {id}` to fetch the result"
+                        "Run `rbxoc analytics operation --universe-id {universe_id} --kind {kind} --operation-id {id}` to fetch the result"
                     )]),
                     Err(reason) => out.with_hints(vec![format!(
                         "The query was accepted, but its operation path cannot be polled: {reason}. Reconcile `{op}` before polling; no follow-up command was generated."
@@ -211,8 +289,26 @@ pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
             }
             out
         }
-        Err(err) => failure_for_endpoint(COMMAND, "analytics.metrics", err, &ctx.auth),
+        Err(err) => failure_for_endpoint(command, endpoint, err, &ctx.auth),
     }
+}
+
+/// Query time-series metrics.
+pub async fn metrics(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
+    let body = match validate_metrics_query_text(query) {
+        Ok(body) => body,
+        Err(err) => return failure(COMMAND, err),
+    };
+    post_query(ctx, universe_id, "metrics", &body).await
+}
+
+/// Query the values a metric's dimensions can take, for `breakdown`/`filter`.
+pub async fn dimensions(ctx: &Ctx, universe_id: u64, query: &str) -> Output {
+    let body = match validate_dimensions_query_text(query) {
+        Ok(body) => body,
+        Err(err) => return failure(DIMENSIONS_COMMAND, err),
+    };
+    post_query(ctx, universe_id, "dimensions", &body).await
 }
 
 /// Fetch the result of an asynchronous query.
