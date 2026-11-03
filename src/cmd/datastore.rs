@@ -1,11 +1,129 @@
 //! DataStore operations.
 //!
 //! Uses the v2 data-stores endpoints. Entry values retain their JSON types.
+//!
+//! Profile-based save systems (ProfileStore / ProfileService) keep their session
+//! lock *inside* the entry value (`value.MetaData.ActiveSession`). Because an
+//! update replaces the whole `value` object, writing over a locked entry resets
+//! the lock while the game server keeps the stale profile in memory. `set` and
+//! `delete` therefore read the entry first and fail closed when a recognised lock
+//! is present, and `get` / `list` report the same lock as a derived flag.
 
 use serde_json::{Value, json};
 
 use crate::ctx::{Ctx, failure, failure_for_endpoint, path_segment};
 use crate::output::{ErrorBody, Output};
+
+/// A session lock recognized inside an entry value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionLock {
+    /// Which documented shape matched.
+    pub shape: &'static str,
+    pub place_id: Option<u64>,
+    pub job_id: Option<String>,
+    pub session_id: Option<String>,
+}
+
+impl SessionLock {
+    /// The derived, agent-readable form. `active: true` means a lock matched.
+    pub fn to_json(&self) -> Value {
+        json!({
+            "active": true,
+            "shape": self.shape,
+            "placeId": self.place_id,
+            "jobId": self.job_id,
+            "sessionId": self.session_id,
+        })
+    }
+
+    fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(place) = self.place_id {
+            parts.push(format!("place_id {place}"));
+        }
+        if let Some(job) = &self.job_id {
+            parts.push(format!("job_id {job}"));
+        }
+        if let Some(session) = &self.session_id {
+            parts.push(format!("session {session}"));
+        }
+        if parts.is_empty() {
+            self.shape.to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
+}
+
+fn id_field(value: Option<&Value>) -> Option<u64> {
+    let value = value?;
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
+}
+
+fn text_field(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    value
+        .as_str()
+        .map(str::to_string)
+        .or_else(|| value.as_u64().map(|id| id.to_string()))
+        .filter(|text| !text.is_empty())
+}
+
+/// Detect a session lock in an entry value.
+///
+/// This is a pattern match on a JSON payload, not a schema validator. Recognized
+/// shapes:
+///
+/// * ProfileStore / ProfileService: `value.MetaData.ActiveSession` with
+///   `PlaceId`/`place_id`, `JobId`/`job_id`, `UniqueSessionId`/`unique_session_id`.
+/// * A top-level `value.SessionJob` / `value.SessionJobId` string, used by
+///   simpler lock conventions.
+///
+/// Unrecognized shapes return `None`, so non-profile saves stay writable exactly
+/// as before: this does not claim knowledge of arbitrary schemas.
+pub fn session_lock(value: &Value) -> Option<SessionLock> {
+    let object = value.as_object()?;
+    if let Some(session) = object
+        .get("MetaData")
+        .and_then(|meta| meta.get("ActiveSession"))
+        .filter(|session| !session.is_null())
+    {
+        return Some(SessionLock {
+            shape: "MetaData.ActiveSession",
+            place_id: id_field(session.get("PlaceId")).or_else(|| id_field(session.get("placeId"))),
+            job_id: text_field(session.get("JobId")).or_else(|| text_field(session.get("jobId"))),
+            session_id: text_field(session.get("UniqueSessionId"))
+                .or_else(|| text_field(session.get("uniqueSessionId"))),
+        });
+    }
+    let job = text_field(object.get("SessionJob"))
+        .or_else(|| text_field(object.get("SessionJobId")))
+        .filter(|job| !job.is_empty() && job != "nil");
+    if let Some(job) = job {
+        return Some(SessionLock {
+            shape: "SessionJob",
+            place_id: id_field(object.get("PlaceId")).or_else(|| id_field(object.get("placeId"))),
+            job_id: Some(job),
+            session_id: None,
+        });
+    }
+    None
+}
+
+/// Attach the derived `sessionLock` flag to an entry payload for read commands.
+fn with_session_lock(mut data: Value) -> Value {
+    let lock = data
+        .get("value")
+        .and_then(session_lock)
+        .map(|lock| lock.to_json())
+        .unwrap_or(Value::Null);
+    if let Some(object) = data.as_object_mut() {
+        object.insert("sessionLock".into(), lock);
+    }
+    data
+}
 
 /// Read an entry.
 pub async fn get(
@@ -23,7 +141,7 @@ pub async fn get(
         Ok(data) => Output::success(
             "datastore get",
             format!("Fetched {store}/{entry}"),
-            Some(data),
+            Some(with_session_lock(data)),
         ),
         Err(err) => failure_for_endpoint("datastore get", "datastore.get", err, &ctx.auth),
     }
@@ -51,6 +169,7 @@ pub async fn set(
     value: &str,
     allow_missing: bool,
     update: ValueUpdate<'_>,
+    ignore_session_lock: bool,
 ) -> Output {
     let parsed: Value = match serde_json::from_str(value) {
         Ok(v) => v,
@@ -146,6 +265,13 @@ pub async fn set(
                 },
             );
         };
+        // A profile session lock lives inside the value, so an etag match does
+        // not make the write safe: replacing `value` resets the lock while the
+        // game server keeps the stale profile in memory. Fail closed unless the
+        // caller states the session is gone.
+        if !ignore_session_lock && let Some(lock) = current.get("value").and_then(session_lock) {
+            return session_locked("datastore set", store, entry, &lock);
+        }
         let attributes = match &explicit_attributes {
             Some(value) => value.clone(),
             None => current
@@ -217,18 +343,63 @@ pub async fn set(
 }
 
 /// Delete an entry.
+///
+/// The delete reads the entry first so the same session-lock pre-flight applies
+/// and so the documented `etag` guard can be sent. Deleting a locked entry is at
+/// least as destructive as overwriting it, and the previous bare DELETE gave up
+/// the only concurrency guard the provider offers.
 pub async fn delete(
     ctx: &Ctx,
     universe_id: u64,
     store: &str,
     entry: &str,
     scope: Option<&str>,
+    ignore_session_lock: bool,
 ) -> Output {
     let path = match entry_path(universe_id, store, scope, entry) {
         Ok(path) => path,
         Err(err) => return failure("datastore delete", err),
     };
-    let req = ctx.client.delete(ctx.url(&path));
+    let current = match ctx.get_json(&path).await {
+        Ok(data) => Some(data),
+        Err(err) if err.status == Some(403) => {
+            return failure_for_endpoint(
+                "datastore delete",
+                "datastore.get",
+                ErrorBody {
+                    code: "datastore_read_forbidden",
+                    message: "the delete reads the entry first, and that read was forbidden"
+                        .into(),
+                    status: Some(403),
+                    detail: Some(
+                        "Grant universe-datastores.objects:read as well as universe-datastores.objects:delete. The DELETE was not sent."
+                            .into(),
+                    ),
+                    refs: None,
+                },
+                &ctx.auth,
+            );
+        }
+        Err(err) if err.status == Some(404) => None,
+        Err(err) => {
+            return failure_for_endpoint("datastore delete", "datastore.get", err, &ctx.auth);
+        }
+    };
+    let mut req = ctx.client.delete(ctx.url(&path));
+    if let Some(current) = current {
+        if !ignore_session_lock && let Some(lock) = current.get("value").and_then(session_lock) {
+            return session_locked("datastore delete", store, entry, &lock);
+        }
+        if let Some(etag) = current
+            .get("etag")
+            .and_then(Value::as_str)
+            .filter(|etag| !etag.is_empty())
+        {
+            // `If-Match` is standard HTTP conditional-delete, and the provider
+            // documents `etag` as sendable on delete too.
+            req = req.header("if-match", etag);
+        }
+    }
     match ctx.send_empty(req).await {
         Ok(_) => Output::success(
             "datastore delete",
@@ -237,6 +408,23 @@ pub async fn delete(
         ),
         Err(err) => failure_for_endpoint("datastore delete", "datastore.delete", err, &ctx.auth),
     }
+}
+
+/// Fail closed on an entry held by a live game server session.
+fn session_locked(command: &str, store: &str, entry: &str, lock: &SessionLock) -> Output {
+    failure(
+        command,
+        ErrorBody {
+            code: "entry_session_locked",
+            message: "the entry is held by an active game server session".into(),
+            status: None,
+            detail: Some(format!(
+                "{store}/{entry}: {}. A write would reset the lock while the server keeps writing stale data. Make the player leave first, or change the value through the game server.",
+                lock.describe()
+            )),
+            refs: None,
+        },
+    )
 }
 
 fn parse_metadata_field(
@@ -317,6 +505,24 @@ pub async fn list(
                 .and_then(|v| v.as_array())
                 .map(|a| a.len())
                 .unwrap_or(0);
+            // List responses populate only path/id; the flag stays null unless a
+            // value happens to be present, so it never claims knowledge it lacks.
+            let mut data = data;
+            if let Some(entries) = data
+                .get_mut("dataStoreEntries")
+                .and_then(Value::as_array_mut)
+            {
+                for entry in entries.iter_mut() {
+                    let lock = entry
+                        .get("value")
+                        .and_then(session_lock)
+                        .map(|lock| lock.to_json())
+                        .unwrap_or(Value::Null);
+                    if let Some(object) = entry.as_object_mut() {
+                        object.insert("sessionLock".into(), lock);
+                    }
+                }
+            }
             let mut out = Output::success(
                 "datastore list",
                 format!("Fetched {count} entries from {store}"),

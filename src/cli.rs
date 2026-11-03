@@ -13,7 +13,7 @@ use crate::catalog;
 use crate::cmd;
 use crate::cmd::assets;
 use crate::ctx::{Ctx, failure};
-use crate::output::{Format, Output};
+use crate::output::{ErrorBody, Format, Output};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -689,6 +689,10 @@ pub enum DatastoreCommand {
         /// Replace users with an empty array
         #[arg(long)]
         clear_users: bool,
+        /// Write even when the entry value holds a profile session lock.
+        /// Use only when the session is known to be dead.
+        #[arg(long)]
+        ignore_session_lock: bool,
     },
     Delete {
         #[arg(long)]
@@ -699,6 +703,10 @@ pub enum DatastoreCommand {
         entry: String,
         #[arg(long)]
         scope: Option<String>,
+        /// Delete even when the entry value holds a profile session lock.
+        /// Use only when the session is known to be dead.
+        #[arg(long)]
+        ignore_session_lock: bool,
     },
     List {
         #[arg(long)]
@@ -901,7 +909,8 @@ pub enum PermissionsCommand {
         /// Positive ID. Omit this only for `--subject-type all`.
         #[arg(long)]
         subject_id: Option<u64>,
-        /// `use` to load the asset, `edit` to modify it
+        /// `use` to load the asset, `edit` to modify it, `download` to fetch it,
+        /// `copy-from-rcc` / `update-from-rcc` for Place assets granted to a Universe
         #[arg(long, default_value = "use")]
         action: String,
     },
@@ -1064,6 +1073,68 @@ fn read_description(
         }
         (None, None) => Ok(None),
     }
+}
+
+/// Map a CLI leaf to the catalog entry it calls, when that is unambiguous.
+///
+/// Several leaves share an endpoint family with a different action
+/// (`datastore set` reads `datastore.get` first), so only the leaf whose
+/// expectation is exactly the catalog entry's `auth` is used for preflight auth
+/// enforcement.
+fn endpoint_for_auth_preflight(leaf: &str) -> Option<&'static catalog::Endpoint> {
+    let id = match leaf {
+        "universe publish-message" => "messaging.publish".to_string(),
+        other => other
+            .replace("analytics alerts ", "analytics alert ")
+            .replace(' ', "."),
+    };
+    catalog::find(&id)
+}
+
+/// Reject a credential family the catalog says the endpoint does not accept.
+///
+/// Credential resolution is global, but `Ctx::apply_auth` would send whatever
+/// was resolved. An OAuth token on an API-key-only endpoint produces a request
+/// with an undocumented authentication method, and its 401/403 hints then
+/// misdescribe the credential.
+fn preflight_auth_kind(leaf: &str, kind: &str) -> Option<Output> {
+    let endpoint = endpoint_for_auth_preflight(leaf)?;
+    if endpoint.auth.is_empty() || catalog::supports_auth(endpoint, kind) {
+        return None;
+    }
+    let accepted = catalog::auth_kinds(endpoint);
+    let accepted_text = accepted.join(" or ");
+    let mut out = failure(
+        leaf,
+        ErrorBody {
+            code: "auth_kind_unsupported",
+            message: format!(
+                "the resolved {kind} credential is not supported by {}; it accepts {accepted_text}",
+                endpoint.id
+            ),
+            status: None,
+            detail: Some(format!(
+                "Resolved credential: {kind}. Endpoint {} documents: {}. No request was sent.",
+                endpoint.id, accepted_text
+            )),
+            refs: None,
+        },
+    );
+    if accepted.contains(&"api-key") {
+        out = out.with_hints([
+            "Set RBXOC_API_KEY (or add it to the project .env) and run the command again".into(),
+        ]);
+    }
+    if accepted.contains(&"oauth") {
+        out = out.with_hints([
+            "Set RBXOC_OAUTH_TOKEN to a token with the documented scopes and run the command again"
+                .into(),
+        ]);
+    }
+    Some(out.with_hints([format!(
+        "Run `rbxoc api show {}` to see the endpoint's documented authentication alternatives",
+        endpoint.id
+    )]))
 }
 
 fn requested_leaf(command: &Command) -> &'static str {
@@ -1246,6 +1317,9 @@ fn preflight_before_auth(command: &Command) -> Option<Output> {
             None
         }
         Command::Analytics(AnalyticsArgs {
+            command: AnalyticsCommand::Catalog,
+        }) => Some(cmd::analytics::catalog()),
+        Command::Analytics(AnalyticsArgs {
             command: AnalyticsCommand::Metrics { query, .. },
         }) => cmd::analytics::validate_metrics_query_text(query)
             .err()
@@ -1256,6 +1330,68 @@ fn preflight_before_auth(command: &Command) -> Option<Output> {
             .err()
             .map(|err| failure("analytics dimensions", err)),
         _ => None,
+    }
+}
+
+/// The leaf command path clap matched before it rejected the arguments.
+///
+/// A parse failure still knows which subcommands were recognized. The envelope
+/// must name them instead of the placeholder `usage`, which made the generated
+/// hint point at `rbxoc usage --help` — a command that does not exist. Falls
+/// back to `usage` only when no subcommand matched, and the hint then never
+/// names a command.
+pub fn usage_leaf(err: &clap::Error) -> String {
+    usage_leaf_from_usage_line(err).unwrap_or_else(usage_leaf_from_argv)
+}
+
+/// clap renders the matched path in its `Usage:` line for most failures.
+fn usage_leaf_from_usage_line(err: &clap::Error) -> Option<String> {
+    let text = err.to_string();
+    let usage = text
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("Usage:"))?;
+    let mut words = usage.split_whitespace();
+    // Skip the binary name; leading lowercase words are the command path.
+    words.next();
+    let leaf: Vec<&str> = words
+        .take_while(|word| {
+            !word.is_empty()
+                && !word.starts_with('-')
+                && word
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        })
+        .collect();
+    (!leaf.is_empty()).then(|| leaf.join(" "))
+}
+
+/// Some clap failures (an invalid option value, for example) render no usage
+/// line. Walk the real command tree over argv so the leaf is still recovered.
+fn usage_leaf_from_argv() -> String {
+    let root = <Cli as clap::CommandFactory>::command();
+    let mut node = &root;
+    let mut path: Vec<String> = Vec::new();
+    for token in std::env::args().skip(1) {
+        if token.starts_with('-') {
+            continue;
+        }
+        match node
+            .get_subcommands()
+            .find(|sub| sub.get_name() == token.as_str())
+        {
+            Some(sub) => {
+                path.push(token);
+                node = sub;
+            }
+            // An option value or something unrecognized: keep the path so far.
+            None if path.is_empty() => continue,
+            None => break,
+        }
+    }
+    if path.is_empty() {
+        "usage".to_string()
+    } else {
+        path.join(" ")
     }
 }
 
@@ -1411,6 +1547,11 @@ impl Cli {
                 return failure(leaf, auth::missing_auth_error(format!("{e:#}")));
             }
         };
+        // Refuse a credential family the target endpoint does not document
+        // before any request is built: `apply_auth` would otherwise send it.
+        if let Some(out) = preflight_auth_kind(leaf, auth.kind()) {
+            return out;
+        }
         let ctx = match Ctx::new(auth, self.retry) {
             Ok(c) => c,
             Err(e) => {
@@ -1616,7 +1757,7 @@ impl Cli {
                 AnalyticsCommand::Dimensions { universe_id, query } => {
                     cmd::analytics::dimensions(&ctx, universe_id, &query).await
                 }
-                AnalyticsCommand::Catalog => cmd::analytics::catalog().await,
+                AnalyticsCommand::Catalog => cmd::analytics::catalog(),
                 AnalyticsCommand::Alerts { command } => match command {
                     AlertCommand::List {
                         universe_id,
@@ -1694,6 +1835,7 @@ impl Cli {
                     users,
                     clear_attributes,
                     clear_users,
+                    ignore_session_lock,
                 } => {
                     cmd::datastore::set(
                         &ctx,
@@ -1709,6 +1851,7 @@ impl Cli {
                             clear_attributes,
                             clear_users,
                         },
+                        ignore_session_lock,
                     )
                     .await
                 }
@@ -1717,9 +1860,17 @@ impl Cli {
                     store,
                     entry,
                     scope,
+                    ignore_session_lock,
                 } => {
-                    cmd::datastore::delete(&ctx, universe_id, &store, &entry, scope.as_deref())
-                        .await
+                    cmd::datastore::delete(
+                        &ctx,
+                        universe_id,
+                        &store,
+                        &entry,
+                        scope.as_deref(),
+                        ignore_session_lock,
+                    )
+                    .await
                 }
                 DatastoreCommand::List {
                     universe_id,
@@ -2656,6 +2807,68 @@ fn import_asphalt_lock(
 #[cfg(test)]
 mod asset_workflow_tests {
     use super::*;
+
+    #[test]
+    fn usage_failures_name_the_invoked_leaf_and_never_rbxoc_usage() {
+        let err = Cli::try_parse_from([
+            "rbxoc",
+            "datastore",
+            "set",
+            "--universe-id",
+            "1",
+            "--store",
+            "s",
+            "--entry",
+            "e",
+        ])
+        .unwrap_err();
+        assert_eq!(usage_leaf(&err), "datastore set");
+        let out = failure(
+            &usage_leaf(&err),
+            ErrorBody {
+                code: "usage_error",
+                message: "Invalid command-line arguments".into(),
+                status: None,
+                detail: Some(err.to_string()),
+                refs: None,
+            },
+        );
+        assert_eq!(out.command, "datastore set");
+        // The self-referential hint that pointed at a nonexistent command is gone.
+        assert!(!out.hints.iter().any(|hint| hint.contains("rbxoc usage")));
+        assert!(
+            out.hints
+                .iter()
+                .any(|hint| hint.contains("rbxoc datastore set --help")),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn usage_failures_with_an_unknown_subcommand_do_not_name_one() {
+        for args in [
+            vec!["rbxoc", "no-such-command"],
+            vec!["rbxoc", "--format", "xml", "api", "list"],
+        ] {
+            let err = Cli::try_parse_from(args.clone()).unwrap_err();
+            let leaf = usage_leaf(&err);
+            let out = failure(
+                &leaf,
+                ErrorBody {
+                    code: "usage_error",
+                    message: "Invalid command-line arguments".into(),
+                    status: None,
+                    detail: Some(err.to_string()),
+                    refs: None,
+                },
+            );
+            assert!(
+                !out.hints.iter().any(|hint| hint.contains("rbxoc usage")),
+                "{args:?}: {out:?}"
+            );
+            assert!(!out.hints.is_empty(), "{args:?} must carry hints");
+        }
+    }
 
     #[test]
     fn api_key_file_is_not_the_api_key_flag() {

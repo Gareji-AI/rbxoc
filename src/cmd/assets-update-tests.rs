@@ -49,7 +49,7 @@ fn success(request: &str, body: &str, _: usize) -> (u16, serde_json::Value) {
             request.starts_with("PATCH /assets/v1/assets/501 "),
             "{request}"
         );
-        assert!(body.contains("\"assetId\":\"501\""));
+        assert!(body.contains("\"assetId\":501"));
         assert!(!body.contains("assetType"));
         assert!(!body.contains("displayName"));
         assert!(body.contains("fixture model version two"));

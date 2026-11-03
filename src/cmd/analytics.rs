@@ -175,9 +175,22 @@ fn validate_query_shape(
 }
 
 /// Reject a granularity outside the closed enum before any request is sent.
+///
+/// `granularity` is a string enum in the official schema, so a present value of
+/// another JSON type is invalid too. Treating it as absent would let a numeric
+/// or null granularity reach the network.
 fn check_granularity(object: &serde_json::Map<String, Value>) -> Result<(), ErrorBody> {
-    let Some(granularity) = object.get("granularity").and_then(|v| v.as_str()) else {
+    let Some(value) = object.get("granularity") else {
         return Ok(());
+    };
+    let Some(granularity) = value.as_str() else {
+        return Err(ErrorBody {
+            code: "invalid_query",
+            message: "--query granularity must be a string".into(),
+            status: None,
+            detail: Some(format!("Use one of: {}", GRANULARITIES.join(", "))),
+            refs: None,
+        });
     };
     if !GRANULARITIES.contains(&granularity) {
         return Err(ErrorBody {
@@ -203,35 +216,34 @@ pub fn validate_metrics_query_text(query: &str) -> Result<Value, ErrorBody> {
 }
 
 pub fn validate_dimensions_query_text(query: &str) -> Result<Value, ErrorBody> {
+    // `dimensions` is optional in DimensionValuesRequest (required is only
+    // metric/startTime/endTime) and has no `minItems`, so an omitted or empty
+    // array must reach the provider. A present array is still type-checked.
     let object = validate_query_shape(
         query,
         DIMENSION_FIELDS,
-        &["metric", "dimensions", "startTime", "endTime"],
+        &["metric", "startTime", "endTime"],
         DIMENSION_EXAMPLE,
     )?;
-    let dimensions = match object["dimensions"].as_array() {
-        Some(values) if !values.is_empty() => values,
-        _ => {
+    if let Some(dimensions) = object.get("dimensions") {
+        let Some(values) = dimensions.as_array() else {
             return Err(ErrorBody {
                 code: "invalid_query",
-                message: "--query dimensions must be a non-empty array".into(),
+                message: "--query dimensions must be an array of strings".into(),
+                status: None,
+                detail: Some(format!("Example: --query '{DIMENSION_EXAMPLE}'")),
+                refs: None,
+            });
+        };
+        if values.iter().any(|value| value.as_str().is_none()) {
+            return Err(ErrorBody {
+                code: "invalid_query",
+                message: "--query dimensions entries must be strings".into(),
                 status: None,
                 detail: Some(format!("Example: --query '{DIMENSION_EXAMPLE}'")),
                 refs: None,
             });
         }
-    };
-    if dimensions
-        .iter()
-        .any(|value| value.as_str().is_none_or(str::is_empty))
-    {
-        return Err(ErrorBody {
-            code: "invalid_query",
-            message: "--query dimensions entries must be non-empty strings".into(),
-            status: None,
-            detail: Some(format!("Example: --query '{DIMENSION_EXAMPLE}'")),
-            refs: None,
-        });
     }
     check_granularity(&object)?;
     Ok(Value::Object(object))
@@ -379,7 +391,11 @@ pub async fn operation(ctx: &Ctx, universe_id: u64, kind: &str, operation_id: &s
 }
 
 /// Common metric names. Keeps agents from guessing wrong identifiers.
-pub async fn catalog() -> Output {
+///
+/// Fully local: this reads a static list and issues no HTTP request, so it must
+/// work without credentials. `Cli::run` returns it before credential
+/// resolution.
+pub fn catalog() -> Output {
     // Representative metrics from the official docs, not an exhaustive list.
     let metrics = json!([
         { "name": "DailyActiveUsers", "unit": "count", "note": "DAU" },

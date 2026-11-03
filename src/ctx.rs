@@ -331,8 +331,44 @@ fn backoff_ms(attempt: u32, headers: &reqwest::header::HeaderMap) -> u64 {
     (base * 2u64.pow(attempt.min(5))).min(30_000)
 }
 
+// Failing after a mutation was sent is not an input problem. The
+// response-validation codes are recognized here.
+
+/// Codes for a mutation that was already sent once, where the response could
+/// not be used as a success receipt. A caller must reconcile the target instead
+/// of correcting CLI input and resubmitting.
+pub(crate) fn is_post_send_validation(error_code: &str) -> bool {
+    matches!(
+        error_code,
+        // A 2xx arrived but carried no usable resource id.
+        "resource_id_missing"
+            | "version_number_missing"
+            | "asset_id_missing"
+            | "operation_id_missing"
+            // A 2xx arrived but described a different or malformed resource.
+            | "invalid_asset_response"
+            | "invalid_asset_version"
+            | "place_response_invalid"
+            | "place_response_mismatch"
+            | "thumbnail_response_invalid"
+            | "thumbnail_delete_failed"
+            | "invalid_permissions_response"
+            | "permission_grant_failed"
+            // A completed operation reported its own failure, or never finished.
+            | "operation_failed"
+            | "operation_timeout"
+            | "invalid_json"
+            | "read_error"
+    )
+}
+
 /// Build a failure `Output` from an `ErrorBody`, including hints.
 pub fn failure(command: &str, error: ErrorBody) -> Output {
+    failure_with_auth(command, error, "")
+}
+
+/// Failure output that names the credential family actually sent.
+pub fn failure_with_auth(command: &str, error: ErrorBody, auth_kind: &str) -> Output {
     let mut hints = Vec::new();
     if matches!(
         error.code,
@@ -347,9 +383,15 @@ pub fn failure(command: &str, error: ErrorBody) -> Output {
     } else if error.code == "read_outcome_unknown" {
         hints.push("This was a read-only query: nothing was written, so running the same read again is safe".into());
         hints.push("Automatic retries stay disabled for non-safe HTTP methods even when the operation is read-only".into());
+    } else if is_post_send_validation(error.code) {
+        // The mutation was sent at most once and the provider answered. The
+        // response is unusable as a success receipt, but correcting CLI input
+        // does not reconcile that. Never emit generic input/retry advice here.
+        hints.push("The mutation was sent at most once; do not resubmit it before confirming whether it took effect".into());
+        hints.push("Inspect the target resource or operation receipt to reconcile the outcome, then decide whether anything remains to do".into());
     } else {
         if let Some(status) = error.status {
-            hints.extend(auth::hints_for_status(status));
+            hints.extend(auth::hints_for_status(status, auth_kind));
         }
         match error.code {
             "auth_missing" => {
@@ -364,24 +406,41 @@ pub fn failure(command: &str, error: ErrorBody) -> Output {
             "invalid_query" | "invalid_value" | "invalid_document" | "invalid_message" => {
                 hints.push(format!("Pass valid JSON for the input; run `rbxoc {command} --help` for argument details"));
             }
-            "invalid_json" | "read_error" | "operation_id_missing" | "asset_id_missing" => {
-                hints.push("Inspect the provider response and verify the target state before repeating any mutation".into());
+            // The envelope names the leaf clap matched. When nothing was
+            // matched the placeholder `usage` must never become
+            // `rbxoc usage --help`, which is not a command.
+            "usage_error" => {
+                if command != "usage" {
+                    hints.push(format!(
+                        "Run `rbxoc {command} --help` for the arguments this command accepts"
+                    ));
+                }
             }
-            // These codes mean the mutation was already sent but its result is
-            // not usable as success. Never suggest generic input correction.
-            "place_response_invalid"
-            | "place_response_mismatch"
-            | "thumbnail_response_invalid"
-            | "thumbnail_delete_failed" => {
-                hints.push("Inspect the target state before repeating this mutation; the request was sent at most once".into());
+            "invalid_json" | "read_error" | "operation_id_missing" | "asset_id_missing" => {
+                // Post-send receipt problems; handled by is_post_send_validation.
             }
             "payment_source_missing" | "invalid_payment_source" => {
                 hints.push("Pass --payment-source user or group only after confirming who pays the Robux fee".into());
             }
+            // Fail-closed pre-flight: nothing was written, so the next step is to
+            // clear the lock rather than to change the value.
+            "entry_session_locked" => {
+                hints.push("Ask the player to leave the experience first, or change the value through the game server that owns the session".into());
+                hints.push("--ignore-session-lock exists only for sessions that are known to be dead; nothing was sent".into());
+            }
+            // Fail-closed pre-flight: correcting the CLI input would not help.
+            "auth_kind_unsupported" => {
+                hints.push(
+                    "Supply the credential family this endpoint documents; no request was sent"
+                        .into(),
+                );
+            }
             _ => {}
         }
         if hints.is_empty() {
-            if error.code.contains("manifest")
+            if error.code == "usage_error" {
+                hints.push("Run `rbxoc --help` or `rbxoc <command> --help`".into());
+            } else if error.code.contains("manifest")
                 || error.code.contains("lock")
                 || error.code.contains("registry")
             {
@@ -411,7 +470,7 @@ pub fn failure_for_endpoint(
     auth: &Auth,
 ) -> Output {
     let error = open_cloud_errors::apply_endpoint_context(error, endpoint_id, auth.kind());
-    let mut out = failure(command, error);
+    let mut out = failure_with_auth(command, error, auth.kind());
     let Some(err) = out.error.as_ref() else {
         return out;
     };
@@ -513,6 +572,74 @@ mod tests {
             &Auth::ApiKey("k".into()),
         );
         assert!(!out.hints.iter().any(|h| h.contains("Creator Dashboard")));
+    }
+
+    #[test]
+    fn post_send_validation_never_suggests_correcting_the_input() {
+        // Each of these is produced after the request reached the provider, so
+        // "correct the input and try again" would duplicate a Game Pass,
+        // publish another place version, or repeat an asset update/rollback.
+        for code in [
+            "resource_id_missing",
+            "version_number_missing",
+            "invalid_asset_response",
+            "invalid_asset_version",
+            "operation_id_missing",
+            "place_response_invalid",
+            "place_response_mismatch",
+            "invalid_json",
+        ] {
+            let out = failure(
+                "gamepass create",
+                ErrorBody {
+                    code,
+                    message: "fixture post-send validation".into(),
+                    status: None,
+                    detail: None,
+                    refs: None,
+                },
+            );
+            assert!(!out.ok);
+            assert!(!out.hints.is_empty(), "{code} must carry hints");
+            for hint in &out.hints {
+                assert!(
+                    !hint.contains("correct the input") && !hint.contains("before trying again"),
+                    "{code} emitted generic retry advice: {hint}"
+                );
+            }
+            assert!(
+                out.hints
+                    .iter()
+                    .any(|hint| hint.contains("sent at most once")),
+                "{code} must say the mutation was sent once: {out:?}"
+            );
+            assert!(
+                out.hints
+                    .iter()
+                    .any(|hint| hint.contains("Inspect the target")),
+                "{code} must ask the caller to reconcile: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn pre_request_validation_keeps_input_correction_hints() {
+        for code in ["invalid_query", "invalid_value", "invalid_document"] {
+            let out = failure(
+                "analytics metrics",
+                ErrorBody {
+                    code,
+                    message: "fixture pre-request validation".into(),
+                    status: None,
+                    detail: None,
+                    refs: None,
+                },
+            );
+            assert!(
+                out.hints.iter().any(|hint| hint.contains("--help")),
+                "{code} lost its input-correction hint: {out:?}"
+            );
+        }
     }
 
     #[test]

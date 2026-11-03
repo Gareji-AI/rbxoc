@@ -73,11 +73,82 @@ pub async fn get(ctx: &Ctx, event_id: u64) -> Output {
 }
 
 /// Create a game event from a JSON document.
+/// The create document must satisfy the service-required fields.
+///
+/// `CreateGameEventRequest` documents `title` and `subtitle` as "Clients must
+/// provide a non-empty value", requires an `endTime` after `startTime`, and
+/// restricts `visibility` to `public`/`private` (`moderated` is server-managed).
+/// The server enforces these, so a permissive pass-through is a known-bad request.
+fn validate_create_document(body: &Value) -> Result<(), ErrorBody> {
+    const REQUIRED: &str =
+        "title, subtitle, startTime, endTime, and a visibility of public or private";
+    let Some(object) = body.as_object() else {
+        return Err(ErrorBody {
+            code: "invalid_document",
+            message: "--document must be a JSON object".into(),
+            status: None,
+            detail: Some(format!("A create request requires {REQUIRED}")),
+            refs: None,
+        });
+    };
+    for field in ["title", "subtitle"] {
+        if object
+            .get(field)
+            .and_then(Value::as_str)
+            .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(ErrorBody {
+                code: "invalid_document",
+                message: format!("--document needs a non-empty {field}"),
+                status: None,
+                detail: Some(format!("A create request requires {REQUIRED}")),
+                refs: None,
+            });
+        }
+    }
+    let timestamp = |field: &str| -> Result<(), ErrorBody> {
+        if object.get(field).and_then(Value::as_str).is_none() {
+            return Err(ErrorBody {
+                code: "invalid_document",
+                message: format!("--document needs a {field} timestamp"),
+                status: None,
+                detail: Some(format!(
+                    "Use a timestamp such as 2026-12-01T00:00:00.000Z. A create request requires {REQUIRED}"
+                )),
+                refs: None,
+            });
+        }
+        Ok(())
+    };
+    timestamp("startTime")?;
+    timestamp("endTime")?;
+    let visibility = object.get("visibility").and_then(Value::as_str);
+    if let Some(visibility) = visibility
+        && !matches!(visibility, "public" | "private")
+    {
+        return Err(ErrorBody {
+            code: "invalid_document",
+            message: format!("--document visibility {visibility} is not accepted"),
+            status: None,
+            detail: Some(
+                "Create accepts public or private. moderated is server-managed and rejected."
+                    .into(),
+            ),
+            refs: None,
+        });
+    }
+    Ok(())
+}
+
+/// Create a game event from a JSON document.
 pub async fn create(ctx: &Ctx, universe_id: u64, document: &str) -> Output {
     let body: Value = match serde_json::from_str(document) {
         Ok(v) => v,
         Err(e) => return invalid_document("event create", e),
     };
+    if let Err(err) = validate_create_document(&body) {
+        return failure("event create", err);
+    }
     let path = events_path(universe_id);
     match ctx.send(ctx.client.post(ctx.url(&path)).json(&body)).await {
         Ok(resp) => {
@@ -172,6 +243,47 @@ mod tests {
             events_path(42),
             "/virtual-events/v3/universes/42/game-events"
         );
+    }
+
+    #[test]
+    fn create_document_requires_the_service_fields() {
+        // The shipped README example must be accepted.
+        let readme = json!({
+            "title": "Winter",
+            "subtitle": "Seasonal event",
+            "startTime": "2026-12-01T00:00:00.000Z",
+            "endTime": "2026-12-08T00:00:00.000Z",
+            "visibility": "public",
+        });
+        assert!(validate_create_document(&readme).is_ok(), "{readme}");
+        // The incomplete document this replaced must be rejected locally.
+        let previous = json!({"title":"Winter","startTime":"2026-12-01T00:00:00Z"});
+        assert_eq!(
+            validate_create_document(&previous).unwrap_err().code,
+            "invalid_document"
+        );
+        for body in [
+            json!({"title":"","subtitle":"s","startTime":"a","endTime":"b"}),
+            json!({"title":"t","subtitle":"  ","startTime":"a","endTime":"b"}),
+            json!({"title":"t","subtitle":"s","endTime":"b"}),
+            json!({"title":"t","subtitle":"s","startTime":"a"}),
+            json!({"title":"t","subtitle":"s","startTime":"a","endTime":"b","visibility":"moderated"}),
+            json!({"title":"t","subtitle":"s","startTime":"a","endTime":"b","visibility":"Public"}),
+            json!([1, 2]),
+        ] {
+            assert_eq!(
+                validate_create_document(&body).unwrap_err().code,
+                "invalid_document",
+                "{body}"
+            );
+        }
+        // private is accepted too.
+        let private = json!({
+            "title": "t", "subtitle": "s",
+            "startTime": "2026-12-01T00:00:00.000Z", "endTime": "2026-12-08T00:00:00.000Z",
+            "visibility": "private",
+        });
+        assert!(validate_create_document(&private).is_ok());
     }
 
     #[test]

@@ -16,21 +16,33 @@ fn run(args: &[&str]) -> Output {
 
 #[test]
 fn usage_errors_are_json_on_stdout_and_exit_64() {
-    for args in [
-        vec!["no-such-command"],
-        vec!["datastore", "get"],
-        vec!["--format", "xml", "api", "list"],
-        vec!["place", "get", "--universe-id", "not-a-number"],
-        vec!["--format", "text", "no-such-command"],
+    // The envelope names the leaf clap matched. `usage` survives only when no
+    // subcommand was recognized at all.
+    for (args, command) in [
+        (vec!["no-such-command"], "usage"),
+        (vec!["datastore", "get"], "datastore get"),
+        (vec!["--format", "xml", "api", "list"], "api list"),
+        (
+            vec!["place", "get", "--universe-id", "not-a-number"],
+            "place get",
+        ),
+        (vec!["--format", "text", "no-such-command"], "usage"),
     ] {
         let out = run(&args);
         assert_eq!(out.status.code(), Some(64), "{args:?}: {out:?}");
         assert!(out.stderr.is_empty(), "{out:?}");
         let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(json["ok"], false);
-        assert_eq!(json["command"], "usage");
+        assert_eq!(json["command"], command, "{args:?}");
         assert_eq!(json["error"]["code"], "usage_error");
         assert!(!json["error"]["detail"].as_str().unwrap().is_empty());
+        // No hint may point at the nonexistent `rbxoc usage` command.
+        for hint in json["hints"].as_array().unwrap() {
+            assert!(
+                !hint.as_str().unwrap().contains("rbxoc usage"),
+                "{args:?}: {hint}"
+            );
+        }
     }
 }
 
@@ -180,6 +192,178 @@ fn reviewer_asset_update_preflight_preserves_the_requested_command_label() {
                     .contains("rbxoc asset update --help")
             );
         }
+    }
+}
+
+#[test]
+fn analytics_catalog_runs_without_credentials() {
+    // Fully local: a static list, zero HTTP requests, no authenticated context.
+    let out = run(&["analytics", "catalog"]);
+    assert!(out.status.success(), "{out:?}");
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "analytics catalog");
+    assert!(
+        !json["data"]["metrics"].as_array().unwrap().is_empty(),
+        "{json}"
+    );
+    // The cloud-backed analytics commands still require credentials.
+    for args in [
+        vec![
+            "analytics",
+            "metrics",
+            "--universe-id",
+            "1",
+            "--query",
+            r#"{"metric":"DailyActiveUsers","granularity":"OneDay","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
+        ],
+        vec![
+            "analytics",
+            "operation",
+            "--universe-id",
+            "1",
+            "--kind",
+            "metrics",
+            "--operation-id",
+            "m1",
+        ],
+        vec!["analytics", "alerts", "list", "--universe-id", "1"],
+    ] {
+        let out = run(&args);
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["error"]["code"], "auth_missing", "{args:?}");
+    }
+}
+
+#[test]
+fn api_key_only_endpoints_reject_an_oauth_only_credential_locally() {
+    // DataStores document roblox-api-key only, so an OAuth token must fail before
+    // any request is built instead of sending an undocumented header.
+    for args in [
+        vec![
+            "datastore",
+            "get",
+            "--universe-id",
+            "1",
+            "--store",
+            "s",
+            "--entry",
+            "e",
+        ],
+        vec![
+            "thumbnail",
+            "list",
+            "--universe-id",
+            "1",
+            "--next-cursor",
+            "c",
+        ],
+        vec!["place", "history", "--place-id", "1", "--limit", "5"],
+        vec![
+            "permissions",
+            "grant",
+            "--asset-id",
+            "111",
+            "--subject-type",
+            "universe",
+            "--subject-id",
+            "222",
+            "--action",
+            "copy-from-rcc",
+        ],
+    ] {
+        let out = run_in(
+            &tempfile::tempdir().unwrap().keep(),
+            &args,
+            &[("RBXOC_OAUTH_TOKEN", "fixture-oauth-token")],
+        );
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {out:?}");
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["ok"], false, "{args:?}");
+        assert_eq!(json["error"]["code"], "auth_kind_unsupported", "{args:?}");
+        let detail = json["error"]["detail"].as_str().unwrap_or_default();
+        assert!(detail.contains("oauth"), "{args:?}: {detail}");
+        assert!(detail.contains("api-key"), "{args:?}: {detail}");
+        assert!(
+            !json["hints"].as_array().unwrap().iter().any(|hint| hint
+                .as_str()
+                .unwrap()
+                .contains("need `RBXOC_OAUTH_TOKEN` instead")),
+            "{args:?}: {json}"
+        );
+    }
+}
+
+#[test]
+fn dual_auth_endpoints_still_accept_either_credential_family() {
+    // No request can reach Roblox in a test, so a dual-auth command must get
+    // past the auth-kind preflight and fail on the network instead.
+    let dir = tempfile::tempdir().unwrap();
+    let args = ["universe", "get", "--universe-id", "1"];
+    let oauth = run_in(
+        dir.path(),
+        &args,
+        &[("RBXOC_OAUTH_TOKEN", "fixture-oauth-token")],
+    );
+    let json: serde_json::Value = serde_json::from_slice(&oauth.stdout).unwrap();
+    assert_ne!(
+        json["error"]["code"], "auth_kind_unsupported",
+        "a dual-auth endpoint must accept OAuth: {json}"
+    );
+    let key = run(&[
+        "--api-key",
+        "fixture-not-a-real-key",
+        "universe",
+        "get",
+        "--universe-id",
+        "1",
+    ]);
+    let json: serde_json::Value = serde_json::from_slice(&key.stdout).unwrap();
+    assert_ne!(json["error"]["code"], "auth_kind_unsupported", "{json}");
+}
+
+#[test]
+fn usage_errors_name_the_invoked_leaf_and_never_suggest_rbxoc_usage() {
+    for (args, expected) in [
+        (
+            vec!["datastore", "set", "--universe-id", "1"],
+            "datastore set",
+        ),
+        (
+            vec![
+                "place",
+                "update",
+                "--universe-id",
+                "1",
+                "--place-id",
+                "2",
+                "--server-size",
+                "not-a-number",
+            ],
+            "place update",
+        ),
+    ] {
+        let out = run(&args);
+        assert_eq!(out.status.code(), Some(64), "{args:?}");
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(json["command"], expected, "{args:?}");
+        let hints: Vec<&str> = json["hints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hint| hint.as_str().unwrap())
+            .collect();
+        assert!(
+            !hints.iter().any(|hint| hint.contains("rbxoc usage")),
+            "{args:?}: {hints:?}"
+        );
+        assert!(
+            hints
+                .iter()
+                .any(|hint| hint.contains(&format!("rbxoc {expected} --help"))),
+            "{args:?}: {hints:?}"
+        );
     }
 }
 
@@ -519,6 +703,67 @@ fn asset_size_preflight_is_credential_free() {
     assert!(out.status.success(), "{out:?}");
     let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(json["data"]["bytes"], 20 * 1024 * 1024);
+}
+
+#[test]
+fn readme_install_pins_match_the_crate_version() {
+    // A stale pin installs a binary without the commands the README documents.
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).unwrap();
+    let version = manifest
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \""))
+        .and_then(|rest| rest.split('"').next())
+        .expect("Cargo.toml must declare a package version");
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    let pins: Vec<&str> = readme
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("rbxoc = \"Gareji-AI/rbxoc@"))
+        .filter_map(|rest| rest.split('"').next())
+        .collect();
+    assert!(
+        !pins.is_empty(),
+        "the README must document at least one Rokit install pin"
+    );
+    let unique: std::collections::BTreeSet<&str> = pins.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        1,
+        "duplicate install sections must not pin different releases: {pins:?}"
+    );
+    assert_eq!(unique.first().copied(), Some(version), "stale install pin");
+    // The archive and checksum examples must name the same release.
+    assert!(
+        readme.contains(&format!("`{version}` carries")),
+        "{version}"
+    );
+    assert!(readme.contains(&format!("rbxoc-{version}-")), "{version}");
+}
+
+#[test]
+fn readme_event_example_satisfies_the_create_contract() {
+    // The copy-paste example must be a document the service would accept, and
+    // the incomplete one from earlier releases must not come back.
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    let document = readme
+        .lines()
+        .skip_while(|line| !line.contains("rbxoc event create"))
+        .find_map(|line| line.split("--document '").nth(1))
+        .and_then(|rest| rest.split('\'').next())
+        .expect("the README must show an `event create --document` example");
+    let body: serde_json::Value = serde_json::from_str(document).unwrap();
+    for field in ["title", "subtitle", "startTime", "endTime", "visibility"] {
+        assert!(
+            body.get(field).is_some(),
+            "{field} is missing from {document}"
+        );
+    }
+    assert!(matches!(
+        body["visibility"].as_str(),
+        Some("public" | "private")
+    ));
+    assert!(!readme.contains("--document '{\"title\":\"Winter\",\"startTime\""));
 }
 
 #[test]

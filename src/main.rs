@@ -26,7 +26,7 @@ mod catalog_contract_tests;
 use clap::Parser;
 use std::process::ExitCode;
 
-use cli::Cli;
+use cli::{Cli, usage_leaf};
 use output::Format;
 
 #[tokio::main]
@@ -54,7 +54,9 @@ async fn main() -> ExitCode {
             // failures always use the stable JSON envelope on stdout.
             Format::Json,
             ctx::failure(
-                "usage",
+                // Name the invoked leaves when clap can recover them, so the
+                // envelope and its hints never point at `rbxoc usage`.
+                &usage_leaf(&err),
                 output::ErrorBody {
                     code: "usage_error",
                     message: "Invalid command-line arguments".into(),
