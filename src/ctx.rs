@@ -430,7 +430,10 @@ pub fn failure_with_auth(command: &str, error: ErrorBody, auth_kind: &str) -> Ou
             }
             // Fail-closed pre-flight: correcting the CLI input would not help.
             "auth_kind_unsupported" => {
-                hints.push("Supply the credential family this endpoint documents; no request was sent".into());
+                hints.push(
+                    "Supply the credential family this endpoint documents; no request was sent"
+                        .into(),
+                );
             }
             _ => {}
         }
