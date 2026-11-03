@@ -1,5 +1,63 @@
 # Changelog
 
+## 0.8.0
+
+- `.env` credential lookup is bounded by the project root (the nearest ancestor
+  holding `.git`, `.rbxoc`, `rokit.toml`, or `rbxoc.assets.toml`). A `.env`
+  above that boundary, or in the home directory, is no longer selected, so a
+  universe-scoped key cannot arrive from a parent workspace. A project-local
+  `.env` still works from nested directories, and an existing `RBXOC_API_KEY`
+  still wins.
+- Post-send response validation no longer emits "correct the input" or "before
+  trying again" guidance. `resource_id_missing`, `version_number_missing`,
+  `invalid_asset_response`, `invalid_asset_version`, and the other receipt codes
+  now share one classification in `ctx::is_post_send_validation` and return
+  reconciliation-only hints: the mutation was sent at most once, inspect the
+  target before resubmitting. Pre-request validation keeps its input hints.
+- `datastore set` and `datastore delete` fail closed when the entry value holds a
+  profile session lock (`value.MetaData.ActiveSession` for ProfileStore /
+  ProfileService, or a top-level `value.SessionJob` string): `entry_session_locked`
+  and no write. `--ignore-session-lock` is the escape hatch for dead sessions.
+  `datastore delete` now reads the entry first and sends the documented `etag`
+  as `If-Match`. `datastore get` / `datastore list` report the same lock as a
+  derived `sessionLock` flag (`null` when no recognized shape matches).
+- `usage_error` envelopes name the leaf path clap matched (`datastore set`)
+  instead of the placeholder `usage`, so hints no longer point at the
+  nonexistent `rbxoc usage` command. `usage` survives only when nothing matched,
+  and no command-specific hint is emitted then.
+- `asset create --asset-type Animation` accepts `.rbxm` / `.rbxmx` as
+  `model/x-rbxm`, matching what the inference path already sent. Unmapped
+  combinations still fail locally.
+- Assets API request JSON preserves documented integer types:
+  `creationContext.creator.userId` / `groupId` and the update `assetId` are JSON
+  numbers, while `icon` and `previews[].asset` stay resource-path strings. IDs
+  above the signed int64 range fail locally before any mutation is sent.
+- Dispatch compares the resolved credential family with the target catalog
+  entry and rejects an unsupported one locally with `auth_kind_unsupported`
+  before any request. 401/403 hints now describe the credential that was sent,
+  so an OAuth token is never called an API key and a 403 never suggests switching
+  to the family already in use. Dual-auth endpoints still accept either.
+- `analytics catalog` runs without credentials, like the other local discovery
+  commands. Cloud-backed analytics commands still require them.
+- Analytics preflight matches the official schemas: `analytics dimensions` now
+  accepts a query that omits `dimensions` (and an empty array, which has no
+  `minItems`), still rejects non-string entries, and a present non-string
+  `granularity` fails locally with `invalid_query` for both query commands.
+- `permissions grant` supports `CopyFromRcc` and `UpdateFromRcc` through
+  `--action copy-from-rcc` / `update-from-rcc` (the exact schema spelling also
+  works). They serve `Place` assets granted to a `Universe`, enabling
+  `AssetService:CreatePlaceAsync()` and `AssetService:UpdatePlaceAsync()`.
+  `Invalid` and unknown values still fail locally and send nothing.
+- `event create` validates the fields the virtual-events service requires, so an
+  incomplete document fails locally with `invalid_document` and sends nothing.
+  `title` and `subtitle` must be non-empty, `startTime` and `endTime` are
+  required, and `visibility` must be `public` or `private` (`moderated` is
+  server-managed). The README example is complete and a contract test keeps it
+  that way.
+- The README Rokit pins, archive list, and checksum example name the current
+  release, and a release/version consistency test fails when `Cargo.toml`, the
+  documented pin, and those examples drift apart.
+
 ## 0.7.2
 
 - `analytics dimensions` queries the documented `dimension-values` endpoint, so

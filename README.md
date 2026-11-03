@@ -27,7 +27,7 @@ One Open Cloud API key per game. rbxoc reads it from that project's `.env`.
 # rokit.toml
 [tools]
 rojo = "rojo-rbx/rojo@7.7.1"
-rbxoc = "Gareji-AI/rbxoc@0.7.1"
+rbxoc = "Gareji-AI/rbxoc@0.8.0"
 ```
 
 ```bash
@@ -51,7 +51,7 @@ RBXOC_API_KEY=your-api-key
 
 Add `.env` to `.gitignore`. Do not write the key with `echo` or another shell command. That line stays in shell history.
 
-rbxoc loads the nearest `.env` the same way Asphalt loads `ASPHALT_API_KEY`. It walks up from the working directory, uses the first file, and does not replace a variable that is already set. A nested directory with its own `.env` does not inherit the parent's key. There is no key in the home directory.
+rbxoc loads the nearest `.env` inside the active project: it walks up from the working directory but never past the project root (the nearest ancestor holding `.git`, `.rbxoc`, `rokit.toml`, or `rbxoc.assets.toml`), and it does not replace a variable that is already set. A nested directory with its own `.env` does not inherit the parent's key, and a `.env` above the project root or in the home directory is never used. An API key is universe-scoped, so inheriting one from a parent workspace could aim a mutation at the wrong game.
 
 ### 4. Check
 
@@ -169,6 +169,14 @@ Redirects are never followed. A `307`/`308` could replay a mutation and reqwest
 would forward the `x-api-key` header to whatever origin the response points at,
 so rbxoc returns `unexpected_redirect` instead of sending a second request.
 
+A resolved credential is also checked against the target endpoint before any
+request is built. An OAuth token on an API-key-only endpoint (DataStores,
+thumbnails, asset permissions, place publish and history) fails locally with
+`auth_kind_unsupported`, naming the selected family and the documented ones, and
+sends nothing. 401/403 hints describe the credential that was actually sent: a
+401 never calls an OAuth token an API key, and a 403 never suggests switching to
+the family already in use.
+
 ### 4. Secret handling
 
 An Open Cloud API key is scoped to one universe, so a single global key is the
@@ -184,14 +192,17 @@ Lookup order:
 4. `RBXOC_OAUTH_TOKEN` (non-empty; used if no API key above was selected).
    The same `.env` load can set this when the process does not already have it.
 
-rbxoc loads the nearest `.env` the same way Asphalt loads `ASPHALT_API_KEY`:
-`dotenvy` walks up from the working directory, applies the first file, and
+rbxoc loads the nearest `.env` the way Asphalt loads `ASPHALT_API_KEY`: it
+looks at the working directory and its parents, applies the first file, and
 does not override a variable that is already set. A missing or unreadable
-`.env` is ignored. Empty environment values are skipped. An explicitly
+`.env` is ignored. The search is bounded, though: it stops at the project root,
+so a `.env` above the active repository (or in the home directory) is never
+selected. Empty environment values are skipped. An explicitly
 selected empty or unreadable key file is an error, not a reason to fall back
 to another project's credential.
 
-The project file is the `.env` from [Setup](#setup). There is no
+The project file is the `.env` from [Setup](#setup). The search stops at the
+project root and there is no
 home-directory fallback, so a key never leaks from one repository into another,
 and a nested directory with its own `.env` never inherits its parent's key.
 
@@ -212,7 +223,10 @@ immediate to spot. Output always masks the value (`abcd****`).
 Unknown subcommands, missing arguments, invalid enum values, and invalid numeric
 arguments return `error.code = "usage_error"`, exit 64, and the standard JSON
 envelope on **stdout**, even with `--format text`. Diagnostics are in
-`error.detail`; stderr is not the machine-readable surface. `--help` and
+`error.detail`; stderr is not the machine-readable surface. `command` names the
+leaf path clap matched (`datastore set`), so the generated hint points at a real
+command; it is `usage` only when no subcommand was recognized, and then no
+command-specific hint is emitted. `--help` and
 `--version` retain normal human-readable output and exit 0.
 
 ## Install
@@ -227,7 +241,7 @@ to set up. Pin it next to `rojo`, `stylua`, and `selene` in the same file:
 # rokit.toml
 [tools]
 rojo = "rojo-rbx/rojo@7.7.1"
-rbxoc = "Gareji-AI/rbxoc@0.7.1"
+rbxoc = "Gareji-AI/rbxoc@0.8.0"
 ```
 
 ```bash
@@ -239,14 +253,14 @@ Rokit's `aftman.toml` and `foreman.toml` compatibility also works, so an
 existing project does not have to migrate first. Rokit requires an **exact**
 version; a requirement like `^0.6` is rejected.
 
-`0.7.1` carries `windows-x86_64`, `linux-x86_64`, `macos-aarch64`, and
+`0.8.0` carries `windows-x86_64`, `linux-x86_64`, `macos-aarch64`, and
 `macos-x86_64` archives, each with a `.sha256` sidecar. `macos-x86_64` was
 added after `0.6.0`. **Rokit 1.2.0 does not read the sidecar.** Verify it
 yourself if you need integrity beyond a pinned version, a GitHub Release, and
 Rokit's own trust prompt:
 
 ```bash
-sha256sum -c rbxoc-0.7.1-linux-x86_64.tar.gz.sha256
+sha256sum -c rbxoc-0.8.0-linux-x86_64.tar.gz.sha256
 ```
 
 ### From crates.io
@@ -563,6 +577,38 @@ against overwriting an existing entry. Standard DataStores send
 `--create`, the parameter is omitted. List pages accept `--page-token`
 (`pageToken` for standard stores, `page_token` for ordered stores).
 
+#### Session-locked saves
+
+A profile-based save system keeps its session lock *inside* the entry value:
+
+```json
+{"Data": {}, "MetaData": {"ActiveSession": {"PlaceId": 1, "JobId": "job", "UniqueSessionId": "session"}}}
+```
+
+Because a value update replaces the whole `value` object, an `etag` match does
+not make that write safe: the PATCH resets the lock while the game server keeps
+the stale profile in memory, and the next save rolls the profile back. rbxoc
+therefore reads the entry first and refuses with `entry_session_locked`, sending
+nothing, when `value.MetaData.ActiveSession` (ProfileStore / ProfileService) or
+a top-level `value.SessionJob` string is present. `--ignore-session-lock` is the
+escape hatch for sessions known to be dead (offline cleanup, repairing a stuck
+lock). It applies to `datastore set` and `datastore delete`.
+
+`datastore delete` also reads first, so the same pre-flight applies and the
+documented `etag` guard is sent as `If-Match`; a bare DELETE gave up the only
+concurrency guard the provider offers.
+
+`datastore get` and `datastore list` report the same lock as a derived flag
+without claiming knowledge of any other schema:
+
+```json
+"sessionLock": {"active": true, "shape": "MetaData.ActiveSession", "placeId": 1, "jobId": "job", "sessionId": "session"}
+```
+
+`sessionLock` is `null` when the value carries no recognizable lock, so a save
+format this does not know stays writable exactly as before. The flag is
+informational; only the write paths enforce it.
+
 ### Leaderboards (Ordered DataStores)
 
 ```bash
@@ -615,14 +661,17 @@ rbxoc analytics alerts incidents --universe-id 123 --start-time 2026-10-01T00:00
 ```
 
 `QueryRequest` requires one `metric` plus `granularity`, `startTime`, and
-`endTime`. Granularity is `OneMinute`, `HalfHour`, `OneHour`, `OneDay`,
-`OneWeek`, `OneMonth`, or `None`. A closed-enum miss fails locally before
-authentication.
+`endTime`. Granularity is the string enum `OneMinute`, `HalfHour`, `OneHour`,
+`OneDay`, `OneWeek`, `OneMonth`, or `None`. A closed-enum miss, and a
+`granularity` that is present but not a JSON string, both fail locally with
+`invalid_query` before authentication and send nothing.
 
-`DimensionValuesRequest` requires `metric`, a non-empty `dimensions` array,
-`startTime`, and `endTime`. It takes the same optional `granularity`, `filter`,
-and `limit`, and never computes the metric itself. Read the returned values
-back as `breakdown` and `filter` inputs for `analytics metrics`.
+`DimensionValuesRequest` requires `metric`, `startTime`, and `endTime`. Its
+`dimensions` array is optional with no minimum length, so the query may omit it
+or send an empty array; a present array must contain strings. It takes the same
+optional `granularity`, `filter`, and `limit`, and never computes the metric
+itself. Read the returned values back as `breakdown` and `filter` inputs for
+`analytics metrics`.
 
 The current contract supports API keys and OAuth2 for analytics queries and
 operation reads. Both need the documented `universe.analytics:read` permission.
@@ -644,7 +693,8 @@ rbxoc badge create --universe-id 123 --name "Wave 10" --description "Reach wave 
 rbxoc badge update --badge-id 456 --description "Reach wave 10"
 
 rbxoc event list --universe-id 123
-rbxoc event create --universe-id 123 --document '{"title":"Winter","startTime":"2026-12-01T00:00:00Z"}'
+rbxoc event create --universe-id 123 \
+  --document '{"title":"Winter","subtitle":"Seasonal event","startTime":"2026-12-01T00:00:00.000Z","endTime":"2026-12-08T00:00:00.000Z","visibility":"public"}'
 ```
 
 `badge create` spends Robux. It requires `--payment-source`, `--expected-cost`,
@@ -665,16 +715,30 @@ exact string in `{"message":"..."}`. A JSON string such as `"hello"` is
 unwrapped once; object-shaped text is not parsed into a new document. The
 limit is 1,024 characters.
 
+`event create` does check the fields the virtual-events service requires, so an
+incomplete document fails locally with `invalid_document` and sends nothing.
+`title` and `subtitle` must be non-empty, `startTime` and `endTime` are
+required (`endTime` after `startTime`), and `visibility` must be `public` or
+`private`. `moderated` is server-managed and rejected. `event update` still
+forwards the document verbatim.
+
 ### Asset permissions
 
 ```bash
 rbxoc permissions grant --asset-id 111 --asset-id 222 \
   --subject-type group --subject-id 999 --action use
 rbxoc permissions grant --asset-id 111 --subject-type all --action use
+rbxoc permissions grant --asset-id 111 --subject-type universe --subject-id 222 \
+  --action copy-from-rcc
 ```
 
 `--subject-type` is `user`, `group`, `group-roleset`, `universe`, or `all`.
-`--action` is `use`, `edit`, or `download`. `all` sends an empty `subjectId`
+`--action` is `use`, `edit`, `download`, `copy-from-rcc`, or `update-from-rcc`.
+The last two apply to `Place` assets granted to a `Universe` and enable
+`AssetService:CreatePlaceAsync()` and `AssetService:UpdatePlaceAsync()`; they
+are sent on the wire as `CopyFromRcc` and `UpdateFromRcc`. The exact schema
+spelling is accepted too. `Invalid` and unknown values fail locally and send
+nothing. `all` sends an empty `subjectId`
 and rejects `--subject-id`. Every other subject type requires a positive ID.
 
 HTTP 200 can still contain per-asset grant failures. `permission_grant_failed`

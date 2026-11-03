@@ -16,12 +16,15 @@
 //! 3. the file given by `--api-key-file`
 //! 4. non-empty `RBXOC_OAUTH_TOKEN`
 //!
-//! The API key is loaded the same way Asphalt loads `ASPHALT_API_KEY`.
-//! `load_dotenv` runs before argument parsing and calls `dotenvy::dotenv`:
-//! the nearest `.env`, walking up from the working directory, is applied to
-//! the process environment and does not override a variable that is already
-//! set. A nested directory with its own `.env` therefore does not inherit the
-//! parent's key. There is no home-directory fallback.
+//! The API key is loaded the same way Asphalt loads `ASPHALT_API_KEY`, but the
+//! search is bounded by the active project. `load_dotenv` runs before argument
+//! parsing and applies the nearest `.env` found between the working directory
+//! and the project root (the nearest ancestor holding `.git`, `.rbxoc`,
+//! `rokit.toml`, or `rbxoc.assets.toml`). Variables the process already has are
+//! never overwritten. A `.env` above that boundary, or one in the user's home
+//! directory, is never selected: Open Cloud API keys are universe-scoped, so
+//! inheriting one from a parent workspace would aim a mutation at the wrong
+//! universe.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -67,15 +70,94 @@ impl Auth {
 /// already have that variable.
 static LOADED_DOTENV_KEY: OnceLock<Option<PathBuf>> = OnceLock::new();
 
-/// Load the nearest `.env` the way Asphalt does.
+/// Files that mark the root of the project a command belongs to. A `.env`
+/// above the nearest one of these is outside the project's trust boundary.
+const PROJECT_MARKERS: &[&str] = &[".git", ".rbxoc", "rokit.toml", "rbxoc.assets.toml"];
+
+/// The nearest ancestor of `start` (inclusive) that holds a project marker.
+fn project_root(start: &Path) -> Option<&Path> {
+    start.ancestors().find(|directory| {
+        PROJECT_MARKERS
+            .iter()
+            .any(|marker| directory.join(marker).exists())
+    })
+}
+
+/// The user's home directory, when the platform reports one.
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
+/// The nearest `.env` between `start` and the active project root.
 ///
-/// `dotenvy::dotenv` walks upward, parses with its own rules, and leaves an
-/// existing variable untouched. A missing file is ignored.
+/// Returns `None` when the only candidates sit above the project boundary or
+/// inside the home directory. Both are outside the credential contract: an API
+/// key belongs to the project that owns the universe.
+pub fn find_dotenv_from(start: &Path) -> Option<PathBuf> {
+    let boundary = project_root(start);
+    let home = home_dir();
+    // Without a project marker there is no boundary to trust, so only the
+    // working directory itself is considered. Walking up would let an
+    // unrelated parent workspace supply a universe-scoped key.
+    if boundary.is_none() {
+        let candidate = start.join(".env");
+        return candidate.is_file().then_some(candidate);
+    }
+    for directory in start.ancestors() {
+        // Home and everything above it is out of scope, even when a project
+        // marker happens to sit there.
+        if let Some(home) = home.as_deref()
+            && home.starts_with(directory)
+        {
+            break;
+        }
+        // Never walk past the project root.
+        if let Some(boundary) = boundary
+            && !directory.starts_with(boundary)
+        {
+            break;
+        }
+        let candidate = directory.join(".env");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if Some(directory) == boundary {
+            break;
+        }
+    }
+    None
+}
+
+/// Load the nearest `.env` inside the active project.
+///
+/// Parsing uses dotenvy's own rules. A variable the process already has from a
+/// non-empty value wins; a variable that is present but blank does not, because
+/// an exported empty `RBXOC_API_KEY=` would otherwise block the project file
+/// forever.
 pub fn load_dotenv() {
     let already_set = std::env::var("RBXOC_API_KEY")
         .ok()
         .is_some_and(|value| !value.trim().is_empty());
-    let path = dotenvy::dotenv().ok();
+    let path = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| find_dotenv_from(&cwd));
+    if let Some(file) = path.as_deref()
+        && let Ok(pairs) = dotenvy::from_path_iter(file)
+    {
+        for (key, value) in pairs.flatten() {
+            let occupied = std::env::var(&key)
+                .ok()
+                .is_some_and(|current| !current.trim().is_empty());
+            if !occupied {
+                // Safety: `load_dotenv` is the first statement of `main`, before
+                // any other thread can read the environment.
+                unsafe { std::env::set_var(key, value) };
+            }
+        }
+    }
     let from_file = !already_set
         && std::env::var("RBXOC_API_KEY")
             .ok()
@@ -229,19 +311,42 @@ pub fn status_code(status: &u16) -> &'static str {
 }
 
 /// Next actions per status. Troubleshooting guidance for agents.
-pub fn hints_for_status(status: u16) -> Vec<String> {
+///
+/// `auth_kind` names the credential that was actually sent, so a 401 never calls
+/// an OAuth token an API key and a 403 never suggests switching to the family
+/// already in use. An empty kind means the caller did not know, and the wording
+/// stays neutral rather than guessing.
+pub fn hints_for_status(status: u16, auth_kind: &str) -> Vec<String> {
+    let credential = match auth_kind {
+        "oauth" => "OAuth token",
+        "api-key" => "API key",
+        _ => "credential",
+    };
     match status {
         401 => vec![
-            "The API key is invalid or expired. Reissue it in the Creator Dashboard".into(),
+            format!("The {credential} is invalid or expired. Reissue it in the Creator Dashboard"),
             "Run `rbxoc auth check` to inspect the current credential state".into(),
         ],
-        403 => vec![
-            "The API key lacks the required permission. Check the operation and scopes".into(),
-            "Areas that require OAuth2 need `RBXOC_OAUTH_TOKEN` instead".into(),
-            "Run `rbxoc api show <id>` to see the scopes an endpoint needs".into(),
-        ],
+        403 => {
+            let mut hints = vec![format!(
+                "The {credential} lacks the required permission. Check the operation and scopes"
+            )];
+            // Only suggest the other family when the other family is not the
+            // one already in use.
+            match auth_kind {
+                "oauth" => hints.push(
+                    "OAuth2 is already in use; add the documented scopes to the token's app".into(),
+                ),
+                "api-key" => {
+                    hints.push("Areas that require OAuth2 need `RBXOC_OAUTH_TOKEN` instead".into())
+                }
+                _ => {}
+            }
+            hints.push("Run `rbxoc api show <id>` to see the scopes an endpoint needs".into());
+            hints
+        }
         404 => vec![
-            "Either the ID is wrong, or the API key cannot access that experience".into(),
+            "Either the ID is wrong, or the credential cannot access that experience".into(),
             "Check for a swap between universeId and placeId".into(),
         ],
         409 => vec!["Conflicting state. Wait a moment and retry".into()],
@@ -292,10 +397,39 @@ mod tests {
 
     #[test]
     fn hints_exist_for_common_failures() {
-        assert!(!hints_for_status(401).is_empty());
-        assert!(!hints_for_status(403).is_empty());
-        assert!(!hints_for_status(429).is_empty());
-        assert!(hints_for_status(200).is_empty());
+        for kind in ["api-key", "oauth", ""] {
+            assert!(!hints_for_status(401, kind).is_empty());
+            assert!(!hints_for_status(403, kind).is_empty());
+            assert!(!hints_for_status(429, kind).is_empty());
+            assert!(hints_for_status(200, kind).is_empty());
+        }
+    }
+
+    #[test]
+    fn status_hints_describe_the_credential_that_was_sent() {
+        // A 401 must never call an OAuth token an API key.
+        let oauth = hints_for_status(401, "oauth").join(" ");
+        assert!(oauth.contains("OAuth token"), "{oauth}");
+        assert!(!oauth.contains("API key"), "{oauth}");
+        let key = hints_for_status(401, "api-key").join(" ");
+        assert!(key.contains("API key"), "{key}");
+        assert!(!key.contains("OAuth token"), "{key}");
+
+        // A 403 must not suggest switching to the family already in use.
+        let oauth403 = hints_for_status(403, "oauth").join(" ");
+        assert!(
+            !oauth403.contains("need `RBXOC_OAUTH_TOKEN` instead"),
+            "{oauth403}"
+        );
+        assert!(oauth403.contains("OAuth2 is already in use"), "{oauth403}");
+        let key403 = hints_for_status(403, "api-key").join(" ");
+        assert!(key403.contains("RBXOC_OAUTH_TOKEN"), "{key403}");
+
+        // An unknown family stays neutral instead of claiming a method.
+        let unknown = hints_for_status(401, "").join(" ");
+        assert!(unknown.contains("credential"), "{unknown}");
+        assert!(!unknown.contains("API key"), "{unknown}");
+        assert!(!unknown.contains("OAuth"), "{unknown}");
     }
 
     #[test]
@@ -433,6 +567,46 @@ RBXOC_OAUTH_TOKEN='token value'
                 .contains(path.display().to_string().as_str())
         );
         assert!(!resolved.source.contains("from-dotenv"));
+    }
+
+    #[test]
+    fn dotenv_lookup_stops_at_the_project_boundary() {
+        let root = tempfile::tempdir().unwrap();
+        let ancestor = root.path().join("ancestor");
+        let project = ancestor.join("project");
+        let nested = project.join("subdir");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::write(ancestor.join(".env"), "RBXOC_API_KEY=ancestor\n").unwrap();
+
+        // No `.env` inside the project: the ancestor file is out of reach.
+        assert_eq!(find_dotenv_from(&nested), None);
+
+        // The project-local file is found from a nested directory.
+        let local = project.join(".env");
+        std::fs::write(&local, "RBXOC_API_KEY=local\n").unwrap();
+        assert_eq!(find_dotenv_from(&nested), Some(local.clone()));
+
+        // A closer `.env` still wins over the project-root one.
+        let closer = nested.join(".env");
+        std::fs::write(&closer, "OTHER=1\n").unwrap();
+        assert_eq!(find_dotenv_from(&nested), Some(closer));
+    }
+
+    #[test]
+    fn dotenv_lookup_without_a_project_marker_stays_local() {
+        // Without `.git` or another marker the search must not escape into an
+        // unrelated parent tree.
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(root.path().join(".env"), "RBXOC_API_KEY=ancestor\n").unwrap();
+
+        let found = find_dotenv_from(&project);
+        assert!(
+            found.as_deref() != Some(root.path().join(".env").as_path()),
+            "an ancestor .env outside the project boundary was selected: {found:?}"
+        );
     }
 
     #[test]

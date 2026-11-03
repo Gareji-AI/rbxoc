@@ -215,6 +215,7 @@ async fn standard_datastore_preserves_json_types_on_the_wire() {
             &value.to_string(),
             false,
             cmd::datastore::ValueUpdate::default(),
+            false,
         )
         .await;
         assert!(out.ok, "{out:?}");
@@ -256,6 +257,7 @@ async fn datastore_create_flags_use_only_documented_query_parameters() {
                 "1",
                 create,
                 cmd::datastore::ValueUpdate::default(),
+                false,
             )
             .await
             .ok
@@ -270,6 +272,7 @@ async fn datastore_create_flags_use_only_documented_query_parameters() {
                 "1",
                 create,
                 cmd::datastore::ValueUpdate::default(),
+                false,
             )
             .await
             .ok
@@ -335,13 +338,25 @@ fn paid_badge<'a>(
     }
 }
 
+/// A create document that satisfies the virtual-events service requirements.
+fn valid_event_document() -> String {
+    json!({
+        "title": "Fixture",
+        "subtitle": "Fixture subtitle",
+        "startTime": "2026-12-01T00:00:00.000Z",
+        "endTime": "2026-12-08T00:00:00.000Z",
+        "visibility": "public",
+    })
+    .to_string()
+}
+
 async fn mutation(ctx: &Ctx, operation: &str) -> crate::output::Output {
     match operation {
         "increment" => {
             cmd::ordered_datastore::increment(ctx, 123, "test", "global", "player", 1).await
         }
         "message" => cmd::universe::publish_message(ctx, 123, "test", "{}").await,
-        "create" => cmd::event::create(ctx, 123, "{}").await,
+        "create" => cmd::event::create(ctx, 123, &valid_event_document()).await,
         "badge" => cmd::badge::create(ctx, 123, paid_badge("Test", "Test", Some("user"))).await,
         "restart" => cmd::server::restart(ctx, 123, false).await,
         _ => unreachable!(),
@@ -1178,11 +1193,11 @@ async fn required_json_mutations_reject_malformed_and_empty_success_bodies() {
         let mut ctx = server.ctx();
         ctx.auth = Auth::OAuth("synthetic-oauth-token".into());
         for out in [
-            cmd::event::create(&ctx, 123, "{}").await,
             cmd::event::update(&ctx, 456, "{}").await,
+            cmd::event::create(&ctx, 123, &valid_event_document()).await,
             cmd::badge::create(&ctx, 123, paid_badge("Fixture", "", Some("user"))).await,
             cmd::badge::update(&ctx, 456, Some("Fixture"), None, None).await,
-            cmd::datastore::set(&ctx, 123, "store", "entry", None, "1", false, cmd::datastore::ValueUpdate::default()).await,
+            cmd::datastore::set(&ctx, 123, "store", "entry", None, "1", false, cmd::datastore::ValueUpdate::default(), false).await,
             cmd::ordered_datastore::set(&ctx, 123, "store", "global", "entry", 1, false).await,
             cmd::ordered_datastore::increment(&ctx, 123, "store", "global", "entry", 1).await,
             cmd::server::restart(&ctx, 123, false).await,
@@ -1212,14 +1227,239 @@ async fn documented_no_content_mutations_remain_successful() {
     for out in [
         cmd::event::delete(&ctx, 123).await,
         cmd::alerts::delete(&ctx, "123", "456").await,
-        cmd::datastore::delete(&ctx, 123, "store", "entry", None).await,
         cmd::ordered_datastore::delete(&ctx, 123, "store", "global", "entry").await,
         cmd::monetization::gamepass_update(&ctx, 123, 456, Some("Fixture"), None, None, None, None)
             .await,
     ] {
         assert!(out.ok, "{out:?}");
     }
-    assert_eq!(server.captured().len(), 5);
+    assert_eq!(server.captured().len(), 4);
+
+    // `datastore delete` reads the entry first so it can send the documented
+    // etag guard, so the fixture answers the GET with an entry and the DELETE
+    // with the documented 204-less no-body success.
+    let delete = Server::new(|count| {
+        if count == 1 {
+            Reply::Json(
+                200,
+                json!({"value": 1, "attributes": {}, "users": [], "etag": "e1"}),
+            )
+        } else {
+            Reply::Raw(204, String::new())
+        }
+    });
+    let out = cmd::datastore::delete(&delete.ctx(), 123, "store", "entry", None, false).await;
+    assert!(out.ok, "{out:?}");
+    let requests = delete.captured();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[1].method, "DELETE");
+    assert_eq!(requests[1].header("if-match"), Some("e1"));
+}
+
+#[tokio::test]
+async fn unusable_success_receipts_never_suggest_repeating_the_mutation() {
+    // Each path sent exactly one mutation and got HTTP 2xx, but the receipt was
+    // unusable. The guidance must be reconciliation only: repeating the request
+    // would create a second Game Pass, publish another version, or repeat an
+    // asset update/rollback.
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("model.fbx");
+    std::fs::write(&model, "synthetic model").unwrap();
+
+    // create: 2xx without a resource id.
+    let server = Server::new(|_| Reply::Json(200, json!({})));
+    let out =
+        cmd::monetization::gamepass_create(&server.ctx(), 123, "Fixture", None, None, None).await;
+    assert_post_send_reconciliation(&server.captured(), &out, "resource_id_missing");
+
+    // publish: 2xx without a versionNumber.
+    let place = dir.path().join("place.rbxl");
+    std::fs::write(&place, "synthetic place").unwrap();
+    let server = Server::new(|_| Reply::Json(200, json!({})));
+    let out = cmd::place::publish(&server.ctx(), 123, 456, &place, true).await;
+    assert_post_send_reconciliation(&server.captured(), &out, "version_number_missing");
+
+    // update: 2xx that does not describe the updated asset.
+    let server = Server::new(|_| Reply::Json(200, json!({})));
+    let out = cmd::asset::update(
+        &server.ctx(),
+        456,
+        None,
+        None,
+        Some("Renamed"),
+        None,
+        None,
+        &[],
+    )
+    .await;
+    assert_post_send_reconciliation(&server.captured(), &out, "invalid_asset_response");
+
+    // rollback: 2xx without the AssetVersion resource.
+    let server = Server::new(|_| Reply::Json(200, json!({})));
+    let out = cmd::asset::rollback(&server.ctx(), 456, 7).await;
+    assert_post_send_reconciliation(&server.captured(), &out, "invalid_asset_version");
+}
+
+/// Assert the failure guidance reconciles instead of retrying.
+fn assert_post_send_reconciliation(requests: &[Request], out: &crate::output::Output, code: &str) {
+    assert_eq!(requests.len(), 1, "{code} must send exactly one mutation");
+    assert!(!out.ok, "{code}: {out:?}");
+    assert_eq!(
+        out.error.as_ref().map(|error| error.code),
+        Some(code),
+        "{out:?}"
+    );
+    for hint in &out.hints {
+        assert!(
+            !hint.contains("correct the input") && !hint.contains("before trying again"),
+            "{code} emitted generic retry advice: {hint}"
+        );
+    }
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("sent at most once")),
+        "{code} must state the request was sent once: {out:?}"
+    );
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("Inspect the target")),
+        "{code} must ask for reconciliation: {out:?}"
+    );
+}
+
+#[tokio::test]
+async fn datastore_writes_fail_closed_on_a_profile_session_lock() {
+    // ProfileStore / ProfileService keep the session lock inside the value, so
+    // an etag match does not make a value write safe.
+    let locked = || {
+        json!({
+            "value": {
+                "Data": {"coins": 10},
+                "MetaData": {
+                    "ActiveSession": {
+                        "PlaceId": 111, "JobId": "job-abc",
+                        "UniqueSessionId": "session-xyz",
+                    },
+                    "SessionLoadCount": 1,
+                },
+            },
+            "attributes": {},
+            "users": [],
+            "etag": "e1",
+        })
+    };
+    let server = Server::new(move |_| Reply::Json(200, locked()));
+    let ctx = server.ctx();
+    let out = cmd::datastore::set(
+        &ctx,
+        123,
+        "players",
+        "player_42",
+        None,
+        "{\"coins\":999}",
+        false,
+        cmd::datastore::ValueUpdate::default(),
+        false,
+    )
+    .await;
+    assert!(!out.ok, "{out:?}");
+    assert_eq!(out.error.as_ref().unwrap().code, "entry_session_locked");
+    assert!(
+        out.error
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("job-abc")
+    );
+    assert!(
+        out.hints
+            .iter()
+            .any(|hint| hint.contains("--ignore-session-lock"))
+    );
+    // Only the read happened; no PATCH was sent.
+    assert_eq!(server.captured().len(), 1);
+    assert_eq!(server.captured()[0].method, "GET");
+
+    // The escape hatch exists for sessions known to be dead.
+    let server = Server::new(move |_| Reply::Json(200, locked()));
+    let out = cmd::datastore::set(
+        &server.ctx(),
+        123,
+        "players",
+        "player_42",
+        None,
+        "{\"coins\":999}",
+        false,
+        cmd::datastore::ValueUpdate::default(),
+        true,
+    )
+    .await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(server.captured().len(), 2);
+    assert_eq!(server.captured()[1].method, "PATCH");
+}
+
+#[tokio::test]
+async fn datastore_delete_reads_first_and_respects_the_lock() {
+    let locked = json!({
+        "value": {
+            "Data": {},
+            "MetaData": {"ActiveSession": {"PlaceId": 7, "JobId": "job-1"}},
+        },
+        "etag": "e1",
+    });
+    let server = Server::new({
+        let locked = locked.clone();
+        move |_| Reply::Json(200, locked.clone())
+    });
+    let out = cmd::datastore::delete(&server.ctx(), 123, "players", "player_42", None, false).await;
+    assert_eq!(out.error.as_ref().unwrap().code, "entry_session_locked");
+    assert_eq!(server.captured().len(), 1);
+    assert_eq!(server.captured()[0].method, "GET");
+
+    let server = Server::new(move |_| Reply::Json(200, locked.clone()));
+    let out = cmd::datastore::delete(&server.ctx(), 123, "players", "player_42", None, true).await;
+    assert!(out.ok, "{out:?}");
+    let requests = server.captured();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].method, "DELETE");
+    assert_eq!(requests[1].header("if-match"), Some("e1"));
+}
+
+#[tokio::test]
+async fn datastore_reads_report_the_session_lock_flag() {
+    let entry = json!({
+        "value": {
+            "Data": {"coins": 10},
+            "MetaData": {
+                "ActiveSession": {
+                    "PlaceId": 111, "JobId": "job-abc", "UniqueSessionId": "session-xyz",
+                },
+            },
+        },
+        "etag": "e1",
+    });
+    let server = Server::new({
+        let entry = entry.clone();
+        move |_| Reply::Json(200, entry.clone())
+    });
+    let out = cmd::datastore::get(&server.ctx(), 123, "players", "player_42", None).await;
+    assert!(out.ok, "{out:?}");
+    let data = out.data.unwrap();
+    assert_eq!(data["sessionLock"]["active"], true);
+    assert_eq!(data["sessionLock"]["placeId"], 111);
+    assert_eq!(data["sessionLock"]["jobId"], "job-abc");
+
+    // A value with no recognized lock shape reports null instead of guessing.
+    let plain = Server::new(|_| Reply::Json(200, json!({"value": {"coins": 1}, "etag": "e1"})));
+    let out = cmd::datastore::get(&plain.ctx(), 123, "players", "player_42", None).await;
+    assert!(out.ok, "{out:?}");
+    assert_eq!(out.data.unwrap()["sessionLock"], Value::Null);
 }
 
 #[tokio::test]
@@ -1285,9 +1525,60 @@ async fn asset_content_update_omits_metadata_mask_and_undocumented_parts() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, "PATCH");
     assert_eq!(requests[0].target, "/assets/v1/assets/123");
-    assert_eq!(requests[0].json_part("request"), json!({"assetId": "123"}));
+    assert_eq!(requests[0].json_part("request"), json!({"assetId": 123}));
+    assert!(
+        requests[0].json_part("request")["assetId"].is_number(),
+        "Asset.assetId is integer/int64 in the official schema"
+    );
     assert_eq!(requests[0].body.matches("Content-Disposition:").count(), 2);
     assert!(requests[0].body.contains("name=\"fileContent\""));
+}
+
+#[tokio::test]
+async fn asset_creation_sends_numeric_creator_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("model.fbx");
+    std::fs::write(&model, "synthetic Model content").unwrap();
+    let server = Server::new(|_| Reply::Json(200, json!({"path": "operations/op-1"})));
+    let ctx = server.ctx();
+    for (user, group) in [(Some(123u64), None), (None, Some(456u64))] {
+        let out = cmd::asset::create(&ctx, &model, "Model", "", user, group, None).await;
+        assert!(out.ok, "{out:?}");
+    }
+    let requests = server.captured();
+    assert_eq!(requests.len(), 2);
+    let first = requests[0].json_part("request");
+    assert_eq!(first["creationContext"]["creator"]["userId"], json!(123));
+    assert!(
+        first["creationContext"]["creator"]["userId"].is_number(),
+        "Creator.userId is integer/int64 in the official schema"
+    );
+    let second = requests[1].json_part("request");
+    assert_eq!(second["creationContext"]["creator"]["groupId"], json!(456));
+    assert!(second["creationContext"]["creator"]["groupId"].is_number());
+}
+
+#[tokio::test]
+async fn asset_ids_above_the_int64_range_fail_before_any_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("model.fbx");
+    std::fs::write(&model, "synthetic Model content").unwrap();
+    let server = Server::success();
+    let ctx = server.ctx();
+    let over = i64::MAX as u64 + 1;
+    for out in [
+        cmd::asset::create(&ctx, &model, "Model", "", Some(over), None, None).await,
+        cmd::asset::create(&ctx, &model, "Model", "", None, Some(over), None).await,
+        cmd::asset::update(&ctx, over, None, None, Some("Renamed"), None, None, &[]).await,
+    ] {
+        assert!(!out.ok, "{out:?}");
+        let code = out.error.unwrap().code;
+        assert!(
+            code == "invalid_creator_id" || code == "invalid_asset_id",
+            "unexpected code {code}"
+        );
+    }
+    assert!(server.captured().is_empty());
 }
 
 #[tokio::test]
@@ -1329,10 +1620,14 @@ async fn asset_metadata_updates_use_only_documented_json_fields_and_parts() {
         assert_eq!(
             req.json_part("request"),
             json!({
-                "assetId": "123", "displayName": "Renamed", "description": "",
+                "assetId": 123, "displayName": "Renamed", "description": "",
                 "icon": "assets/456", "previews": [{"asset": "assets/789"}, {"asset": "assets/790"}],
             })
         );
+        let request_json = req.json_part("request");
+        assert!(request_json["assetId"].is_number());
+        assert!(request_json["icon"].is_string());
+        assert!(request_json["previews"][0]["asset"].is_string());
         assert_eq!(
             req.body.matches("Content-Disposition:").count(),
             if content { 2 } else { 1 }
@@ -1800,6 +2095,38 @@ async fn permission_subjects_follow_the_empty_id_rule() {
 }
 
 #[tokio::test]
+async fn rcc_permission_actions_are_sent_as_documented_enum_values() {
+    let server = Server::new(|_| Reply::Json(200, json!({"successAssetIds": [111], "errors": []})));
+    let ctx = server.ctx();
+    for (cli, wire) in [
+        ("copy-from-rcc", "CopyFromRcc"),
+        ("update-from-rcc", "UpdateFromRcc"),
+    ] {
+        let out = cmd::permissions::grant(&ctx, &[111], "universe", Some(222), cli).await;
+        assert!(out.ok, "{cli} {out:?}");
+        assert_eq!(cmd::permissions::action_to_api(cli), Some(wire));
+    }
+    let bodies: Vec<Value> = server
+        .captured()
+        .iter()
+        .map(|request| serde_json::from_str(&request.body).unwrap())
+        .collect();
+    assert_eq!(bodies.len(), 2);
+    assert_eq!(bodies[0]["action"], "CopyFromRcc");
+    assert_eq!(bodies[0]["subjectType"], "Universe");
+    assert_eq!(bodies[0]["subjectId"], "222");
+    assert_eq!(bodies[0]["assetIds"], json!([111]));
+    assert_eq!(bodies[1]["action"], "UpdateFromRcc");
+
+    let idle = Server::success();
+    for action in ["Invalid", "moderate", ""] {
+        let out = cmd::permissions::grant(&idle.ctx(), &[111], "universe", Some(222), action).await;
+        assert_eq!(out.error.unwrap().code, "invalid_action", "{action}");
+    }
+    assert!(idle.captured().is_empty());
+}
+
+#[tokio::test]
 async fn list_pages_forward_provider_tokens_with_exact_query_names() {
     let server = Server::new(|_| {
         Reply::Json(
@@ -1906,6 +2233,7 @@ async fn datastore_value_updates_preserve_metadata() {
         "1",
         false,
         cmd::datastore::ValueUpdate::default(),
+        false,
     )
     .await;
     assert_eq!(out.error.unwrap().code, "entry_not_found");
@@ -1928,6 +2256,7 @@ async fn datastore_value_updates_preserve_metadata() {
         "1",
         true,
         cmd::datastore::ValueUpdate::default(),
+        false,
     )
     .await;
     assert!(out.ok, "{out:?}");
@@ -1959,6 +2288,7 @@ async fn datastore_value_updates_preserve_metadata() {
             users_json: Some(r#"["users/9"]"#),
             ..cmd::datastore::ValueUpdate::default()
         },
+        false,
     )
     .await;
     assert!(out.ok, "{out:?}");
@@ -1986,6 +2316,7 @@ async fn datastore_value_updates_preserve_metadata() {
             clear_users: true,
             ..cmd::datastore::ValueUpdate::default()
         },
+        false,
     )
     .await;
     assert!(out.ok, "{out:?}");
@@ -2004,6 +2335,7 @@ async fn datastore_value_updates_preserve_metadata() {
         "4",
         false,
         cmd::datastore::ValueUpdate::default(),
+        false,
     )
     .await;
     assert_eq!(out.error.unwrap().code, "etag_missing");
@@ -2023,6 +2355,7 @@ async fn datastore_value_updates_preserve_metadata() {
             clear_attributes: true,
             ..cmd::datastore::ValueUpdate::default()
         },
+        false,
     )
     .await;
     assert_eq!(out.error.unwrap().code, "metadata_conflict");
@@ -2038,6 +2371,7 @@ async fn datastore_value_updates_preserve_metadata() {
         "6",
         false,
         cmd::datastore::ValueUpdate::default(),
+        false,
     )
     .await;
     let error = out.error.unwrap();
@@ -2189,6 +2523,7 @@ async fn datastore_set_403_names_the_mutation_scope() {
         "1",
         false,
         cmd::datastore::ValueUpdate::default(),
+        false,
     )
     .await;
     assert!(!out.ok, "{out:?}");
@@ -2381,12 +2716,16 @@ async fn analytics_dimensions_posts_the_query_and_polls_by_its_own_kind() {
 
 #[tokio::test]
 async fn analytics_dimensions_rejects_an_unknown_shape_before_sending() {
+    // `dimensions` is optional with no `minItems`, so only real schema
+    // violations fail locally. A wrong JSON type, a missing required field, and
+    // a granularity outside the string enum stay rejected.
     for query in [
-        r#"{"metric":"DailyActiveUsers","dimensions":[],"startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
         r#"{"metric":"DailyActiveUsers","dimensions":"Country","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
+        r#"{"metric":"DailyActiveUsers","dimensions":[1],"startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
         r#"{"metric":"DailyActiveUsers","dimensions":["Country"],"startTime":"2026-10-01T00:00:00Z"}"#,
-        r#"{"metric":"DailyActiveUsers","granularity":"OneDay","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
         r#"{"metric":"DailyActiveUsers","dimensions":["Country"],"granularity":"day","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
+        r#"{"metric":"DailyActiveUsers","dimensions":["Country"],"granularity":123,"startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
+        r#"{"metric":"DailyActiveUsers","unknown":true,"startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#,
     ] {
         let server = Server::success();
         let out = cmd::analytics::dimensions(&server.ctx(), 123, query).await;
@@ -2394,6 +2733,53 @@ async fn analytics_dimensions_rejects_an_unknown_shape_before_sending() {
         assert_eq!(out.error.unwrap().code, "invalid_query", "{query}");
         assert!(server.captured().is_empty(), "{query} must not be sent");
     }
+}
+
+#[tokio::test]
+async fn analytics_dimensions_accepts_the_schema_optional_dimensions() {
+    // The official DimensionValuesRequest requires only metric/startTime/endTime
+    // and puts no minimum length on `dimensions`. Both the omitted and the empty
+    // forms must reach the provider instead of failing preflight.
+    // The omitted form reaches the provider with `dimensions` absent.
+    let omitted = r#"{"metric":"DailyActiveUsers","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#;
+    let server = Server::new(|_| Reply::Json(200, json!({"values": []})));
+    let out = cmd::analytics::dimensions(&server.ctx(), 123, omitted).await;
+    assert!(out.ok, "{omitted}: {out:?}");
+    let requests = server.captured();
+    assert_eq!(requests.len(), 1, "{omitted}");
+    let body: Value = serde_json::from_str(&requests[0].body).unwrap();
+    assert_eq!(body["metric"], "DailyActiveUsers");
+    assert_eq!(body.get("dimensions"), None, "omitted stays omitted");
+    // An empty array is forwarded as an empty array, not dropped.
+    let server = Server::new(|_| Reply::Json(200, json!({"values": []})));
+    let empty = r#"{"metric":"M","dimensions":[],"startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#;
+    assert!(
+        cmd::analytics::dimensions(&server.ctx(), 123, empty)
+            .await
+            .ok
+    );
+    let body: Value = serde_json::from_str(&server.captured()[0].body).unwrap();
+    assert_eq!(body["dimensions"], json!([]));
+}
+
+#[tokio::test]
+async fn analytics_metrics_reject_non_string_granularity_before_credentials() {
+    let server = Server::success();
+    for granularity in ["123", "null", "[\"OneDay\"]"] {
+        let query = format!(
+            r#"{{"metric":"DailyActiveUsers","granularity":{granularity},"startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}}"#
+        );
+        let out = cmd::analytics::metrics(&server.ctx(), 123, &query).await;
+        assert!(!out.ok, "{granularity}: {out:?}");
+        assert_eq!(out.error.unwrap().code, "invalid_query", "{granularity}");
+    }
+    assert!(server.captured().is_empty());
+    // A valid enum string is still accepted and sent unchanged.
+    let server = Server::new(|_| Reply::Json(200, json!({"values": []})));
+    let query = r#"{"metric":"DailyActiveUsers","granularity":"OneDay","startTime":"2026-10-01T00:00:00Z","endTime":"2026-10-08T00:00:00Z"}"#;
+    assert!(cmd::analytics::metrics(&server.ctx(), 123, query).await.ok);
+    let body: Value = serde_json::from_str(&server.captured()[0].body).unwrap();
+    assert_eq!(body["granularity"], "OneDay");
 }
 
 #[tokio::test]

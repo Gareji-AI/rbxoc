@@ -21,6 +21,10 @@ use crate::output::{ErrorBody, Output};
 const CMD_CREATE: &str = "asset create";
 const CMD_UPDATE: &str = "asset update";
 
+/// Largest value the Assets API can represent for an `integer`/`int64` field.
+/// Serializing a larger `u64` would emit a float, so such ids fail locally.
+const MAX_INT64: u64 = i64::MAX as u64;
+
 /// Decide assetType and content-type from the extension. Returns `None` when
 /// the guess is unsafe, so the caller can ask for an explicit type.
 ///
@@ -303,6 +307,17 @@ async fn plan_update(
     if asset_id == 0 {
         return Err(invalid("invalid_asset_id", "--asset-id must be positive"));
     }
+    if asset_id > MAX_INT64 {
+        return Err(ErrorBody {
+            code: "invalid_asset_id",
+            message: "--asset-id exceeds the documented int64 range".into(),
+            status: None,
+            detail: Some(
+                "Asset.assetId is integer/int64; nothing was sent to the Assets API".into(),
+            ),
+            refs: None,
+        });
+    }
     if icon.is_some_and(|value| !image_resource(value))
         || previews.iter().any(|value| !image_resource(value))
     {
@@ -342,7 +357,7 @@ async fn plan_update(
             "Provide --file or at least one metadata field",
         ));
     }
-    let mut request = json!({"assetId": asset_id.to_string()});
+    let mut request = json!({"assetId": asset_id});
     if let Some(name) = display_name {
         request["displayName"] = json!(name);
     }
@@ -368,10 +383,30 @@ async fn plan_update(
 }
 
 /// Creator target for uploads. Exactly one of userId or groupId is required.
+///
+/// `Creator.userId` / `Creator.groupId` are documented as `integer`/`int64` in
+/// the official Assets API schema, so both are sent as JSON numbers. A value
+/// above the signed int64 ceiling would be serialized as a float, so it fails
+/// locally before any request is built.
 fn creator_json(user_id: Option<u64>, group_id: Option<u64>) -> Result<Value, ErrorBody> {
+    let checked = |id: u64, field: &'static str| -> Result<u64, ErrorBody> {
+        if id > MAX_INT64 {
+            return Err(ErrorBody {
+                code: "invalid_creator_id",
+                message: format!("--{field} exceeds the documented int64 range"),
+                status: None,
+                detail: Some(
+                    "Creator.userId and Creator.groupId are integer/int64; nothing was uploaded"
+                        .into(),
+                ),
+                refs: None,
+            });
+        }
+        Ok(id)
+    };
     match (user_id, group_id) {
-        (Some(id), None) => Ok(json!({ "userId": id.to_string() })),
-        (None, Some(id)) => Ok(json!({ "groupId": id.to_string() })),
+        (Some(id), None) => Ok(json!({ "userId": checked(id, "user-id")? })),
+        (None, Some(id)) => Ok(json!({ "groupId": checked(id, "group-id")? })),
         (Some(_), Some(_)) => Err(ErrorBody {
             code: "creator_ambiguous",
             message: "userId and groupId cannot be set together".into(),
@@ -449,7 +484,11 @@ fn content_type_for(asset_type: &str, file: &std::path::Path) -> Option<&'static
         ("Model", "fbx") => "model/fbx",
         ("Model", "gltf") => "model/gltf+json",
         ("Model", "glb") => "model/gltf-binary",
-        ("Model", "rbxm") | ("Model", "rbxmx") => "model/x-rbxm",
+        // Animations are `KeyframeSequence` models and share the Model content
+        // type in both formats. `infer_asset_from_file` already sends this for
+        // an inferred Animation; the explicit `--asset-type Animation` path
+        // must agree or it blocks a documented upload.
+        ("Model" | "Animation", "rbxm") | ("Model" | "Animation", "rbxmx") => "model/x-rbxm",
         ("Decal", "png") => "image/png",
         ("Decal", "jpg") | ("Decal", "jpeg") => "image/jpeg",
         ("Decal", "bmp") => "image/bmp",
@@ -752,7 +791,7 @@ pub(crate) async fn start_update(
     }
     // Roblox's documented content-only update carries only assetId and omits
     // updateMask (which selects metadata fields, not the content body).
-    let request = json!({ "assetId": asset_id.to_string() });
+    let request = json!({ "assetId": asset_id });
     let form = build_multipart(&request, file, content_type, CMD_UPDATE).await?;
     let req = ctx
         .client
@@ -1119,6 +1158,27 @@ mod tests {
         assert!(is_updateable_body("Model"));
         assert!(!is_updateable_body("Decal"));
         assert!(!is_updateable_body("Audio"));
+    }
+
+    #[test]
+    fn explicit_animation_type_matches_the_inferred_content_type() {
+        // A KeyframeSequence is an Animation drawn from a model file, and the
+        // inference path already sends model/x-rbxm for it. The explicit
+        // --asset-type Animation path must agree instead of blocking the upload.
+        for name in ["Victory.rbxm", "Victory.rbxmx", "Victory.RBXM"] {
+            assert_eq!(
+                content_type_for("Animation", Path::new(name)),
+                Some("model/x-rbxm"),
+                "{name}"
+            );
+        }
+        assert_eq!(
+            content_type_for("Model", Path::new("a.rbxm")),
+            Some("model/x-rbxm")
+        );
+        // Unmapped combinations still fail rather than guessing.
+        assert_eq!(content_type_for("Animation", Path::new("a.fbx")), None);
+        assert_eq!(content_type_for("Animation", Path::new("a.png")), None);
     }
 
     #[test]

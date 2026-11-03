@@ -363,7 +363,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey],
         scopes: &["universe-datastores.objects:read"],
         mutating: false,
-        note: "",
+        note: "Reports a derived sessionLock flag when the value holds a recognized profile session lock (value.MetaData.ActiveSession or value.SessionJob); null otherwise.",
     },
     Endpoint {
         id: "datastore.set",
@@ -374,7 +374,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey],
         scopes: &["universe-datastores.objects:update"],
         mutating: true,
-        note: "Reads the entry first, which also needs universe-datastores.objects:read, then sends value, attributes, users, and etag. A missing etag fails locally. --create sends allowMissing=true.",
+        note: "Reads the entry first, which also needs universe-datastores.objects:read, then sends value, attributes, users, and etag. A missing etag fails locally, and a recognized profile session lock in value.MetaData.ActiveSession fails with entry_session_locked unless --ignore-session-lock is passed. --create sends allowMissing=true.",
     },
     Endpoint {
         id: "datastore.delete",
@@ -385,7 +385,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey],
         scopes: &["universe-datastores.objects:delete"],
         mutating: true,
-        note: "",
+        note: "Reads the entry first (needs universe-datastores.objects:read too) so the documented etag can be sent as If-Match and a recognized profile session lock fails with entry_session_locked unless --ignore-session-lock is passed.",
     },
     Endpoint {
         id: "datastore.list",
@@ -396,7 +396,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey],
         scopes: &["universe-datastores.objects:list"],
         mutating: false,
-        note: "",
+        note: "Each entry carries the same derived sessionLock flag when a value is present; list responses normally populate only path and id.",
     },
     // ---- ordered datastores (leaderboards) ----
     Endpoint {
@@ -546,7 +546,7 @@ pub const ENDPOINTS: &[Endpoint] = &[
         auth: &[ApiKey],
         scopes: &["asset-permissions:write"],
         mutating: true,
-        note: "Subject types: User, Group, GroupRoleset, Universe, All. All sends an empty subjectId. Actions: Use, Edit, Download.",
+        note: "Subject types: User, Group, GroupRoleset, Universe, All. All sends an empty subjectId. Actions: Use, Edit, Download, CopyFromRcc, UpdateFromRcc (the RCC actions apply to Place assets granted to a Universe).",
     },
     // ---- creator configs (remote config / feature flags) ----
     Endpoint {
@@ -834,6 +834,29 @@ pub fn permission_hints_for_endpoint_id(
 /// Look up by ID.
 pub fn find(id: &str) -> Option<&'static Endpoint> {
     ENDPOINTS.iter().find(|e| e.id == id)
+}
+
+/// Whether a credential family is one of the endpoint's documented
+/// alternatives.
+pub fn supports_auth(endpoint: &Endpoint, kind: &str) -> bool {
+    endpoint.auth.iter().any(|accepted| match accepted {
+        AuthKind::ApiKey => kind == "api-key",
+        AuthKind::OAuth => kind == "oauth",
+        AuthKind::LegacyCookie => kind == "legacy-cookie",
+    })
+}
+
+/// The accepted families as the catalog spells them, for failure messages.
+pub fn auth_kinds(endpoint: &Endpoint) -> Vec<&'static str> {
+    endpoint
+        .auth
+        .iter()
+        .map(|accepted| match accepted {
+            AuthKind::ApiKey => "api-key",
+            AuthKind::OAuth => "oauth",
+            AuthKind::LegacyCookie => "legacy-cookie",
+        })
+        .collect()
 }
 
 /// Substring search. Helps agents explore.

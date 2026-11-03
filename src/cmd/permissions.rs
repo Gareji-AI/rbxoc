@@ -9,6 +9,35 @@ use serde_json::{Value, json};
 use crate::ctx::{Ctx, failure, failure_for_endpoint};
 use crate::output::{ErrorBody, Output};
 
+/// Accepted CLI spellings for the public `AssetAction` enum.
+///
+/// `Invalid` and `Moderated`-style server-managed values stay unreachable: the
+/// provider documents `Invalid` as "not a valid action".
+pub const ACTION_VALUES: &[&str] = &[
+    "use",
+    "edit",
+    "download",
+    "copy-from-rcc",
+    "update-from-rcc",
+];
+
+/// Map a CLI action to the exact PascalCase enum string on the wire.
+///
+/// `CopyFromRcc` and `UpdateFromRcc` apply to `Place` assets granted to a
+/// `Universe`; they enable `AssetService:CreatePlaceAsync()` and
+/// `AssetService:UpdatePlaceAsync()`. The exact schema spelling is accepted too,
+/// so a caller copying an OpenAPI enum value does not have to translate it.
+pub fn action_to_api(action: &str) -> Option<&'static str> {
+    Some(match action {
+        "use" | "Use" => "Use",
+        "edit" | "Edit" => "Edit",
+        "download" | "Download" => "Download",
+        "copy-from-rcc" | "CopyFromRcc" => "CopyFromRcc",
+        "update-from-rcc" | "UpdateFromRcc" => "UpdateFromRcc",
+        _ => return None,
+    })
+}
+
 /// Grant a subject access to a set of assets.
 pub async fn grant(
     ctx: &Ctx,
@@ -96,18 +125,16 @@ pub async fn grant(
             id.to_string()
         }
     };
-    let action_api = match action {
-        "use" => "Use",
-        "edit" => "Edit",
-        "download" => "Download",
-        other => {
+    let action_api = match action_to_api(action) {
+        Some(mapped) => mapped,
+        None => {
             return failure(
                 COMMAND,
                 ErrorBody {
                     code: "invalid_action",
-                    message: format!("--action {other} is not accepted"),
+                    message: format!("--action {action} is not accepted"),
                     status: None,
-                    detail: Some("Use use, edit, or download".into()),
+                    detail: Some(format!("Use {}", ACTION_VALUES.join(", "))),
 
                     refs: None,
                 },
@@ -204,6 +231,7 @@ pub async fn grant(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use serde_json::json;
 
     #[test]
@@ -218,13 +246,23 @@ mod tests {
     #[test]
     fn action_values_are_pascal_case() {
         // "use" must become "Use"; the server rejects lowercase.
-        for (input, expected) in [("use", "Use"), ("edit", "Edit"), ("download", "Download")] {
-            let mapped = match input {
-                "use" => "Use",
-                "edit" => "Edit",
-                _ => "Download",
-            };
-            assert_eq!(mapped, expected);
+        for (input, expected) in [
+            ("use", "Use"),
+            ("edit", "Edit"),
+            ("download", "Download"),
+            ("copy-from-rcc", "CopyFromRcc"),
+            ("update-from-rcc", "UpdateFromRcc"),
+        ] {
+            assert_eq!(action_to_api(input), Some(expected), "{input}");
+            // The exact schema spelling is accepted unchanged.
+            assert_eq!(action_to_api(expected), Some(expected), "{expected}");
+        }
+    }
+
+    #[test]
+    fn invalid_and_unknown_actions_stay_rejected() {
+        for input in ["Invalid", "invalid", "moderate", ""] {
+            assert_eq!(action_to_api(input), None, "{input}");
         }
     }
 }
