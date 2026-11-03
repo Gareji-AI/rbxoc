@@ -15,6 +15,9 @@ Unofficial; not affiliated with or endorsed by Roblox.
 
 Announcement: [rbxoc on the Roblox DevForum](https://devforum.roblox.com/t/rbxoc-a-cli-for-the-roblox-open-cloud-api/4959453).
 
+Current release: **0.8.0**. See [changelog.md](changelog.md) and the
+[GitHub releases](https://github.com/Gareji-AI/rbxoc/releases) for what changed.
+
 ## Setup
 
 One Open Cloud API key per game. rbxoc reads it from that project's `.env`.
@@ -139,8 +142,9 @@ Every failure carries a non-empty `hints` array, including local input,
 registry, file, and response-parsing errors. JSON and text output render the
 same failure object. HTTP failures also receive status-specific next actions:
 
-- `401` — reissue the API key, run `auth check`
-- `403` — check permissions and scopes, note when OAuth2 is required
+- `401` — reissue the credential that was used, run `auth check`
+- `403` — check permissions and scopes; the hint names the credential actually
+  sent, so it suggests OAuth2 only when an API key is in use
 - `408` — the provider reported a timeout; it may still have processed the request
 - `429` / `5xx` on replay-safe reads — bounded retry/backoff
 - `mutation_outcome_unknown` — reconcile the target state or receipt before
@@ -148,6 +152,18 @@ same failure object. HTTP failures also receive status-specific next actions:
 - `read_outcome_unknown` — a read-only query failed transiently; nothing was
   written, so repeating the read is safe
 - `unexpected_redirect` — Open Cloud answered with a 3xx; rbxoc refuses it
+- `auth_kind_unsupported` — the resolved credential family is not one the
+  endpoint documents; nothing was sent
+- `entry_session_locked` — a DataStore entry is held by a live game session;
+  nothing was written
+
+A failure that happens **after** a mutation reached the provider never gets
+input-correction advice. Unusable success receipts (`resource_id_missing`,
+`version_number_missing`, `invalid_asset_response`, `invalid_asset_version`,
+`invalid_json`) share one classification and return reconciliation-only hints:
+the request was sent at most once, so inspect the target before resubmitting.
+"Correct the input and try again" stays limited to failures raised before a
+request is built.
 
 `--retry` defaults to `2` additional attempts, **only** for safe HTTP methods
 (GET, HEAD, OPTIONS, TRACE) after transport errors, 429, or 5xx. Other methods
@@ -369,6 +385,12 @@ covered by offline wire tests, not live provider verification.
 
 Supported formats (20 MB per request): `.fbx` `.gltf` `.glb` `.rbxm` `.rbxmx` (Model), `.png` `.jpeg` `.bmp` `.tga` (Decal image uploads), `.mp3` `.ogg` `.wav` `.flac`, `.mp4` `.mov`.
 
+The multipart `request` part follows the documented schema types:
+`creationContext.creator.userId` / `groupId` and the update `assetId` are JSON
+numbers (`integer`/`int64`), while `icon` and `previews[].asset` stay
+resource-path strings. An ID above the signed int64 range fails locally before
+any upload.
+
 **Decal ID is not Image ID.** An image upload's completed `assetId` remains
 the original Decal ID; rbxoc never silently redefines it. For ImageLabel or
 ImageButton, resolve the existing Decal's `Texture` in Studio, then use the
@@ -411,7 +433,9 @@ rbxoc asset create --file walk.rbxmx --display-name "Walk" --user-id 789 --dry-r
 
 `--dry-run` resolves the type without uploading and needs no credentials, so
 the classification can be checked before spending an upload. Pass
-`--asset-type` to override the inspection.
+`--asset-type` to override the inspection; `--asset-type Animation` accepts the
+same `.rbxm` / `.rbxmx` files as the inference path, so a build script that
+already knows the type does not have to drop the flag.
 
 A malformed model file fails with `model_parse_failed` instead of guessing, so
 a broken export does not silently land as the wrong asset type.
@@ -660,6 +684,10 @@ rbxoc analytics alerts list --universe-id 123
 rbxoc analytics alerts incidents --universe-id 123 --start-time 2026-10-01T00:00:00Z --end-time 2026-10-08T00:00:00Z
 ```
 
+`analytics catalog` is local discovery: it returns a static list of common metric
+names and makes no HTTP request, so it runs with no credentials, like
+`rbxoc api list`. Every other analytics command needs a supported credential.
+
 `QueryRequest` requires one `metric` plus `granularity`, `startTime`, and
 `endTime`. Granularity is the string enum `OneMinute`, `HalfHour`, `OneHour`,
 `OneDay`, `OneWeek`, `OneMonth`, or `None`. A closed-enum miss, and a
@@ -773,6 +801,11 @@ events, badges and monetization. Thumbnail, asset-permission, standard/ordered
 DataStore, place-publish and place-history operations advertise API keys only
 after excluding unsupported cookies. Check `auth` and `scopes` in
 `rbxoc api show <id>` rather than reusing another endpoint's permission names.
+
+This table is enforced, not just documented. Dispatch compares the resolved
+credential with the target endpoint before building a request, so an OAuth token
+on an API-key-only operation fails locally with `auth_kind_unsupported` and
+sends nothing. Dual-auth endpoints keep accepting either family.
 
 ## Toolchain
 

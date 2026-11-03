@@ -46,11 +46,21 @@ analytics, server list/logs, cross-server messaging, asset APIs, configs, events
 badges and monetization. Cookie credentials remain excluded; empty anonymous
 security alternatives do not add an anonymous execution path to this CLI.
 
+These alternatives are enforced at dispatch. A resolved credential family the
+target endpoint does not document fails locally with `auth_kind_unsupported`
+before a request is built, and 401/403 hints describe the family that was
+actually sent.
+
 Standard DataStore permissions use `universe-datastores.objects:read`, `:update`,
 `:delete` and `:list` per operation. Ordered DataStores use
 `universe.ordered-data-store.scope.entry:read|write`. These names also drive
 API-key hints. An empty documented permission set is not replaced with an
 invented scope. Contract support is distinct from live verification and enrollment.
+
+`datastore set` and `datastore delete` also read the entry first, so an API key
+that can update or delete but not read fails with `datastore_read_forbidden`
+rather than sending a blind write. The read is what makes the profile
+session-lock pre-flight and the delete `If-Match` etag guard possible.
 
 ## Current state
 
